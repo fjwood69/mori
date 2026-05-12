@@ -115,7 +115,7 @@ dream pipeline uses to produce memories.
 | `MOKU_MCP_SERVER_NAME` | `moku` | Prefix for MCP tool names |
 | `MOKU_ADVISOR_DATA` | `/data/moku-advisor` | Where SQLite DB lives |
 | `MOKU_ADVISOR_API_KEY` | — | Auth key for event capture endpoint (empty = no auth) |
-| `MOKU_TRUSTED_DREAMERS` | `uk-smr-nuc15pro,uk-smr-twiggy-win11` | Hosts that auto-approve protected memory writes |
+| `MOKU_TRUSTED_DREAMERS` | — | Comma-separated hostnames that auto-approve protected memory writes |
 | `MOKU_BIFROST_ADVISOR_VK` | `moku-advisor-local` | VK key for advisor (Bifrost mode) |
 | `MOKU_BIFROST_DREAM_VK` | `moku-dream-local` | VK key for dream (Bifrost mode) |
 | `MOKU_BIFROST_TIMEOUT` | `300` | API timeout in seconds |

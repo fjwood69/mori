@@ -179,10 +179,15 @@ class MemoryStore:
             """
         )
 
-        # Seed default trusted dreamer config
+        # Seed default trusted dreamer config (overridable via env)
+        import os
+        default_trusted = os.environ.get(
+            "MOKU_TRUSTED_DREAMERS",
+            "[]",
+        )
         self._conn.execute(
             "INSERT OR IGNORE INTO dreamer_config (key, value) VALUES (?, ?)",
-            ("trusted_clients", '["uk-smr-nuc15pro", "uk-smr-twiggy-win11"]'),
+            ("trusted_clients", default_trusted),
         )
         self._conn.execute(
             "INSERT OR IGNORE INTO dreamer_config (key, value) VALUES (?, ?)",

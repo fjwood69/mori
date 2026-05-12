@@ -34,8 +34,8 @@ BIFROST_BASE_URL = os.environ.get("MOKU_BASE_URL", "http://localhost:8787")
 BIFROST_TIMEOUT = int(os.environ.get("MOKU_BIFROST_TIMEOUT", "300"))
 TRUSTED_DREAMERS = os.environ.get(
     "MOKU_TRUSTED_DREAMERS",
-    "uk-smr-nuc15pro,uk-smr-twiggy-win11",
-).split(",")
+    "",
+).split(",") if os.environ.get("MOKU_TRUSTED_DREAMERS") else []
 
 # Event capture auth
 EVENTS_API_KEY = os.environ.get("MOKU_ADVISOR_API_KEY", "")
@@ -574,16 +574,8 @@ def _map_hook_payload(raw: dict, client_override: str = "") -> EventLogEntry:
     client = client_override or raw.get("client", "")
     if not client:
         cwd = raw.get("cwd", "")
-        if cwd.startswith("/home/nucadmin") or cwd.startswith("/mnt"):
-            client = "uk-smr-nuc15pro"
-        elif cwd.startswith("C:\\Users") or "twiggy" in cwd.lower():
-            client = "uk-smr-twiggy-win11"
-        elif cwd.startswith("/home/piadmin"):
-            client = "uk-smr-raspi5"
-        elif cwd.startswith("/home/fred"):
-            client = "uk-smr-crostini-cb14p"
-        elif cwd.startswith("/mnt/c/Users"):
-            client = "uk-smr-ux3405-win11"
+        # CWD-based client detection — customize for your environment
+        pass
 
     tool_input = raw.get("tool_input")
     if tool_input is not None and not isinstance(tool_input, str):
