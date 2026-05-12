@@ -24,7 +24,7 @@ FROM python:${PYTHON_VERSION}-alpine AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH="/app/src:$PYTHONPATH"
+ENV PYTHONPATH="/app:$PYTHONPATH"
 
 WORKDIR /app
 
@@ -43,7 +43,7 @@ RUN adduser \
     appuser
 
 # Copy source code
-COPY src/ ./src/
+COPY moku_advisor/ ./moku_advisor/
 
 # Data directory mounted from host, create for ownership
 RUN mkdir -p /data/moku-advisor && chown -R appuser:appuser /data/moku-advisor
