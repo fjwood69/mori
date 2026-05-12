@@ -18,6 +18,7 @@ Together, Groq, local Ollama, etc.)**
 | `moku-dream_run` | Batch distills session events into structured memories |
 | `moku-dream_status` | Shows dream pipeline state (watermark, backlog) |
 | `moku-memory_export` / `moku-memory_import` | Portability — move memories between instances |
+| `moku-standards_reload` | Re-import team standards from disk (trusted dreamers only) |
 
 Plus four slash commands (`/brief`, `/consult`, `/dream`, `/pensieve`)
 that wire these tools into Claude Code's workflow.
@@ -116,6 +117,7 @@ dream pipeline uses to produce memories.
 | `MOKU_ADVISOR_DATA` | `/data/moku-advisor` | Where SQLite DB lives |
 | `MOKU_ADVISOR_API_KEY` | — | Auth key for event capture endpoint (empty = no auth) |
 | `MOKU_TRUSTED_DREAMERS` | — | Comma-separated hostnames that auto-approve protected memory writes |
+| `MOKU_STANDARDS_DIR` | — | Path to directory of .md files to import as team standards (see Standards section) |
 | `MOKU_BIFROST_ADVISOR_VK` | `moku-advisor-local` | VK key for advisor (Bifrost mode) |
 | `MOKU_BIFROST_DREAM_VK` | `moku-dream-local` | VK key for dream (Bifrost mode) |
 | `MOKU_BIFROST_TIMEOUT` | `300` | API timeout in seconds |
@@ -147,18 +149,58 @@ or schedule it:
 /loop 4h /dream
 ```
 
-**Recommended models for dream**: We tested several options. DeepSeek V4
-Flash and V4 Pro struggled with reliable JSON output (returned content in
-`reasoning` rather than `content` fields). Gemma 4 31B-it was adequate.
-**Kimi K2.6** produced the most consistent structured output with good
-judgment about what to keep and what to discard — it's our recommended
-default. Set it via `MOKU_DREAM_MODEL=moonshotai/kimi-k2.6`.
+**Recommended models for dream**: The dream model needs reliable structured
+JSON output and good judgment about what to retain. Choose a model with
+strong instruction-following and rationalisation capabilities. Set it via
+`MOKU_DREAM_MODEL`.
 
 ### Consult advisor
 
 A configurable LLM receives your question plus optional file context
 and returns strategic guidance. Supports focus areas (architecture,
 security, performance, style) and depth levels (quick, balanced, deep).
+
+When a specific focus is given (`--focus security`), relevant team standards
+are automatically pulled from memory and injected into the context —
+so the advisor checks your code against your own baseline, not generic advice.
+
+You can also pass tool output as file context:
+```
+/consult "review this auth handler against our security baseline" \
+  --focus security --file src/auth.py --file snyk-report.json
+```
+This lets you chain existing tooling (Snyk, linters, SAST scanners) into the
+advisory flow — CC runs the scan, then feeds the results to the advisor
+alongside your team standards.
+
+### Standards
+
+Teams can supply their own context — security baselines, coding standards,
+architecture principles, company ethos — as plain markdown files in a
+directory tree. Set `MOKU_STANDARDS_DIR` to a path like:
+
+```
+/path/to/standards/
+  ethos/
+    values-and-ethical-principles.md
+  security/
+    security-baseline.md
+    pii-handling.md
+  coding/
+    python-style-guide.md
+```
+
+On server startup, every `.md` file is imported as a protected memory with
+`type: standard` and tags reflecting its category (`security`, `coding`,
+etc.). Standards are **auto-protected**: only trusted dreamers
+(`MOKU_TRUSTED_DREAMERS`) can modify them directly. Everyone else reads
+them via `memory_search --tag <category>`.
+
+To update standards without restarting, call `moku-standards_reload`
+(trusted dreamers only).
+
+The `examples/standards/` directory contains sample files to use as a
+starting point.
 
 ## For teams
 

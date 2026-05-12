@@ -20,7 +20,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-VALID_TYPES = {"project", "profile", "pattern", "decision"}
+VALID_TYPES = {"project", "profile", "pattern", "decision", "standard"}
 DEFAULT_EXPORT_DIR = "exports"
 MAX_VERSIONS_PER_MEMORY = 20
 
@@ -191,7 +191,7 @@ class MemoryStore:
         )
         self._conn.execute(
             "INSERT OR IGNORE INTO dreamer_config (key, value) VALUES (?, ?)",
-            ("protected_tag_prefixes", '["infra", "reference"]'),
+            ("protected_tag_prefixes", '["infra", "reference", "standard"]'),
         )
 
         self._conn.commit()
@@ -366,6 +366,7 @@ class MemoryStore:
         origin_session_ids: list[str] | None = None,
         origin_clients: list[str] | None = None,
         client: str | None = None,
+        _skip_protection: bool = False,
     ) -> str:
         """Create or update a memory entry (upsert by name).
 
@@ -373,6 +374,10 @@ class MemoryStore:
 
         If the memory is protected and the client is not a trusted dreamer,
         the write is queued as a pending write instead.
+
+        Args:
+            _skip_protection: Internal flag to bypass protection checks
+                              (used by standards import).
         """
         import sqlite3
 
@@ -393,7 +398,7 @@ class MemoryStore:
         except sqlite3.Error:
             existing_row = None
 
-        if self._is_protected(effective_name, tags_list, existing_row):
+        if not _skip_protection and self._is_protected(effective_name, tags_list, existing_row):
             if not self._is_trusted_client(client):
                 # Queue as pending write instead
                 self._conn.execute(

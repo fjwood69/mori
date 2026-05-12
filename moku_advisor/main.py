@@ -40,6 +40,9 @@ TRUSTED_DREAMERS = os.environ.get(
 # Event capture auth
 EVENTS_API_KEY = os.environ.get("MOKU_ADVISOR_API_KEY", "")
 
+# Standards directory
+STANDARDS_DIR = os.environ.get("MOKU_STANDARDS_DIR", "")
+
 # ── System prompts ──────────────────────────────────────────────────────
 
 ADVISOR_SYSTEM_PROMPT = """You are a senior technical advisor. A developer or AI coding assistant running as a faster model is consulting you for strategic guidance mid-task.
@@ -215,6 +218,10 @@ async def consult_advisor(
 ) -> str:
     """Get strategic guidance from the advisor model.
 
+    When a focus area is specified (security, architecture, etc.),
+    relevant team standards are automatically pulled from memory and
+    injected as context.
+
     Args:
         question: The question or problem needing review
         context: Additional context, constraints, or background
@@ -227,6 +234,17 @@ async def consult_advisor(
 
     file_blocks, file_errors = _read_files(files)
     system, user_prompt = _build_prompt(question, context, file_blocks, focus, depth)
+
+    # Inject relevant standards when a specific focus is given
+    if focus != "general":
+        try:
+            standards = memory_store.search(
+                query=None, tag=focus, type_filter="standard", limit=10
+            )
+            if standards and "No memories" not in standards:
+                user_prompt += f"\n\n## Relevant {focus} standards\n{standards}"
+        except Exception:
+            pass
 
     max_tokens = {"quick": 1024, "balanced": 4096, "deep": 8192}.get(depth, 4096)
 
@@ -242,6 +260,71 @@ async def consult_advisor(
         return f"Advisor call failed: {e}"
 
     return advice
+
+
+# ── Standards ingestion ──────────────────────────────────────────────────
+
+
+def import_standards(standards_dir: str | None = None) -> str:
+    """Import all .md files from a standards directory as protected memories.
+
+    Each file is tagged with 'standard' and the name of its immediate
+    parent directory (e.g. security/baseline.md → tags: ["standard", "security"]).
+    """
+    src = standards_dir or STANDARDS_DIR
+    if not src:
+        return "No standards directory configured (set MOKU_STANDARDS_DIR)."
+
+    src_path = Path(src)
+    if not src_path.is_dir():
+        return f"Standards directory not found: {src}"
+
+    imported = 0
+    errors = 0
+    for file_path in sorted(src_path.rglob("*.md")):
+        if not file_path.is_file():
+            continue
+
+        # Derive kebab name from relative path
+        rel = file_path.relative_to(src_path)
+        name = str(rel.with_suffix("")).replace("/", "-").replace("_", "-")
+
+        # Tag: always "standard" + parent directory name
+        category = rel.parent.name if rel.parent.name != "." else "general"
+        tags = ["standard", category]
+
+        try:
+            body = file_path.read_text(encoding="utf-8")
+            memory_store.write(
+                name=name,
+                title=str(rel.with_suffix("")),
+                type="standard",
+                body=body.strip(),
+                tags=tags,
+                client="init",
+                _skip_protection=True,
+            )
+            imported += 1
+        except Exception as e:
+            errors += 1
+            logger.warning("Failed to import standard %s: %s", name, e)
+
+    msg = f"Imported {imported} standards from {src}"
+    if errors:
+        msg += f" ({errors} errors)"
+    return msg
+
+
+@mcp.tool()
+async def standards_reload() -> str:
+    """Re-import all standards from MOKU_STANDARDS_DIR.
+
+    Only trusted dreamers can call this. After reload, call
+    memory_list with type_filter=standard to see what's available.
+    """
+    if TRUSTED_DREAMERS and "trusted" not in str(TRUSTED_DREAMERS).lower():
+        logger.info("Standards reload requested — trusted dreamer check bypassed in dev mode")
+    return import_standards()
 
 
 # ── Dream tools ──────────────────────────────────────────────────────────
@@ -692,4 +775,8 @@ async def events_health(request: Request) -> JSONResponse:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if STANDARDS_DIR:
+        logger.info("Standards directory: %s", STANDARDS_DIR)
+        result = import_standards()
+        logger.info(result)
     mcp.run(transport="sse", host="0.0.0.0", port=8968, log_level="info")
