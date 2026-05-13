@@ -202,6 +202,30 @@ To update standards without restarting, call `moku-standards_reload`
 The `examples/standards/` directory contains sample files to use as a
 starting point.
 
+### Session grounding
+
+Moku uses **session grounding** rather than per-query RAG. Every time a
+Claude Code session starts, `/brief` loads both shared memories and team
+standards into the assistant's context. From turn one, the model knows
+your security baseline, coding conventions, and company ethos — no need
+to ask.
+
+When the standards corpus grows beyond a single context window (50+
+documents, or multiple lines of business), scale by running separate Moku
+instances per namespace rather than adding retrieval:
+
+```bash
+# Instance for retail team
+docker run ... -e MOKU_STANDARDS_DIR=/standards/retail
+
+# Instance for energy team
+docker run ... -e MOKU_STANDARDS_DIR=/standards/energy
+```
+
+Each instance has its own SQLite database and standards directory. No
+cross-contamination risk, no vector database needed. Clients connect
+to the instance that serves their team.
+
 ## For teams
 
 Each team member runs their own Claude Code instance connected to the
