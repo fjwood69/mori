@@ -31,6 +31,25 @@ Ignore: one-off bugs, standard fixes, noise, anything recoverable from docs or g
 
 Return ONLY the JSON array. No prose outside it."""
 
+CONTRADICTION_SCAN_PROMPT = """You are comparing two technical memories for logical contradictions.
+
+New memory (just written):
+Title: {new_title}
+Body:
+{new_body}
+
+Existing memory (from the shared store):
+Title: {existing_title}
+Body:
+{existing_body}
+
+Does the new memory contradict or supersede the existing memory?
+Answer with exactly one word: SUPERSEDES, RELATED, or UNRELATED.
+
+SUPERSEDES = the new memory invalidates, replaces, or directly contradicts the existing one.
+RELATED = they discuss related topics but don't contradict each other.
+UNRELATED = they cover completely different topics."""
+
 
 class DreamPipeline:
     """Pipeline that reads session events, calls a model to distill them,
@@ -46,12 +65,14 @@ class DreamPipeline:
         bifrost_client: BifrostClient,
         trusted_dreamers: list[str] | None = None,
         retention_buffer: int = 5000,
+        nats_url: str | None = None,
     ):
         self.db_path = Path(db_path)
         self.client = bifrost_client
         self.session_log = SessionLog(db_path)
         self.trusted_dreamers = trusted_dreamers or []
         self.retention_buffer = retention_buffer
+        self.nats_url = nats_url
 
     # ── Public API ───────────────────────────────────────────────────────
 
@@ -159,6 +180,23 @@ class DreamPipeline:
 
         max_id = max(e["id"] for e in events)
         self._set_watermark(max_id)
+
+        # Contradiction scan: check new memories against existing canonical ones
+        superseded = 0
+        if written > 0:
+            try:
+                superseded = self._contradiction_scan(memories)
+                if superseded > 0:
+                    logger.info("Contradiction scan: %s existing memories superseded", superseded)
+            except Exception as e:
+                logger.warning("Contradiction scan failed: %s", e)
+
+        # Notify via NATS if eviction events were detected
+        if superseded > 0 and self.nats_url:
+            try:
+                self._publish_eviction_notice(superseded)
+            except Exception as e:
+                logger.warning("NATS eviction notice failed: %s", e)
 
         pruned = self.session_log.prune_events(max(0, max_id - self.retention_buffer))
         logger.info("Pruned %s events older than id %s", pruned, max(0, max_id - self.retention_buffer))
@@ -288,9 +326,120 @@ class DreamPipeline:
             title=path.replace(".md", "").replace("/", " — "),
             description=mem.get("reason", ""),
             type=self._infer_type(path),
+            tier="working",
             body=body,
             tags=["dream-phase", action.lower()],
             origin_session_ids=batch_session_ids,
             origin_clients=batch_clients,
         )
         return f"{action} {name}"
+
+    # ── NATS eviction notice ──────────────────────────────────────────
+
+    def _publish_eviction_notice(self, superseded_count: int) -> None:
+        """Publish a short NATS message about eviction events from this dream run.
+
+        Fire-and-forget — errors are logged, never propagated.
+        """
+        import json
+        import socket
+        import nats
+
+        hostname = socket.gethostname()
+        message = (
+            f"Dream pipeline superseded {superseded_count} memory(ies) on {hostname}. "
+            f"Run `/pensieve --eviction-queue` or `memory_review` to review."
+        )
+        payload = json.dumps({
+            "from": hostname,
+            "text": message,
+            "ts": __import__("time").time(),
+            "type": "eviction-notice",
+        })
+
+        try:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            nc = loop.run_until_complete(nats.connect(self.nats_url))
+            loop.run_until_complete(nc.publish("cc.moku", payload.encode()))
+            loop.run_until_complete(nc.flush())
+            loop.run_until_complete(nc.drain())
+            loop.close()
+        except Exception as e:
+            logger.debug("NATS publish failed: %s", e)
+
+    # ── Contradiction scan ────────────────────────────────────────────
+
+    def _contradiction_scan(self, new_memories: list[dict]) -> int:
+        """Check new memories against existing canonical ones for contradictions.
+
+        For each new memory, searches for existing canonical memories with
+        overlapping tags/name prefixes and runs a lightweight LLM check.
+        Returns count of supersessions detected.
+        """
+        from moku_advisor.memory_store import MemoryStore
+        store = MemoryStore(db_path=self.db_path)
+        import sqlite3
+
+        superseded_count = 0
+
+        for mem in new_memories:
+            path = mem.get("path", "")
+            if not path:
+                continue
+
+            # Derive candidate search terms from the new memory
+            name = self._path_to_name(path)
+            prefix = name.split("-")[0] if "-" in name else name
+
+            try:
+                cur = store._conn.execute(
+                    """
+                    SELECT name, title, body FROM memories
+                    WHERE tier = 'canonical'
+                      AND superseded_by IS NULL
+                      AND (name LIKE ? OR name LIKE ? OR tags LIKE ?)
+                    LIMIT 5
+                    """,
+                    (f"{prefix}%", f"%-{prefix}%", f'%"{prefix}"%'),
+                )
+                candidates = cur.fetchall()
+            except sqlite3.Error:
+                continue
+
+            for cand_name, cand_title, cand_body in candidates:
+                if not cand_body:
+                    continue
+
+                try:
+                    prompt = CONTRADICTION_SCAN_PROMPT.format(
+                        new_title=path.replace("/", " — "),
+                        new_body=mem.get("body", "")[:2000],
+                        existing_title=cand_title,
+                        existing_body=cand_body[:2000],
+                    )
+                    response = self.client.consult(
+                        system=prompt,
+                        user=f"new: {name}\nexisting: {cand_name}",
+                        vk="advisor",
+                        max_tokens=16,
+                        temperature=0.0,
+                    )
+                    verdict = (response or "").strip().upper()
+                    if verdict == "SUPERSEDES":
+                        store._conn.execute(
+                            "UPDATE memories SET superseded_by = ?, updated_at = datetime('now') WHERE name = ?",
+                            (name, cand_name),
+                        )
+                        store._conn.execute(
+                            "INSERT INTO eviction_queue (memory_name, reason, detail) VALUES (?, 'superseded', ?)",
+                            (cand_name, f"Superseded by '{name}' in dream run"),
+                        )
+                        store._conn.commit()
+                        superseded_count += 1
+                        logger.info("Superseded %s with %s", cand_name, name)
+                except Exception as e:
+                    logger.debug("Contradiction check failed %s vs %s: %s", name, cand_name, e)
+
+        return superseded_count

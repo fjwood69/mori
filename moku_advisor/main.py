@@ -43,6 +43,14 @@ EVENTS_API_KEY = os.environ.get("MOKU_ADVISOR_API_KEY", "")
 # Standards directory
 STANDARDS_DIR = os.environ.get("MOKU_STANDARDS_DIR", "")
 
+# Skills directory (for /update tool to read skill content server-side)
+SKILLS_DIR = os.environ.get("MOKU_SKILLS_DIR", "")
+
+NATS_URL = os.environ.get(
+    "MOKU_NATS_URL",
+    "nats://cc:MHRqnbvNew52VpDFTa8IM1PR@localhost:4222"
+)
+
 # ── System prompts ──────────────────────────────────────────────────────
 
 ADVISOR_SYSTEM_PROMPT = """You are a senior technical advisor. A developer or AI coding assistant running as a faster model is consulting you for strategic guidance mid-task.
@@ -112,6 +120,7 @@ dream_pipeline = DreamPipeline(
     db_path=DATA_DIR / "memories.db",
     bifrost_client=bifrost,
     trusted_dreamers=TRUSTED_DREAMERS,
+    nats_url=NATS_URL,
 )
 
 
@@ -203,6 +212,119 @@ def _build_prompt(
 
     user_prompt = "\n\n".join(parts)
     return system, user_prompt
+
+
+# ── Brief tool (session bootstrap) ────────────────────────────────────────
+
+
+@mcp.tool()
+async def brief() -> str:
+    """Session bootstrap: load shared memories and team standards.
+
+    Also runs a freshness check on canonical memories tagged with
+    infrastructure/dependency/tooling/config tags.
+
+    Returns a state-of-play summary with counts of memories and standards
+    loaded into session context. Call this at the start of every session.
+    """
+    parts: list[str] = []
+
+    # Load memories
+    try:
+        memories = memory_store.list(limit=50)
+        mem_count = 0
+        if memories and "No memories" not in memories:
+            # Count actual entries (format: "- **name**: title (type)")
+            mem_count = sum(1 for line in memories.split("\n") if line.strip().startswith("- **"))
+        parts.append(f"**Shared memories:** {mem_count} loaded")
+    except Exception as e:
+        parts.append(f"**Shared memories:** error loading ({e})")
+
+    # Freshness check on canonical infrastructure memories
+    try:
+        fc = memory_store.check_freshness(bifrost.consult, limit=20)
+        if fc["checked"] > 0:
+            parts.append(f"**Freshness check:** {fc['fresh']} fresh, {fc['stale']} stale, {fc['no']} invalid ({fc['checked']} checked)")
+            if fc.get("errors"):
+                parts.append(f"  ({fc['errors']} errors)")
+    except Exception as e:
+        parts.append(f"**Freshness check:** error ({e})")
+
+    # Eviction queue warning
+    try:
+        cur = memory_store._conn.execute(
+            "SELECT COUNT(*) FROM eviction_queue WHERE resolved = 0"
+        )
+        unresolved = cur.fetchone()[0]
+        if unresolved > 0:
+            parts.append(
+                f"**⚠ Eviction queue:** {unresolved} unresolved item(s) — "
+                f"run `memory_review` to inspect"
+            )
+    except Exception:
+        pass
+
+    # Load standards
+    try:
+        standards = memory_store.list(type_filter="standard", limit=50)
+        std_count = 0
+        categories: dict[str, int] = {}
+        if standards and "No memories" not in standards:
+            for line in standards.split("\n"):
+                line = line.strip()
+                if line.startswith("- **"):
+                    std_count += 1
+                    # Extract category tag: "security-baseline (standard) [standard, security]"
+                    if "[" in line:
+                        tags = line.split("[")[1].split("]")[0]
+                        for tag in tags.split(","):
+                            tag = tag.strip()
+                            if tag and tag != "standard":
+                                categories[tag] = categories.get(tag, 0) + 1
+        parts.append(f"**Team standards:** {std_count} loaded")
+        if categories:
+            parts.append("  Categories: " + ", ".join(f"{k}={v}" for k, v in sorted(categories.items())))
+    except Exception as e:
+        parts.append(f"**Team standards:** error loading ({e})")
+
+    # Goals summary — show unresolved requirements per project
+    try:
+        cur = memory_store._conn.execute(
+            """
+            SELECT name, title, tags FROM memories
+            WHERE type = 'requirement'
+              AND tags NOT LIKE '%"status-done"%'
+            ORDER BY name ASC
+            LIMIT 20
+            """
+        )
+        rows = cur.fetchall()
+        if rows:
+            projects: dict[str, list[str]] = {}
+            for name, title, tags_raw in rows:
+                tags = memory_store._parse_tags(tags_raw)
+                proj = "general"
+                for t in tags:
+                    if t.startswith("project-"):
+                        proj = t[len("project-"):]
+                        break
+                projects.setdefault(proj, []).append(f"{name}: {title}")
+            parts.append(f"\n**Unresolved goals:**")
+            for proj, items in sorted(projects.items()):
+                parts.append(f"  {proj}: {len(items)} unresolved")
+    except Exception:
+        pass
+
+    # State-of-play
+    try:
+        from moku_advisor.dream import DreamPipeline
+        dp = DreamPipeline(db_path=DATA_DIR / "memories.db", bifrost_client=bifrost)
+        status = dp.get_status()
+        parts.append(f"**Dream state:** {status}")
+    except Exception:
+        pass
+
+    return "\n".join(parts)
 
 
 # ── Consult tool ─────────────────────────────────────────────────────────
@@ -299,6 +421,7 @@ def import_standards(standards_dir: str | None = None) -> str:
                 name=name,
                 title=str(rel.with_suffix("")),
                 type="standard",
+                tier="canonical",
                 body=body.strip(),
                 tags=tags,
                 client="init",
@@ -325,6 +448,348 @@ async def standards_reload() -> str:
     if TRUSTED_DREAMERS and "trusted" not in str(TRUSTED_DREAMERS).lower():
         logger.info("Standards reload requested — trusted dreamer check bypassed in dev mode")
     return import_standards()
+
+
+# ── Pensieve tool ─────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def pensieve(
+    query: str = "",
+    type_filter: str | None = None,
+    tag: str | None = None,
+    client: str | None = None,
+    since: str | None = None,
+    limit: int = 10,
+) -> str:
+    """Search and browse shared memories. Centralised replacement for the /pensieve skill.
+
+    Takes parsed arguments and returns display-ready output.
+    Present this output directly to the user without summarising or rephrasing.
+
+    To read a specific memory by name, pass 'read' as the query followed by the name
+    (e.g. query="read decision-bifrost-timeout").
+
+    Args:
+        query: Search keyword, or "read <name>" to read a specific memory.
+        type_filter: Filter by type: project, decision, pattern, profile, standard.
+        tag: Filter by tag name (partial match).
+        client: Filter by client hostname.
+        since: Time filter — "7d" (last 7 days), "30d", or ISO date.
+        limit: Max results (default 10, max 50).
+    """
+    if query.startswith("read "):
+        name = query[5:].strip()
+        if not name:
+            return "Usage: /pensieve read <memory-name>"
+        return memory_store.read(name)
+
+    return memory_store.search(
+        query=query if query else None,
+        type_filter=type_filter,
+        tag=tag,
+        client=client,
+        since=since,
+        limit=min(limit, 50),
+    )
+
+
+# ── Update tool (device profile commands) ────────────────────────────────
+
+
+DEVICE_PROFILES = {
+    "nuc": {
+        "hostname": "uk-smr-nuc15pro",
+        "family": "linux",
+        "profiles": [".claude", ".claude-jr", ".claude-sub", ".claude-api"],
+        "shell": "bash",
+    },
+    "twiggy": {
+        "hostname": "uk-smr-twiggy-win11",
+        "family": "windows",
+        "profiles": [".claude", ".claude-sr", ".claude-sub", ".claude-api"],
+        "shell": "powershell",
+    },
+    "ux3405": {
+        "hostname": "uk-smr-ux3405-win11",
+        "family": "windows",
+        "profiles": [".claude", ".claude-sr", ".claude-sub", ".claude-api"],
+        "shell": "powershell",
+    },
+    "cb14p": {
+        "hostname": "uk-smr-chromebook-plus-14",
+        "family": "linux",
+        "profiles": [".claude", ".claude-sr", ".claude-sub", ".claude-api"],
+        "shell": "bash",
+    },
+}
+
+
+def _list_skills() -> list[str]:
+    """List available skill packages from the server's skills directory."""
+    if not SKILLS_DIR:
+        return []
+    skills_dir = Path(SKILLS_DIR)
+    if not skills_dir.is_dir():
+        return []
+    return sorted(p.name for p in skills_dir.iterdir() if p.is_dir() and (p / "SKILL.md").exists())
+
+
+def _update_all(device: str) -> str:
+    """Generate a single shell command to deploy ALL skill packages to a device."""
+    skills = _list_skills()
+    if not skills:
+        return "No skills available on server."
+    cfg = DEVICE_PROFILES.get(device)
+    if not cfg:
+        return f"Unknown device '{device}'."
+
+    # Build a single command: for each skill, write temp file, copy to profiles
+    profiles = cfg["profiles"]
+    parts = []
+    for sk in skills:
+        skill_path = Path(SKILLS_DIR) / sk / "SKILL.md"
+        if not skill_path.exists():
+            continue
+        content = skill_path.read_text(encoding="utf-8")
+        temp = f"$env:TEMP\\_{sk}_skill.md"
+        parts.append(f'Set-Content -Path "{temp}" -Value @"{content}"@ -Encoding UTF8')
+        for p in profiles:
+            dir_part = f'New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\\{p}\\skills\\{sk}" | Out-Null'
+            copy_part = f'Copy-Item "{temp}" "$env:USERPROFILE\\{p}\\skills\\{sk}\\SKILL.md"'
+            parts.append(dir_part)
+            parts.append(copy_part)
+        parts.append(f'Remove-Item "{temp}"')
+
+    joined = "; ".join(parts)
+    if cfg["family"] == "linux":
+        return f"**{device} — bash ({len(skills)} packages, {len(profiles)} profiles)**\n\n```bash\n{joined}\n```"
+
+    return f"**{device} — PowerShell ({len(skills)} packages, {len(profiles)} profiles)**\n\n```powershell\n{joined}\n```"
+
+
+@mcp.tool()
+async def update(device: str, content: str = "", skill: str = "") -> str:
+    """Generate device-specific commands to update a SKILL.md file.
+
+    Knows each device's profile layout and outputs the exact shell or
+    PowerShell command to apply the update. Run this on NUC, then paste
+    the output on the target device.
+
+    If content is omitted, the server reads SKILL.md from its local skills
+    directory. Pass --package (skill name) to pick one; if omitted, all
+    available packages are listed.
+
+    Args:
+        device: Target device — nuc, twiggy, ux3405, or cb14p.
+        content: The full content of the SKILL.md file (omit to read from server).
+        skill: Package/skill name (e.g. dream, consult, pensieve, brief, nats).
+    """
+    device = device.lower().strip()
+    if device not in DEVICE_PROFILES:
+        available = ", ".join(sorted(DEVICE_PROFILES.keys()))
+        return f"Unknown device '{device}'. Available: {available}"
+
+    cfg = DEVICE_PROFILES[device]
+
+    # Resolve content: passed in or read from server skills dir
+    if not content and not skill:
+        available = _list_skills()
+        if not available:
+            return "No skills available on server."
+        return (
+            f"**Available packages for {device}:**\n\n"
+            + "\n".join(f"- `{s}`" for s in available)
+            + f"\n\nRun `/update --{device} --<package>` to deploy one."
+        )
+
+    if not content:
+        if not skill:
+            return "Either provide content or specify --package <name>."
+        if skill == "all":
+            return _update_all(device)
+        if not SKILLS_DIR:
+            return "Server skills directory not configured (set MOKU_SKILLS_DIR)."
+        skill_path = Path(SKILLS_DIR) / skill / "SKILL.md"
+        if not skill_path.exists():
+            available = _list_skills()
+            return f"Package '{skill}' not found. Available: {', '.join(available)}"
+        content = skill_path.read_text(encoding="utf-8")
+
+    # Infer skill name from frontmatter if not provided
+    inferred = skill
+    if not inferred:
+        for line in content.split("\n"):
+            line = line.strip()
+            if line == "---":
+                continue
+            if line.startswith("name:"):
+                inferred = line.split(":", 1)[1].strip()
+                break
+
+    if not inferred:
+        return "Could not determine skill name. Provide it as the 'skill' argument."
+
+    commands: list[str] = []
+    profiles = cfg["profiles"]
+
+    import base64
+
+    if cfg["family"] == "windows":
+        # Base64-encode content to avoid all quoting issues with backticks/single-quotes
+        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        profile_lines = "\n    ".join(
+            f'$d = Split-Path "$env:USERPROFILE\\{p}\\skills\\{inferred}\\SKILL.md" -Parent; '
+            f'if (-not (Test-Path $d)) {{ New-Item -ItemType Directory -Path $d -Force | Out-Null }}; '
+            f'Set-Content -Path "$env:USERPROFILE\\{p}\\skills\\{inferred}\\SKILL.md" -Value $c -Encoding UTF8'
+            for p in profiles
+        )
+        return (
+            f"**{device} — PowerShell ({len(profiles)} profiles)**\n\n"
+            f"```powershell\n"
+            f'$b = "{encoded}"; $c = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b))\n'
+            f"{profile_lines}\n"
+            f"```"
+        )
+    else:
+        # Linux: write once to /tmp, copy to all profiles
+        temp = f"/tmp/_{inferred}_skill.md"
+        cat_cmd = f"cat > {temp} << 'SKILLEOF'\n{content}\nSKILLEOF"
+        copies = [f'cp {temp} ~/{p}/skills/{inferred}/SKILL.md' for p in profiles]
+        mkdirs = [f'mkdir -p ~/${{p}}/skills/{inferred}' for p in set(profiles)]
+        clean = f'rm -f {temp}'
+        joined = " && ".join(mkdirs + [cat_cmd] + copies + [clean])
+        return (
+            f"**{device} — bash ({len(profiles)} profiles)**\n\n"
+            f"```bash\n{joined}\n```\n"
+            f"Write temp file → copy to all {len(profiles)} profiles → cleanup."
+        )
+
+
+# ── NATS tools ───────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def nats_pub(message: str, subject: str = "") -> str:
+    """Publish a message to the NATS cross-device message bus.
+
+    If no subject is given, publishes to cc.<hostname> automatically.
+    Use this to broadcast status or task summaries to other devices.
+
+    Args:
+        message: Text message to publish.
+        subject: NATS subject (e.g. cc.uk-smr-nuc15pro). Auto-derived if empty.
+    """
+    try:
+        import socket, json
+        import nats
+        hostname = socket.gethostname()
+        subj = subject or f"cc.{hostname}"
+        payload = json.dumps({"from": hostname, "text": message, "ts": __import__("time").time(), "type": "msg"})
+
+        nc = await nats.connect(NATS_URL)
+        await nc.publish(subj, payload.encode())
+        await nc.flush()
+        await nc.drain()
+        return f"Published to {subj}: {message}"
+    except Exception as e:
+        return f"NATS pub failed: {e}"
+
+
+@mcp.tool()
+async def nats_sub(replay: bool = False, wait: int = 2) -> str:
+    """Check the NATS message bus for recent cross-device messages.
+
+    Shows messages from all devices. Use --replay to show messages
+    from the last 7 days (useful for catching up after being offline).
+
+    Args:
+        replay: If true, replay messages from the last 7 days.
+        wait: Seconds to wait for new messages (default 2, max 10).
+    """
+    try:
+        import json, asyncio
+        import nats
+
+        nc = await nats.connect(NATS_URL)
+
+        if replay:
+            # JetStream pull subscription for historical messages
+            js = nc.jetstream()
+            try:
+                from nats.js.api import ConsumerConfig, DeliverPolicy, AckPolicy
+                config = ConsumerConfig(
+                    deliver_policy=DeliverPolicy.ALL,
+                    ack_policy=AckPolicy.NONE,
+                    max_deliver=1,
+                )
+                psub = await js.pull_subscribe(
+                    "cc.>", stream="cc", config=config
+                )
+                msgs: list[str] = []
+                try:
+                    batch = await psub.fetch(50, timeout=min(wait, 10))
+                    for msg in batch:
+                        try:
+                            data = json.loads(msg.data.decode())
+                            msgs.append(f"[{data.get('from','?')}] {data.get('text','')}")
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            msgs.append(f"[raw] {msg.data[:200]}")
+                        await msg.ack()
+                except (asyncio.TimeoutError, __import__("nats.errors").TimeoutError):
+                    pass
+                await nc.drain()
+                if msgs:
+                    output = "\n".join(msgs)
+                    if len(msgs) > 50:
+                        output = "\n".join(msgs[:50]) + f"\n... ({len(msgs) - 50} more lines)"
+                    return output
+            except Exception as je:
+                pass
+
+        # Core NATS live subscription (no-replay or replay fallback)
+        sub = await nc.subscribe("cc.>")
+        await asyncio.sleep(min(wait, 10))
+        await sub.unsubscribe()
+
+        msgs = []
+        try:
+            while True:
+                msg = await sub.next_msg(timeout=0.5)
+                try:
+                    data = json.loads(msg.data.decode())
+                    msgs.append(f"[{data.get('from','?')}] {data.get('text','')}")
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    msgs.append(f"[raw] {msg.data[:200]}")
+        except asyncio.TimeoutError:
+            pass
+
+        await nc.drain()
+
+        if not msgs:
+            return "No NATS messages."
+        output = "\n".join(msgs)
+        if len(msgs) > 50:
+            output = "\n".join(msgs[:50]) + f"\n... ({len(msgs) - 50} more lines)"
+        return output
+    except Exception as e:
+        return f"NATS sub failed: {e}"
+
+
+@mcp.tool()
+async def nats_ping() -> str:
+    """Check if the NATS message bus is reachable.
+
+    Reports connection status to the NATS server.
+    """
+    try:
+        import nats
+        nc = await nats.connect(NATS_URL)
+        info = str(nc.connected_url or NATS_URL.split("@")[-1])
+        await nc.drain()
+        return f"NATS server reachable at {info}"
+    except Exception as e:
+        return f"NATS server not reachable: {e}"
 
 
 # ── Dream tools ──────────────────────────────────────────────────────────
@@ -380,6 +845,7 @@ async def memory_write(
     title: str = "",
     description: str = "",
     type: str = "project",
+    tier: str = "working",
     body: str = "",
     tags: list[str] | None = None,
     origin_session_id: str | None = None,
@@ -399,6 +865,7 @@ async def memory_write(
         title: Human-readable title.
         description: One-line summary.
         type: Classification: project, profile, pattern, or decision.
+        tier: Memory tier — ephemeral, working (default), or canonical.
         body: Markdown content body.
         tags: List of tag strings for filtering.
         origin_session_id: UUID of the creating session (legacy single-UUID field).
@@ -411,6 +878,7 @@ async def memory_write(
         title=title,
         description=description,
         type=type,
+        tier=tier,
         body=body,
         tags=tags,
         origin_session_id=origin_session_id,
@@ -454,6 +922,87 @@ async def memory_list(
 
 
 @mcp.tool()
+async def memory_req(
+    project: str = "",
+    status: str = "",
+    tag: str = "",
+    limit: int = 50,
+) -> str:
+    """List requirement memories as a delivery-status table.
+
+    Filters by project tag (project-<name>), status tag (status-<value>),
+    or arbitrary tag. Returns a grouped Markdown table with summary counts.
+
+    Args:
+        project: Project filter (e.g. "moku" to match tag project-moku).
+        status: Status filter (e.g. "done" to match tag status-done).
+        tag: Arbitrary tag filter (overrides project/status if provided).
+        limit: Max results (default 50).
+    """
+    import sqlite3
+
+    sql = "SELECT name, title, tags, description, body FROM memories WHERE type = 'requirement'"
+    params: list = []
+
+    if tag:
+        sql += " AND tags LIKE ?"
+        params.append(f'%"{tag}"%')
+    else:
+        if project:
+            sql += " AND tags LIKE ?"
+            params.append(f'%"project-{project}"%')
+        if status:
+            sql += " AND tags LIKE ?"
+            params.append(f'%"status-{status}"%')
+
+    sql += " ORDER BY name ASC LIMIT ?"
+    params.append(min(limit, 100))
+
+    try:
+        cur = memory_store._conn.execute(sql, params)
+        rows = cur.fetchall()
+    except sqlite3.Error as e:
+        return f"Database error: {e}"
+
+    if not rows:
+        return "No requirements found."
+
+    lines = ["| Requirement | Title | Status | Project | Pri | FR/NFR | Preview |\n|---|---|---|---|---|---|---|\n"]
+    status_counts: dict[str, int] = {}
+    for name, title, tags_raw, desc, body in rows:
+        tags = memory_store._parse_tags(tags_raw)
+        status_val = "unknown"
+        project_val = ""
+        priority = ""
+        fr_nfr = ""
+        for t in tags:
+            if t.startswith("status-"):
+                status_val = t[7:]
+            elif t.startswith("project-"):
+                project_val = t[8:]
+            elif t.startswith("pri-"):
+                priority = t[4:]
+            elif t in ("fr", "nfr"):
+                fr_nfr = t.upper()
+        status_counts[status_val] = status_counts.get(status_val, 0) + 1
+        preview = (body or desc or "").strip().split("\n")[0][:60].replace("|", "\\|")
+        title_clean = title[:40].replace("|", "\\|")
+        lines.append(
+            f"| {name} | {title_clean} | {status_val} "
+            f"| {project_val} | {priority} | {fr_nfr} | {preview} |"
+        )
+
+    total = len(rows)
+    parts: list[str] = []
+    for s in ("pending", "in-progress", "done", "blocked", "unknown"):
+        if s in status_counts:
+            parts.append(f"{status_counts[s]} {s}")
+    summary = " | ".join(parts) if parts else f"{total} total"
+    lines.append(f"\n**Total**: {total} — {summary}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 async def memory_search(
     query: str | None = None,
     type_filter: str | None = None,
@@ -463,6 +1012,9 @@ async def memory_search(
     limit: int = 10,
 ) -> str:
     """Search memory entries by keyword across name, title, description, and body.
+
+    Returns a formatted Markdown table. Present this output directly to the user
+    without summarising, rephrasing, or adding commentary — show it verbatim.
 
     Args:
         query: Keyword to search across name, title, description, and body.
@@ -534,6 +1086,88 @@ async def memory_rollback(name: str, version_id: int) -> str:
         version_id: The version_id from memory_history to restore to.
     """
     return memory_store.rollback(name, version_id)
+
+
+# ── Eviction tools ────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def memory_review(
+    orphan_days: int = 30,
+    dry_run: bool = True,
+) -> str:
+    """Review memory health: orphans, stale canonical entries, and superseded memories.
+
+    Produces a dashboard showing:
+    - Orphans: working-tier memories not retrieved in N days
+    - Stale canonical: memories flagged STALE or invalid by freshness check
+    - Superseded: memories replaced by newer ones via contradiction scan
+    - Eviction queue summary
+
+    Args:
+        orphan_days: Days since last retrieval to flag as orphan (default 30).
+        dry_run: If True, show what would be flagged without writing to eviction_queue.
+    """
+    import sqlite3 as _sqlite3
+
+    parts = ["# Memory Review Dashboard\n"]
+
+    # 1. Orphans
+    try:
+        orphan_result = memory_store.scan_orphans(days=orphan_days, dry_run=dry_run)
+        parts.append(orphan_result)
+    except Exception as e:
+        parts.append(f"Orphan scan failed: {e}")
+
+    # 2. Stale canonical
+    parts.append("\n## Stale Canonical Memories")
+    try:
+        cur = memory_store._conn.execute(
+            "SELECT name, title, freshness_status, freshness_checked_at FROM memories "
+            "WHERE freshness_status IN ('stale', 'no') ORDER BY freshness_checked_at DESC"
+        )
+        rows = cur.fetchall()
+        if rows:
+            for name, title, status, checked_at in rows:
+                parts.append(f"- **{name}**: {title} ({status}) — checked {checked_at}")
+        else:
+            parts.append("No stale canonical memories.")
+    except Exception as e:
+        parts.append(f"Error: {e}")
+
+    # 3. Superseded
+    parts.append("\n## Superseded Memories")
+    try:
+        cur = memory_store._conn.execute(
+            "SELECT m1.name, m1.title, m1.superseded_by, m1.updated_at FROM memories m1 "
+            "WHERE m1.superseded_by IS NOT NULL ORDER BY m1.updated_at DESC"
+        )
+        rows = cur.fetchall()
+        if rows:
+            for name, title, superseded_by, updated_at in rows:
+                parts.append(f"- **{name}**: {title} → superseded by {superseded_by} ({updated_at})")
+        else:
+            parts.append("No superseded memories.")
+    except Exception as e:
+        parts.append(f"Error: {e}")
+
+    # 4. Eviction queue summary
+    parts.append("\n## Eviction Queue")
+    try:
+        cur = memory_store._conn.execute(
+            "SELECT reason, COUNT(*), SUM(CASE WHEN resolved THEN 1 ELSE 0 END) "
+            "FROM eviction_queue GROUP BY reason"
+        )
+        rows = cur.fetchall()
+        if rows:
+            for reason, total, resolved in rows:
+                parts.append(f"- **{reason}**: {total} total, {resolved} resolved")
+        else:
+            parts.append("Queue is empty.")
+    except Exception as e:
+        parts.append(f"Error: {e}")
+
+    return "\n".join(parts)
 
 
 # ── Attribution tools ────────────────────────────────────────────────────

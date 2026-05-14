@@ -20,9 +20,25 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-VALID_TYPES = {"project", "profile", "pattern", "decision", "standard"}
+VALID_TYPES = {"project", "profile", "pattern", "decision", "standard", "requirement"}
+VALID_TIERS = {"ephemeral", "working", "canonical"}
 DEFAULT_EXPORT_DIR = "exports"
 MAX_VERSIONS_PER_MEMORY = 20
+
+FRESHNESS_CHECK_PROMPT = """You are checking if a piece of technical documentation is still accurate.
+
+Memory:
+Title: {title}
+Tags: {tags}
+Body:
+{body}
+
+Based on typical project evolution, is this memory still accurate?
+Answer with exactly one word: YES, NO, or STALE.
+
+YES = still completely accurate and relevant
+NO = no longer accurate, should be ignored or archived
+STALE = partially outdated, needs human review before use"""
 
 
 def _slugify(title: str) -> str:
@@ -101,12 +117,18 @@ class MemoryStore:
             """
         )
 
-        # Add new columns for attribution and protection (safe to run if exist)
+        # Add new columns for attribution, protection, eviction (safe to run if exist)
         new_columns = [
             "origin_session_ids TEXT NOT NULL DEFAULT '[]'",
             "origin_clients TEXT NOT NULL DEFAULT '[]'",
             "protected INTEGER NOT NULL DEFAULT 0",
             "protected_domains TEXT NOT NULL DEFAULT '[]'",
+            "tier TEXT NOT NULL DEFAULT 'working'",
+            "last_retrieved_at TEXT",
+            "retrieval_count INTEGER NOT NULL DEFAULT 0",
+            "freshness_status TEXT NOT NULL DEFAULT 'unknown'",
+            "freshness_checked_at TEXT",
+            "superseded_by TEXT",
         ]
         for col_def in new_columns:
             col_name = col_def.split()[0]
@@ -179,6 +201,28 @@ class MemoryStore:
             """
         )
 
+        # Eviction queue table
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS eviction_queue (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_name TEXT NOT NULL,
+                reason      TEXT NOT NULL,
+                detail      TEXT NOT NULL DEFAULT '',
+                detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+                resolved    INTEGER NOT NULL DEFAULT 0,
+                resolved_at TEXT,
+                note        TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_evict_memory ON eviction_queue(memory_name)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_evict_status ON eviction_queue(resolved)"
+        )
+
         # Seed default trusted dreamer config (overridable via env)
         import os
         default_trusted = os.environ.get(
@@ -206,6 +250,30 @@ class MemoryStore:
     def _ensure_type(self, type_val: str) -> str:
         return type_val if type_val in VALID_TYPES else "project"
 
+    def _ensure_tier(self, tier_val: str | None) -> str:
+        return tier_val if tier_val in VALID_TIERS else "working"
+
+    def _bump_retrieval(self, name: str) -> None:
+        """Increment retrieval_count and update last_retrieved_at for a memory.
+
+        Fire-and-forget — errors are logged, never propagated.
+        """
+        import sqlite3
+
+        try:
+            self._conn.execute(
+                """
+                UPDATE memories
+                SET retrieval_count = COALESCE(retrieval_count, 0) + 1,
+                    last_retrieved_at = datetime('now')
+                WHERE name = ?
+                """,
+                (name,),
+            )
+            self._conn.commit()
+        except sqlite3.Error:
+            logger.debug("Failed to bump retrieval for '%s'", name, exc_info=True)
+
     def _parse_tags(self, raw: str) -> list[str]:
         try:
             return json.loads(raw) if raw else []
@@ -223,6 +291,8 @@ class MemoryStore:
           0:id  1:name  2:title  3:description  4:type  5:body  6:tags
           7:origin_session_id  8:created_at  9:updated_at
           10:origin_session_ids  11:origin_clients  12:protected  13:protected_domains
+          14:tier  15:last_retrieved_at  16:retrieval_count
+          17:freshness_status  18:freshness_checked_at  19:superseded_by
         """
         return {
             "id": row[0],
@@ -239,6 +309,12 @@ class MemoryStore:
             "origin_clients": self._parse_tags(row[11]) if len(row) > 11 else [],
             "protected": bool(row[12]) if len(row) > 12 else False,
             "protected_domains": self._parse_tags(row[13]) if len(row) > 13 else [],
+            "tier": row[14] if len(row) > 14 else "working",
+            "last_retrieved_at": row[15] if len(row) > 15 else None,
+            "retrieval_count": row[16] if len(row) > 16 else 0,
+            "freshness_status": row[17] if len(row) > 17 else "unknown",
+            "freshness_checked_at": row[18] if len(row) > 18 else None,
+            "superseded_by": row[19] if len(row) > 19 else None,
         }
 
     def _memory_not_found(self, name: str) -> str:
@@ -360,6 +436,7 @@ class MemoryStore:
         title: str = "",
         description: str = "",
         type: str = "project",
+        tier: str = "working",
         body: str = "",
         tags: list[str] | None = None,
         origin_session_id: str | None = None,
@@ -386,6 +463,7 @@ class MemoryStore:
             effective_name = f"memory-{int(time.time())}"
 
         effective_type = self._ensure_type(type)
+        effective_tier = self._ensure_tier(tier)
         tags_list = tags or []
         tags_json = self._format_tags(tags_list)
 
@@ -453,7 +531,7 @@ class MemoryStore:
             merged_ids = json.dumps(origin_session_ids or [])
             merged_clients = json.dumps(origin_clients or [])
 
-        # Preserve existing protection flags
+        # Preserve existing protection flags and tier
         protected_val = 0
         protected_domains_val = "[]"
         if existing_row and len(existing_row) > 12:
@@ -461,17 +539,25 @@ class MemoryStore:
         if existing_row and len(existing_row) > 13:
             protected_domains_val = existing_row[13]
 
+        # Don't downgrade canonical to working
+        existing_tier = effective_tier
+        if existing_row and len(existing_row) > 14:
+            existing_tier_val = existing_row[14]
+            if existing_tier_val == "canonical":
+                existing_tier = "canonical"
+
         try:
             self._conn.execute(
                 """
                 INSERT INTO memories
-                    (name, title, description, type, body, tags, origin_session_id,
+                    (name, title, description, type, tier, body, tags, origin_session_id,
                      origin_session_ids, origin_clients, protected, protected_domains)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(name) DO UPDATE SET
                     title               = excluded.title,
                     description         = excluded.description,
                     type                = excluded.type,
+                    tier                = excluded.tier,
                     body                = excluded.body,
                     tags                = excluded.tags,
                     origin_session_id   = COALESCE(excluded.origin_session_id, memories.origin_session_id),
@@ -482,7 +568,7 @@ class MemoryStore:
                     updated_at          = datetime('now')
                 """,
                 (
-                    effective_name, title, description, effective_type, body,
+                    effective_name, title, description, effective_type, existing_tier, body,
                     tags_json, origin_session_id,
                     merged_ids, merged_clients,
                     protected_val, protected_domains_val,
@@ -509,9 +595,10 @@ class MemoryStore:
             return self._memory_not_found(name)
 
         m = self._row_to_dict(row)
+        self._bump_retrieval(m["name"])
         tags_str = ", ".join(m["tags"]) if m["tags"] else "(none)"
         protected_str = "🔒 Protected" if m.get("protected") else ""
-        parts = [
+        parts: list[str] = [
             f"# Memory: {m['name']}",
             f"**Title**: {m['title']}",
             f"**Type**: {m['type']}  |  **Tags**: {tags_str} {protected_str}",
@@ -562,6 +649,10 @@ class MemoryStore:
 
         if not rows:
             return "No memories found."
+
+        # Track retrievals
+        for row in rows:
+            self._bump_retrieval(row[0])
 
         lines = ["# Memories\n"]
         for row in rows:
@@ -636,6 +727,10 @@ class MemoryStore:
 
         if not rows:
             return "No memories found matching your search."
+
+        # Track retrievals
+        for row in rows:
+            self._bump_retrieval(row[0])
 
         lines = ["| Memory | Category | Updated | Preview |\n|--------|----------|---------|---------|\n"]
         for row in rows:
@@ -953,6 +1048,8 @@ class MemoryStore:
                     tags_list = [t.strip() for t in val.strip("[]").split(",") if t.strip()]
             elif key in ("originSessionId", "origin_session_id"):
                 kwargs["origin_session_id"] = val
+            elif key == "tier":
+                kwargs["tier"] = val
 
         if not kwargs.get("name"):
             return None
@@ -1109,3 +1206,127 @@ class MemoryStore:
             return f"Memory '{name}' is now {status}."
         except sqlite3.Error as e:
             return f"Database error: {e}"
+
+    # ── Freshness and eviction ─────────────────────────────────────────
+
+    def check_freshness(
+        self,
+        llm_consult: callable,
+        limit: int = 20,
+    ) -> dict:
+        """Run freshness validation on canonical memories tagged with
+        infrastructure/dependency/tooling/config tags.
+
+        Uses the provided llm_consult(system, user) callable (e.g.
+        BifrostClient.consult) to validate each candidate.
+
+        Returns {"checked": int, "fresh": int, "stale": int, "no": int, "errors": int}.
+        """
+        import sqlite3
+
+        cand_tag_patterns = ["infrastructure", "dependency", "tooling", "config"]
+        like_clauses = " OR ".join(["tags LIKE ?" for _ in cand_tag_patterns])
+        params = [f'%"{t}"%' for t in cand_tag_patterns]
+
+        try:
+            cur = self._conn.execute(
+                f"""
+                SELECT * FROM memories
+                WHERE tier = 'canonical'
+                  AND freshness_status IN ('unknown', 'fresh')
+                  AND ({like_clauses})
+                ORDER BY freshness_checked_at IS NULL DESC, freshness_checked_at ASC
+                LIMIT ?
+                """,
+                params + [limit],
+            )
+            rows = cur.fetchall()
+        except sqlite3.Error as e:
+            logger.warning("Freshness check query failed: %s", e)
+            return {"checked": 0, "fresh": 0, "stale": 0, "no": 0, "errors": 1}
+
+        results = {"checked": 0, "fresh": 0, "stale": 0, "no": 0, "errors": 0}
+
+        for row in rows:
+            m = self._row_to_dict(row)
+            try:
+                prompt = FRESHNESS_CHECK_PROMPT.format(
+                    title=m["title"],
+                    tags=", ".join(m["tags"]),
+                    body=m["body"][:2000],
+                )
+                response = llm_consult(
+                    system=prompt,
+                    user=m["name"],
+                    max_tokens=10,
+                    temperature=0.0,
+                )
+                status = (response or "").strip().upper()
+                normalized = "fresh"
+                if status == "NO":
+                    normalized = "no"
+                elif status == "STALE":
+                    normalized = "stale"
+
+                self._conn.execute(
+                    "UPDATE memories SET freshness_status = ?, freshness_checked_at = datetime('now') WHERE name = ?",
+                    (normalized, m["name"]),
+                )
+                self._conn.commit()
+                results["checked"] += 1
+                if normalized == "fresh":
+                    results["fresh"] += 1
+                elif normalized == "stale":
+                    results["stale"] += 1
+                elif normalized == "no":
+                    results["no"] += 1
+            except Exception as e:
+                logger.warning("Freshness check failed for '%s': %s", m["name"], e)
+                results["errors"] += 1
+
+        return results
+
+    def scan_orphans(self, days: int = 30, dry_run: bool = True) -> str:
+        """Find working-tier memories not retrieved in `days` days.
+
+        In non-dry-run mode, adds entries to eviction_queue.
+        Returns a formatted dashboard string.
+        """
+        import sqlite3
+
+        try:
+            cur = self._conn.execute(
+                """
+                SELECT name, title, type, last_retrieved_at, retrieval_count
+                FROM memories
+                WHERE (tier IS NULL OR tier != 'canonical')
+                  AND last_retrieved_at IS NOT NULL
+                  AND last_retrieved_at < datetime('now', ?)
+                  AND protected = 0
+                ORDER BY last_retrieved_at ASC
+                """,
+                (f"-{days} days",),
+            )
+            rows = cur.fetchall()
+        except sqlite3.Error as e:
+            return f"Orphan scan failed: {e}"
+
+        if not rows:
+            return f"# Orphan Scan ({days}d window)\n\nNo orphans found."
+
+        parts = [f"# Orphan Scan ({days}d window)\n\n## Flagged for review\n"]
+        for name, title, mtype, last_retrieved, count in rows:
+            parts.append(
+                f"- **{name}**: {title} ({mtype}) — "
+                f"last retrieved {last_retrieved}, {count} retrievals"
+            )
+            if not dry_run:
+                self._conn.execute(
+                    "INSERT INTO eviction_queue (memory_name, reason, detail) VALUES (?, 'orphan', ?)",
+                    (name, f"Not retrieved in {days} days. Last: {last_retrieved}"),
+                )
+        if not dry_run:
+            self._conn.commit()
+
+        parts.append(f"\nTotal: {len(rows)} orphan{'s' if len(rows) != 1 else ''} flagged")
+        return "\n".join(parts)
