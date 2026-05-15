@@ -278,6 +278,38 @@ curl http://localhost:8968/api/events/health
 
 ### 3. Connect Claude Code
 
+**Option A: `.mcp.json` (project root, most reliable)**
+
+Create a `.mcp.json` file in your project root:
+
+```json
+{
+  "mcpServers": {
+    "moku": {
+      "type": "sse",
+      "url": "http://localhost:8968/sse"
+    }
+  }
+}
+```
+
+Claude Code picks this up automatically when working in that project directory
+— no global config needed. For a remote Moku server (e.g. on another machine
+on the same Tailscale tailnet), use the Tailscale IP:
+
+```json
+{
+  "mcpServers": {
+    "moku": {
+      "type": "sse",
+      "url": "http://100.84.128.79:8968/sse"
+    }
+  }
+}
+```
+
+**Option B: `settings.json` (global)**
+
 Add to `~/.claude/settings.json` under `mcpServers`:
 
 ```json
