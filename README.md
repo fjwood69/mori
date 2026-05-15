@@ -9,7 +9,9 @@ account, no Bifrost required — though those all work too.
 
 ---
 
-## Event Logging
+## Core capabilities
+
+### 1. Event Logging
 
 Claude Code lifecycle hooks POST session events to `POST /api/events/raw`.
 These events feed the dream pipeline.
@@ -37,7 +39,7 @@ Tailscale LAN or localhost).
 
 ---
 
-## Persistent Memory
+### 2. Persistent Memory
 
 Memories live in a single SQLite database (`memories.db`) with:
 
@@ -52,7 +54,7 @@ external dependencies.
 
 ---
 
-## Dream Phase
+### 3. Dream Phase
 
 Session events are captured via Claude Code lifecycle hooks (PostToolUse,
 UserPromptSubmit, Stop). The dream pipeline reads events since the last
@@ -73,7 +75,7 @@ Hook fires  →  POST /api/events/raw  →  SQLite events table
 
 Run it: `/dream` or `moku-dream_run`. Check state: `/dream --status`.
 
-### Stale knowledge & eviction
+#### Stale knowledge & eviction
 
 Dream produces three tiers of memory, each with a different lifecycle:
 
@@ -101,7 +103,7 @@ Config: `MOKU_DREAM_MODEL` (defaults to `MOKU_MODEL`, then `deepseek/deepseek-v4
 
 ---
 
-## Session Context (`/brief`)
+### 4. Session Context (`/brief`)
 
 Moku uses **session grounding** rather than per-query RAG. `/brief` loads
 shared memories, team standards, and dream pipeline state into context at
@@ -118,7 +120,7 @@ docker run ... -e MOKU_STANDARDS_DIR=/standards/retail -p 8970:8968
 docker run ... -e MOKU_STANDARDS_DIR=/standards/energy -p 8971:8968
 ```
 
-### Standards ingestion
+#### Standards ingestion
 
 Set `MOKU_STANDARDS_DIR` to a directory of `.md` files:
 
@@ -142,7 +144,7 @@ Update without restarting: `moku-standards_reload` (trusted dreamers only).
 
 ---
 
-## Strategic Code Review (`/consult`)
+### 5. Strategic Code Review (`/consult`)
 
 A configurable LLM receives your question plus optional file context and
 returns strategic guidance. Supports focus areas (`general`, `architecture`,
@@ -162,15 +164,15 @@ Chain tool output into the advisor:
 
 ---
 
-## Agent Delegation + NATS
+### 6. Agent Delegation + NATS (`/nats`)
 
-### Cross-device messaging (NATS)
+#### Cross-device messaging (NATS)
 
 Optional NATS JetStream integration for cross-device state-of-play messages.
 Each device publishes session summaries; any device can replay the last 7 days.
 Useful for awareness across a team or fleet of Claude Code instances.
 
-### Device deployment
+#### Device deployment
 
 The `moku-update` tool generates install commands for multiple profiles
 across devices. It knows each device's profile layout:
@@ -194,12 +196,12 @@ messaging (optional).
 
 ---
 
-## Governance — Memory Quality & Validity
+### 7. Governance — Memory Quality & Validity
 
 Memories accumulate over time. Without safeguards, they drift, conflict, or
 accumulate noise. Moku has several mechanisms to maintain quality:
 
-### Trusted Dreamers
+#### Trusted Dreamers
 
 Certain client hostnames are designated as **trusted dreamers**. Only they can
 directly modify protected memories. Writes from other instances are queued as
@@ -208,14 +210,14 @@ pending writes.
 Configured via `MOKU_TRUSTED_DREAMERS` env var (comma-separated hostnames)
 or in the `dreamer_config` table.
 
-### Protection
+#### Protection
 
 Any memory can be toggled protected via `moku-memory_protect`. When protected:
 - Trusted dreamers write directly (no change in behaviour)
 - Other instances' writes go to `pending_writes` for review
 - `moku-memory_pending_list`, `moku-memory_approve`, `moku-memory_reject` manage the queue
 
-### Versioning & Rollback
+#### Versioning & Rollback
 
 Every write snapshots the previous state. You can:
 - View history: `moku-memory_history(name)`
@@ -223,7 +225,7 @@ Every write snapshots the previous state. You can:
 - Roll back: `moku-memory_rollback(name, version_id)` — rollbacks are themselves
   versioned, so they can be reversed
 
-### Attribution
+#### Attribution
 
 Every memory tracks its origin:
 - `origin_session_ids` — which sessions contributed
@@ -232,7 +234,7 @@ Every memory tracks its origin:
 
 This means you can trace any memory back to the session and device that created it.
 
-### Export / Import
+#### Export / Import
 
 Memories can be exported to standard `.md` files and imported elsewhere. This
 serves as both backup and review — you can inspect the full corpus as flat
