@@ -7,100 +7,6 @@ distills session activity into durable knowledge.
 Works with any OpenAI-compatible provider. No homelab, no Anthropic
 account, no Bifrost required — though those all work too.
 
-## Quickstart
-
-### 1. Deploy the server
-
-**Container (recommended):**
-
-```bash
-# With a direct API provider:
-docker run -d --name moku --restart=unless-stopped -p 8968:8968 \
-  -v moku-data:/data/moku \
-  -e MOKU_PROVIDER_MODE=direct \
-  -e MOKU_API_KEY=sk-your-provider-key \
-  -e MOKU_BASE_URL=https://api.openai.com/v1 \
-  -e MOKU_MODEL=gpt-4o \
-  ghcr.io/fjwood69/moku:latest
-```
-
-**Python directly:**
-
-```bash
-pip install -r requirements.txt
-MOKU_PROVIDER_MODE=direct \
-  MOKU_API_KEY=sk-... \
-  MOKU_BASE_URL=https://api.openai.com/v1 \
-  python -m moku_advisor.main
-```
-
-### 2. Verify it's running
-
-```bash
-curl http://localhost:8968/api/events/health
-# {"status":"ok","total_events":0}
-```
-
-### 3. Connect Claude Code
-
-Add to `~/.claude/settings.json` under `mcpServers`:
-
-```json
-{
-  "mcpServers": {
-    "moku": {
-      "type": "sse",
-      "url": "http://localhost:8968/sse"
-    }
-  }
-}
-```
-
-For user-global scope (works in VS Code extension):
-
-```bash
-claude mcp add moku --scope user --type sse http://localhost:8968/sse
-```
-
-### 4. Install slash commands
-
-Copy the skill files from the `skills/` directory:
-
-```bash
-# One-shot for all profiles:
-SKILLS_DIRS=(".claude" ".claude-sr" ".claude-sub" ".claude-api")
-for d in "${SKILLS_DIRS[@]}"; do
-  cp -r skills/* ~/$d/skills/
-done
-```
-
-Each skill becomes a `/command`: `/brief`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`.
-
-### 5. Enable event capture (required for dreams)
-
-Add the hooks from `examples/settings.json` to your `~/.claude/settings.json`.
-See [Event Logging](#event-logging) below.
-
-## What you get
-
-| Tool | What it does |
-|------|-------------|
-| `moku-memory_search/write/read/list/delete` | Full CRUD on shared memories |
-| `moku-memory_export/import/export_all` | Portability between instances |
-| `moku-memory_history/diff/rollback` | Versioning — track changes over time |
-| `moku-memory_session_summary` | Attribution — see what a session produced |
-| `moku-memory_pending_list/approve/reject/protect` | Governance — trusted dreamer workflow |
-| `moku-consult_advisor` | Strategic guidance mid-task (configurable model + focus) |
-| `moku-dream_run / dream_status` | Batch distills session events → memories |
-| `moku-standards_reload` | Re-import team standards from disk |
-| `moku-brief` | Session bootstrap — loads memories + standards + dream state |
-| `moku-pensieve` | Search/browse the shared memory store |
-| `moku-update` | Deploy slash command skills to devices |
-| `moku-nats_pub/sub/ping` | Cross-device message bus (NATS optional) |
-| `moku-event_log` | HTTP event capture endpoint for dream pipeline |
-
-**Slash commands**: `/brief`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`
-
 ---
 
 ## Event Logging
@@ -331,6 +237,102 @@ This means you can trace any memory back to the session and device that created 
 Memories can be exported to standard `.md` files and imported elsewhere. This
 serves as both backup and review — you can inspect the full corpus as flat
 files, edit them, and re-import.
+
+---
+
+## Quickstart
+
+### 1. Deploy the server
+
+**Container (recommended):**
+
+```bash
+# With a direct API provider:
+docker run -d --name moku --restart=unless-stopped -p 8968:8968 \
+  -v moku-data:/data/moku \
+  -e MOKU_PROVIDER_MODE=direct \
+  -e MOKU_API_KEY=sk-your-provider-key \
+  -e MOKU_BASE_URL=https://api.openai.com/v1 \
+  -e MOKU_MODEL=gpt-4o \
+  ghcr.io/fjwood69/moku:latest
+```
+
+**Python directly:**
+
+```bash
+pip install -r requirements.txt
+MOKU_PROVIDER_MODE=direct \
+  MOKU_API_KEY=sk-... \
+  MOKU_BASE_URL=https://api.openai.com/v1 \
+  python -m moku_advisor.main
+```
+
+### 2. Verify it's running
+
+```bash
+curl http://localhost:8968/api/events/health
+# {"status":"ok","total_events":0}
+```
+
+### 3. Connect Claude Code
+
+Add to `~/.claude/settings.json` under `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "moku": {
+      "type": "sse",
+      "url": "http://localhost:8968/sse"
+    }
+  }
+}
+```
+
+For user-global scope (works in VS Code extension):
+
+```bash
+claude mcp add moku --scope user --type sse http://localhost:8968/sse
+```
+
+### 4. Install slash commands
+
+Copy the skill files from the `skills/` directory:
+
+```bash
+# One-shot for all profiles:
+SKILLS_DIRS=(".claude" ".claude-sr" ".claude-sub" ".claude-api")
+for d in "${SKILLS_DIRS[@]}"; do
+  cp -r skills/* ~/$d/skills/
+done
+```
+
+Each skill becomes a `/command`: `/brief`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`.
+
+### 5. Enable event capture (required for dreams)
+
+Add the hooks from `examples/settings.json` to your `~/.claude/settings.json`.
+See [Event Logging](#event-logging) below.
+
+## What you get
+
+| Tool | What it does |
+|------|-------------|
+| `moku-memory_search/write/read/list/delete` | Full CRUD on shared memories |
+| `moku-memory_export/import/export_all` | Portability between instances |
+| `moku-memory_history/diff/rollback` | Versioning — track changes over time |
+| `moku-memory_session_summary` | Attribution — see what a session produced |
+| `moku-memory_pending_list/approve/reject/protect` | Governance — trusted dreamer workflow |
+| `moku-consult_advisor` | Strategic guidance mid-task (configurable model + focus) |
+| `moku-dream_run / dream_status` | Batch distills session events → memories |
+| `moku-standards_reload` | Re-import team standards from disk |
+| `moku-brief` | Session bootstrap — loads memories + standards + dream state |
+| `moku-pensieve` | Search/browse the shared memory store |
+| `moku-update` | Deploy slash command skills to devices |
+| `moku-nats_pub/sub/ping` | Cross-device message bus (NATS optional) |
+| `moku-event_log` | HTTP event capture endpoint for dream pipeline |
+
+**Slash commands**: `/brief`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`
 
 ---
 
