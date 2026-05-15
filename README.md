@@ -253,7 +253,7 @@ curl -sf -X POST 'http://localhost:8968/api/events/raw?client=my-hostname' \
 │                                                             │
 │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐      │
 │  │ Instance│  │ Instance│  │ Instance│  │ Instance│      │
-│  │ NUC     │  │ Twiggy  │  │ CB14P   │  │ UX3405  │      │
+│  │ Ubuntu  │  │ Windows │  │ ChromeOS│  │ Win11   │      │
 │  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘      │
 │       │            │            │            │            │
 │       └────────────┴──────┬─────┴────────────┘            │
