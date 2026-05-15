@@ -164,7 +164,7 @@ Chain tool output into the advisor:
 
 ---
 
-### 6. Agent Delegation + NATS (`/nats`)
+### 6. Agent Delegation + NATS (`/nats`, `/update`)
 
 #### Cross-device messaging (NATS)
 
@@ -172,10 +172,11 @@ Optional NATS JetStream integration for cross-device state-of-play messages.
 Each device publishes session summaries; any device can replay the last 7 days.
 Useful for awareness across a team or fleet of Claude Code instances.
 
-#### Device deployment
+#### Skill deployment (`/update`)
 
-The `moku-update` tool generates install commands for multiple profiles
-across devices. It knows each device's profile layout:
+The `moku-update` tool generates install commands for skills and slash commands
+across devices. It knows each device's profile layout and produces the right
+shell commands — no manual copy-paste across machines:
 
 | Device | Profiles |
 |--------|----------|
@@ -191,8 +192,11 @@ Command output is base64-encoded to avoid shell quoting issues:
 → ask approval then execute — no copy-paste needed
 ```
 
-**Components required:** Moku server for queue. NATS server for cross-device
-messaging (optional).
+This means pushing an updated skill to every Claude Code instance is a single
+`/update` command away.
+
+**Components required:** Moku server. NATS server for cross-device messaging
+(optional).
 
 ---
 
