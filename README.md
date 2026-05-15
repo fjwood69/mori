@@ -7,26 +7,6 @@ distills session activity into durable knowledge.
 Works with any OpenAI-compatible provider. No homelab, no Anthropic
 account, no Bifrost required — though those all work too.
 
-## What you get
-
-| Tool | What it does |
-|------|-------------|
-| `moku-memory_search/write/read/list/delete` | Full CRUD on shared memories |
-| `moku-memory_export/import/export_all` | Portability between instances |
-| `moku-memory_history/diff/rollback` | Versioning — track changes over time |
-| `moku-memory_session_summary` | Attribution — see what a session produced |
-| `moku-memory_pending_list/approve/reject/protect` | Governance — trusted dreamer workflow |
-| `moku-consult_advisor` | Strategic guidance mid-task (configurable model + focus) |
-| `moku-dream_run / dream_status` | Batch distills session events → memories |
-| `moku-standards_reload` | Re-import team standards from disk |
-| `moku-brief` | Session bootstrap — loads memories + standards + dream state |
-| `moku-pensieve` | Search/browse the shared memory store |
-| `moku-update` | Deploy slash command skills to devices |
-| `moku-nats_pub/sub/ping` | Cross-device message bus (NATS optional) |
-| `moku-event_log` | HTTP event capture endpoint for dream pipeline |
-
-**Slash commands**: `/brief`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`
-
 ## Quickstart
 
 ### 1. Deploy the server
@@ -99,11 +79,59 @@ Each skill becomes a `/command`: `/brief`, `/consult`, `/dream`, `/pensieve`, `/
 ### 5. Enable event capture (required for dreams)
 
 Add the hooks from `examples/settings.json` to your `~/.claude/settings.json`.
-See [Event Capture](#event-capture) below.
+See [Event Logging](#event-logging) below.
 
-## How it works
+## What you get
 
-### Memory store
+| Tool | What it does |
+|------|-------------|
+| `moku-memory_search/write/read/list/delete` | Full CRUD on shared memories |
+| `moku-memory_export/import/export_all` | Portability between instances |
+| `moku-memory_history/diff/rollback` | Versioning — track changes over time |
+| `moku-memory_session_summary` | Attribution — see what a session produced |
+| `moku-memory_pending_list/approve/reject/protect` | Governance — trusted dreamer workflow |
+| `moku-consult_advisor` | Strategic guidance mid-task (configurable model + focus) |
+| `moku-dream_run / dream_status` | Batch distills session events → memories |
+| `moku-standards_reload` | Re-import team standards from disk |
+| `moku-brief` | Session bootstrap — loads memories + standards + dream state |
+| `moku-pensieve` | Search/browse the shared memory store |
+| `moku-update` | Deploy slash command skills to devices |
+| `moku-nats_pub/sub/ping` | Cross-device message bus (NATS optional) |
+| `moku-event_log` | HTTP event capture endpoint for dream pipeline |
+
+**Slash commands**: `/brief`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`
+
+---
+
+## Event Logging
+
+Claude Code lifecycle hooks POST session events to `POST /api/events/raw`.
+These events feed the dream pipeline.
+
+```bash
+# Minimal hook config — add to settings.json:
+curl -sf -X POST 'http://localhost:8968/api/events/raw?client=my-hostname' \
+  -H 'Content-Type: application/json' -d @-
+```
+
+Every Claude Code session emits lifecycle events — tool calls, prompts, errors,
+stop reasons. Moku receives these via HTTP POST and stores them in an append-only
+event log. This is the raw material everything else builds on.
+
+**What it captures:**
+- `PostToolUse` — tool name, input, output, errors
+- `UserPromptSubmit` — the prompt text
+- `Stop` / `SessionEnd` — stop reason, model used
+- Session ID, client hostname, working directory, transcript path
+
+**Components required:** Moku server only. No LLM provider needed.
+
+**Config:** `MOKU_ADVISOR_API_KEY` for auth (empty = no auth, only reachable via
+Tailscale LAN or localhost).
+
+---
+
+## Persistent Memory
 
 Memories live in a single SQLite database (`memories.db`) with:
 
@@ -113,7 +141,12 @@ Memories live in a single SQLite database (`memories.db`) with:
 - **Tagging** — memories are taggable (`security`, `architecture`, `decision`) for filtering.
 - **Search** — keyword search across name, title, description, and body.
 
-### Dream pipeline
+**Components required:** Moku server only. Memories persist in SQLite — no
+external dependencies.
+
+---
+
+## Dream Phase
 
 Session events are captured via Claude Code lifecycle hooks (PostToolUse,
 UserPromptSubmit, Stop). The dream pipeline reads events since the last
@@ -134,7 +167,7 @@ Hook fires  →  POST /api/events/raw  →  SQLite events table
 
 Run it: `/dream` or `moku-dream_run`. Check state: `/dream --status`.
 
-#### Stale knowledge & eviction
+### Stale knowledge & eviction
 
 Dream produces three tiers of memory, each with a different lifecycle:
 
@@ -157,7 +190,12 @@ not a batch delete.
 This avoids the classic "persistent memory" failure mode where a patched
 cluster's stale workaround poisons sessions for months.
 
-### Session grounding
+**Components required:** Moku server + LLM provider (for the distillation model).
+Config: `MOKU_DREAM_MODEL` (defaults to `MOKU_MODEL`, then `deepseek/deepseek-v4-flash`).
+
+---
+
+## Session Context (`/brief`)
 
 Moku uses **session grounding** rather than per-query RAG. `/brief` loads
 shared memories, team standards, and dream pipeline state into context at
@@ -172,21 +210,6 @@ Moku instances per namespace rather than adding a vector store:
 docker run ... -e MOKU_STANDARDS_DIR=/standards/retail -p 8970:8968
 # Energy team
 docker run ... -e MOKU_STANDARDS_DIR=/standards/energy -p 8971:8968
-```
-
-### Consult advisor
-
-A configurable LLM receives your question plus optional file context and
-returns strategic guidance. Supports focus areas (`general`, `architecture`,
-`security`, `performance`, `style`) and depth levels (`quick`, `balanced`, `deep`).
-
-When a specific focus is given (`--focus security`), relevant team standards
-are auto-injected from memory — the advisor checks against your own baseline,
-not generic advice.
-
-Chain tool output into the advisor:
-```
-/consult "review this auth handler" --focus security --file src/auth.py --file snyk-report.json
 ```
 
 ### Standards ingestion
@@ -209,6 +232,38 @@ and tags from its subdirectory. Standards are read-only to non-trusted dreamers.
 
 Update without restarting: `moku-standards_reload` (trusted dreamers only).
 
+**Components required:** Moku server + `/brief` skill. Config: `MOKU_STANDARDS_DIR`.
+
+---
+
+## Strategic Code Review (`/consult`)
+
+A configurable LLM receives your question plus optional file context and
+returns strategic guidance. Supports focus areas (`general`, `architecture`,
+`security`, `performance`, `style`) and depth levels (`quick`, `balanced`, `deep`).
+
+When a specific focus is given (`--focus security`), relevant team standards
+are auto-injected from memory — the advisor checks against your own baseline,
+not generic advice.
+
+Chain tool output into the advisor:
+```
+/consult "review this auth handler" --focus security --file src/auth.py --file snyk-report.json
+```
+
+**Components required:** Moku server + LLM provider. Config: `MOKU_MODEL`
+(default `moonshotai/kimi-k2.6`).
+
+---
+
+## Agent Delegation + NATS
+
+### Cross-device messaging (NATS)
+
+Optional NATS JetStream integration for cross-device state-of-play messages.
+Each device publishes session summaries; any device can replay the last 7 days.
+Useful for awareness across a team or fleet of Claude Code instances.
+
 ### Device deployment
 
 The `moku-update` tool generates install commands for multiple profiles
@@ -228,22 +283,56 @@ Command output is base64-encoded to avoid shell quoting issues:
 → ask approval then execute — no copy-paste needed
 ```
 
-### Cross-device messaging (NATS)
+**Components required:** Moku server for queue. NATS server for cross-device
+messaging (optional).
 
-Optional NATS JetStream integration for cross-device state-of-play messages.
-Each device publishes session summaries; any device can replay the last 7 days.
-Useful for awareness across a team or fleet of Claude Code instances.
+---
 
-### Event capture
+## Governance — Memory Quality & Validity
 
-Claude Code lifecycle hooks POST session events to `POST /api/events/raw`.
-These events feed the dream pipeline.
+Memories accumulate over time. Without safeguards, they drift, conflict, or
+accumulate noise. Moku has several mechanisms to maintain quality:
 
-```bash
-# Minimal hook config — add to settings.json:
-curl -sf -X POST 'http://localhost:8968/api/events/raw?client=my-hostname' \
-  -H 'Content-Type: application/json' -d @-
-```
+### Trusted Dreamers
+
+Certain client hostnames are designated as **trusted dreamers**. Only they can
+directly modify protected memories. Writes from other instances are queued as
+pending writes.
+
+Configured via `MOKU_TRUSTED_DREAMERS` env var (comma-separated hostnames)
+or in the `dreamer_config` table.
+
+### Protection
+
+Any memory can be toggled protected via `moku-memory_protect`. When protected:
+- Trusted dreamers write directly (no change in behaviour)
+- Other instances' writes go to `pending_writes` for review
+- `moku-memory_pending_list`, `moku-memory_approve`, `moku-memory_reject` manage the queue
+
+### Versioning & Rollback
+
+Every write snapshots the previous state. You can:
+- View history: `moku-memory_history(name)`
+- Compare versions: `moku-memory_diff(name, from, to)`
+- Roll back: `moku-memory_rollback(name, version_id)` — rollbacks are themselves
+  versioned, so they can be reversed
+
+### Attribution
+
+Every memory tracks its origin:
+- `origin_session_ids` — which sessions contributed
+- `origin_clients` — which hostnames contributed
+- `moku-memory_session_summary(session_id)` — audit what a session produced
+
+This means you can trace any memory back to the session and device that created it.
+
+### Export / Import
+
+Memories can be exported to standard `.md` files and imported elsewhere. This
+serves as both backup and review — you can inspect the full corpus as flat
+files, edit them, and re-import.
+
+---
 
 ## Architecture
 
@@ -281,6 +370,8 @@ curl -sf -X POST 'http://localhost:8968/api/events/raw?client=my-hostname' \
 └─────────────────────────────────────────────────────────────┘
 ```
 
+---
+
 ## Configuration
 
 ### Environment variables
@@ -306,6 +397,8 @@ curl -sf -X POST 'http://localhost:8968/api/events/raw?client=my-hostname' \
 |------|---------|
 | `8968` | MCP SSE server + event capture API |
 
+---
+
 ## For teams
 
 Each team member runs their own Claude Code connected to the same Moku.
@@ -315,6 +408,8 @@ Memories are shared. Trusted dreamers approve writes.
 2. Each member points `mcpServers` at the shared URL
 3. Each member installs the skills and hooks
 4. Run `/dream` periodically on one instance to consolidate
+
+---
 
 ## Building
 
