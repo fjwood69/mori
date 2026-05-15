@@ -110,6 +110,10 @@ shared memories, team standards, and dream pipeline state into context at
 session start. From turn one, the model knows your security baseline,
 coding conventions, and current project state — no retrieval needed.
 
+Unresolved `/req` items (session-local requirements for spikes, refactors,
+and checklists) also surface via `/brief` — a sticky note, not a project board.
+No sync, no drift from JIRA or GH Projects.
+
 When the standards corpus grows beyond one context window, run separate
 Moku instances per namespace rather than adding a vector store:
 
