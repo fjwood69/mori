@@ -345,7 +345,7 @@ for d in "${SKILLS_DIRS[@]}"; do
 done
 ```
 
-Each skill becomes a `/command`: `/brief`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`.
+Each skill becomes a `/command`: `/brief`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`, `/req`.
 
 ### 5. Enable event capture (required for dreams)
 
@@ -368,9 +368,10 @@ See [Event Logging](#event-logging) below.
 | `moku-pensieve` | Search/browse the shared memory store |
 | `moku-update` | Deploy slash command skills to devices |
 | `moku-nats_pub/sub/ping` | Cross-device message bus (NATS optional) |
+| `moku-memory_req` | Requirements tracking dashboard with status workflow |
 | `moku-event_log` | HTTP event capture endpoint for dream pipeline |
 
-**Slash commands**: `/brief`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`
+**Slash commands**: `/brief`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`, `/req`
 
 ---
 
