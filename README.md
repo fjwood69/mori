@@ -548,10 +548,12 @@ Qwen), inference runs entirely outside the PRC via US-based provider infrastruct
 
 | Model | Origin | Provider Route |
 |-------|--------|----------------|
-| Kimi K2.6 | Moonshot AI (PRC) | DeepInfra / Novita / Parasail (US) |
-| DeepSeek V4 | DeepSeek (PRC) | DeepInfra / Novita (US) |
-| GLM-5 | Zhipu AI (PRC) | DeepInfra / Novita / Parasail / Vertex (US) |
-| Qwen | Alibaba (PRC) | Nebius / DeepInfra (US/EU) |
+| Kimi K2.6 | Moonshot AI | DeepInfra / Novita / Parasail (US) |
+| DeepSeek V4 | DeepSeek | DeepInfra / Novita (US) |
+| GLM-5 | Zhipu AI | DeepInfra / Novita / Parasail / Vertex (US) |
+| Qwen | Alibaba | Nebius / DeepInfra (US/EU) |
+| Gemma 4 31B it | Google | Vertex AI (NAM)
+| Gemini 3 Flash Preview | Google | Vertex AI (NAM)
 
 This is explicitly documented in the README because the model names alone could
 mislead colleagues into thinking direct Moonshot/DeepSeek API usage is involved.
