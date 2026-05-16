@@ -59,19 +59,27 @@ MOKU_DREAM_MODEL=$(gcloud secrets versions access latest --secret=MOKU_DREAM_MOD
 MOKU_TRUSTED_DREAMERS=$(gcloud secrets versions access latest --secret=MOKU_TRUSTED_DREAMERS --project=${project_id} 2>/dev/null || echo "")
 MOKU_NATS_URL=$(gcloud secrets versions access latest --secret=MOKU_NATS_URL --project=${project_id} 2>/dev/null || echo "")
 GHCR_TOKEN=$(gcloud secrets versions access latest --secret=GHCR_TOKEN --project=${project_id} 2>/dev/null || echo "")
+BIFROST_ADMIN_PASSWORD=$(gcloud secrets versions access latest --secret=BIFROST_ADMIN_PASSWORD --project=${project_id} 2>/dev/null || echo "")
+DEEPINFRA_API_KEY=$(gcloud secrets versions access latest --secret=DEEPINFRA_API_KEY --project=${project_id} 2>/dev/null || echo "")
+NOVITA_API_KEY=$(gcloud secrets versions access latest --secret=NOVITA_API_KEY --project=${project_id} 2>/dev/null || echo "")
+PARASAIL_API_KEY=$(gcloud secrets versions access latest --secret=PARASAIL_API_KEY --project=${project_id} 2>/dev/null || echo "")
+VERTEX_API_KEY=$(gcloud secrets versions access latest --secret=VERTEX_API_KEY --project=${project_id} 2>/dev/null || echo "")
+CLOUDFLARE_API_KEY=$(gcloud secrets versions access latest --secret=CLOUDFLARE_API_KEY --project=${project_id} 2>/dev/null || echo "")
+FIREWORKS_API_KEY=$(gcloud secrets versions access latest --secret=FIREWORKS_API_KEY --project=${project_id} 2>/dev/null || echo "")
 
 # Validate critical secrets
 if [ -z "$MOKU_API_KEY" ]; then
   echo "WARN: MOKU_API_KEY is empty — container will start without provider access"
 fi
 
-# ── Pull and run container (rootless) ────────────────────────────────────
+# ── Pull and run containers (rootless) ──────────────────────────────────
 # Uses su - moku -c so podman finds ~/.local/share/containers.
 # XDG_RUNTIME_DIR is required for rootless podman to talk to the session.
 # --user 0 maps container root → host UID 10001 (moku), so the container's
-# appuser can write to the bind-mounted /data/moku-advisor.
+# appuser can write to the bind-mounted /data directory.
 
 CONTAINER_IMAGE="${container_image}"
+BIFROST_IMAGE="ghcr.io/fjwood69/bifrost:claude-code-compat"
 RUNTIME_DIR="/run/user/10001"
 
 # Safety net: ensure runtime dir exists (loginctl enable-linger may not
@@ -82,22 +90,134 @@ if [ ! -d "$RUNTIME_DIR" ]; then
   chmod 700 "$RUNTIME_DIR"
 fi
 
+# Ensure Bifrost data dir exists
+mkdir -p /data/bifrost
+chown moku:moku /data/bifrost
+chmod 755 /data/bifrost
+
 # Authenticate to GHCR
 if [ -n "$GHCR_TOKEN" ]; then
   echo "$GHCR_TOKEN" | su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman login ghcr.io -u fjwood69 --password-stdin"
 fi
 
-# Pull image with retries
-for i in 1 2 3; do
-  su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman pull '$CONTAINER_IMAGE'" && break
-  echo "Pull attempt $i failed, retrying in 10s..."
-  sleep 10
+# Pull images with retries
+for img in "$CONTAINER_IMAGE" "$BIFROST_IMAGE"; do
+  for i in 1 2 3; do
+    su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman pull '$img'" && break
+    echo "Pull attempt $i for $img failed, retrying in 10s..."
+    sleep 10
+  done
 done
 
-# Remove old container if it exists
+# Remove old containers if they exist
 su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f moku-advisor 2>/dev/null; true"
+su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f bifrost 2>/dev/null; true"
 
-# Start container
+# Start Bifrost container (port 8787)
+su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name bifrost --restart=always --network=host \
+  --user 0 \
+  -v /data/bifrost:/app/data:Z \
+  -e APP_PORT=8787 \
+  -e APP_HOST=0.0.0.0 \
+  -e LOG_LEVEL=info \
+  -e LOG_STYLE=json \
+  -e BIFROST_ADMIN_USER=fjwood \
+  -e BIFROST_ADMIN_PASSWORD='$BIFROST_ADMIN_PASSWORD' \
+  '$BIFROST_IMAGE'"
+
+echo "Bifrost container started."
+
+# Wait for Bifrost to be ready
+sleep 5
+
+# Seed Bifrost config if this is a fresh install (no config.db yet)
+if [ ! -f /data/bifrost/config.db ]; then
+  echo "Seeding Bifrost config..."
+  python3 /dev/stdin << SEEDEOF
+import sqlite3, json, os, sys, uuid
+
+DB = "/data/bifrost/config.db"
+conn = sqlite3.connect(DB)
+
+def env(name):
+    v = os.environ.get(name, "")
+    if not v:
+        print(f"  WARN: {name} not set, skipping")
+    return v
+
+print("  Creating providers...")
+
+# ── Providers ──────────────────────────────────────────────────────────
+providers = {
+    "Deepinfra": {"base_url": "https://api.deepinfra.com/v1/openai"},
+    "Novita": {"base_url": "https://api.novita.ai/v3/openai"},
+    "parasail": {"base_url": "https://api.parasail.io/v1"},
+    "vertex": {"base_url": "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/moku-genai/locations/us-central1/endpoints/openapi"},
+    "Cloudflare Workers AI": {"base_url": "https://api.cloudflare.com/client/v4/accounts/8d97411e384474732cfab7b9599a2253/ai"},
+    "fireworks": {"base_url": "https://api.fireworks.ai/inference/v1"},
+}
+
+for name, cfg in providers.items():
+    conn.execute("""
+        INSERT OR IGNORE INTO config_providers (name, network_config_json, custom_provider_config_json, status)
+        VALUES (?, ?, '{"base_provider_type":"openai","is_key_less":false}', 'unknown')
+    """, (name, json.dumps({"base_url": cfg["base_url"], "default_request_timeout_in_seconds": 30, "max_retries": 0})))
+
+conn.commit()
+
+# ── API Keys ────────────────────────────────────────────────────────────
+prov_map = {r[1]: r[0] for r in conn.execute("SELECT id, name FROM config_providers").fetchall()}
+print(f"  Provider IDs: {prov_map}")
+
+keys_map = {
+    "moku-genai-deepinfra": ("Deepinfra", env("DEEPINFRA_API_KEY")),
+    "moku-genai-novita": ("Novita", env("NOVITA_API_KEY")),
+    "moku-genai-parasail": ("parasail", env("PARASAIL_API_KEY")),
+    "moku-genai-vertex": ("vertex", env("VERTEX_API_KEY")),
+    "moku-genai-cloudflare": ("Cloudflare Workers AI", env("CLOUDFLARE_API_KEY")),
+    "moku-genai-fireworks": ("fireworks", env("FIREWORKS_API_KEY")),
+}
+
+for kname, (prov, value) in keys_map.items():
+    if not value:
+        continue
+    pid = prov_map.get(prov)
+    if not pid:
+        print(f"  WARN: provider {prov} not found, skipping key {kname}")
+        continue
+    conn.execute("""
+        INSERT OR IGNORE INTO config_keys (name, provider_id, provider, value, enabled, status)
+        VALUES (?, ?, ?, ?, 1, 'success')
+    """, (kname, pid, prov, value))
+    print(f"  Added key {kname} for {prov}")
+
+conn.commit()
+
+# ── Virtual Key for moku-advisor ───────────────────────────────────────
+vk_id = str(uuid.uuid4())
+vk_value = "sk-bf-moku-advisor-gce-001"
+conn.execute("""
+    INSERT OR IGNORE INTO governance_virtual_keys (id, name, value, description)
+    VALUES (?, ?, ?, ?)
+""", (vk_id, "moku-advisor", vk_value, json.dumps({"model_override": "Deepinfra/deepseek-ai/DeepSeek-V4-Flash"})))
+print(f"  VK created: {vk_value}")
+
+# Link VK to all providers
+for pid in prov_map.values():
+    conn.execute("""
+        INSERT OR IGNORE INTO governance_virtual_key_provider_configs (virtual_key_id, provider, allow_all_keys)
+        VALUES (?, ?, 1)
+    """, (vk_id, pid))
+
+conn.commit()
+conn.close()
+print("Bifrost config seeded.")
+SEEDEOF
+  echo "Bifrost config seeded."
+fi
+
+# Start moku-advisor container (port 8968) — direct mode for now,
+# will switch to Bifrost proxy once Bifrost is verified
 su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name moku-advisor --restart=always --network=host \
   --user 0 \
   -v /data/moku-advisor:/data/moku-advisor:Z \
