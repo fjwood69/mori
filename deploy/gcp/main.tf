@@ -181,12 +181,6 @@ resource "google_compute_disk" "moku_data" {
     service = "moku-advisor"
   }
 }
-
-resource "google_compute_address" "moku" {
-  name   = "moku-advisor"
-  region = var.region
-}
-
 resource "google_compute_firewall" "moku_tailscale" {
   name    = "moku-advisor-tailscale"
   network = "default"
@@ -238,9 +232,7 @@ resource "google_compute_instance" "moku" {
 
   network_interface {
     network = "default"
-    access_config {
-      nat_ip = google_compute_address.moku.address
-    }
+    # No external IP — all access via Tailscale
   }
 
   metadata = {

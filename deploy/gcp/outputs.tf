@@ -1,8 +1,3 @@
-output "vm_external_ip" {
-  description = "External IP of the moku-advisor VM"
-  value       = google_compute_address.moku.address
-}
-
 output "vm_internal_ip" {
   description = "Internal IP of the moku-advisor VM"
   value       = google_compute_instance.moku.network_interface[0].network_ip
