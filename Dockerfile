@@ -44,6 +44,7 @@ RUN adduser \
 
 # Copy source code
 COPY moku_advisor/ ./moku_advisor/
+COPY scripts/ ./scripts/
 
 # Data directory mounted from host, create for ownership
 RUN mkdir -p /data/moku-advisor && chown -R appuser:appuser /data/moku-advisor
@@ -52,5 +53,8 @@ RUN mkdir -p /data/moku-advisor && chown -R appuser:appuser /data/moku-advisor
 USER appuser
 
 EXPOSE 8968
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8968/health')" || exit 1
 
 CMD ["python", "-m", "moku_advisor.main"]

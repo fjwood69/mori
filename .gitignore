@@ -7,3 +7,9 @@ dist/
 .DS_Store
 *.db
 /data/
+
+# Terraform
+deploy/gcp/terraform.tfvars
+deploy/gcp/.terraform/
+deploy/gcp/*.tfstate
+deploy/gcp/*.tfstate.backup

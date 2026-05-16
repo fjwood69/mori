@@ -1,0 +1,10 @@
+[Unit]
+Description=Moku daily database backup
+Documentation=https://github.com/fjwood69/ai-stack
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
