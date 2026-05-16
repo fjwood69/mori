@@ -110,6 +110,13 @@ resource "google_secret_manager_secret" "tailscale_auth_key" {
   }
 }
 
+resource "google_secret_manager_secret" "ghcr_token" {
+  secret_id = "GHCR_TOKEN"
+  replication {
+    auto {}
+  }
+}
+
 # ── IAM — Service Account ────────────────────────────────────────────────
 
 resource "google_service_account" "moku" {
@@ -175,6 +182,12 @@ resource "google_secret_manager_secret_iam_member" "moku_nats_url" {
 
 resource "google_secret_manager_secret_iam_member" "tailscale_auth_key" {
   secret_id = google_secret_manager_secret.tailscale_auth_key.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.moku.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "ghcr_token" {
+  secret_id = google_secret_manager_secret.ghcr_token.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.moku.email}"
 }
