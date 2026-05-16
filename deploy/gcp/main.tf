@@ -42,8 +42,13 @@ resource "google_storage_bucket" "moku_backups" {
   }
 
   lifecycle_rule {
-    condition { age = var.backup_retention_days }
-    action { type = "SetStorageClass" storage_class = "ARCHIVE" }
+    condition {
+      age = var.backup_retention_days
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "ARCHIVE"
+    }
   }
 }
 
@@ -51,42 +56,58 @@ resource "google_storage_bucket" "moku_backups" {
 
 resource "google_secret_manager_secret" "moku_api_key" {
   secret_id = "MOKU_API_KEY"
-  replication { auto {} }
+  replication {
+    auto {}
+  }
 }
 
 resource "google_secret_manager_secret" "moku_advisor_api_key" {
   secret_id = "MOKU_ADVISOR_API_KEY"
-  replication { auto {} }
+  replication {
+    auto {}
+  }
 }
 
 resource "google_secret_manager_secret" "moku_base_url" {
   secret_id = "MOKU_BASE_URL"
-  replication { auto {} }
+  replication {
+    auto {}
+  }
 }
 
 resource "google_secret_manager_secret" "moku_model" {
   secret_id = "MOKU_MODEL"
-  replication { auto {} }
+  replication {
+    auto {}
+  }
 }
 
 resource "google_secret_manager_secret" "moku_dream_model" {
   secret_id = "MOKU_DREAM_MODEL"
-  replication { auto {} }
+  replication {
+    auto {}
+  }
 }
 
 resource "google_secret_manager_secret" "moku_trusted_dreamers" {
   secret_id = "MOKU_TRUSTED_DREAMERS"
-  replication { auto {} }
+  replication {
+    auto {}
+  }
 }
 
 resource "google_secret_manager_secret" "moku_nats_url" {
   secret_id = "MOKU_NATS_URL"
-  replication { auto {} }
+  replication {
+    auto {}
+  }
 }
 
 resource "google_secret_manager_secret" "tailscale_auth_key" {
   secret_id = "TAILSCALE_AUTH_KEY"
-  replication { auto {} }
+  replication {
+    auto {}
+  }
 }
 
 # ── IAM — Service Account ────────────────────────────────────────────────
@@ -208,6 +229,27 @@ resource "google_compute_firewall" "moku_ssh" {
   # Tailscale-only. Day 1 access via gcloud compute ssh or Tailscale SSH.
   source_ranges = ["100.64.0.0/10"]
   target_tags   = ["moku-advisor"]
+}
+
+# ── Cloud NAT (egress for no-external-IP VMs) ──────────────────────────────
+# Required because the VM has no external IP but needs to reach:
+#   - apt repositories (podman, sqlite3 install)
+#   - GHCR (container image pull)
+#   - Tailscale (install script)
+#   - Provider API endpoints (Novita, etc.)
+
+resource "google_compute_router" "moku" {
+  name    = "moku-advisor-nat-router"
+  network = "default"
+  region  = var.region
+}
+
+resource "google_compute_router_nat" "moku" {
+  name                               = "moku-advisor-nat"
+  router                             = google_compute_router.moku.name
+  region                             = var.region
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
 }
 
 resource "google_compute_instance" "moku" {
