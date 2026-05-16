@@ -118,3 +118,45 @@ echo "Moku-advisor container started."
 DREAM_CRON="0 */4 * * * XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec moku-advisor python -m moku_advisor.dream_job >/data/moku-advisor/dream-cron.log 2>&1"
 (crontab -l 2>/dev/null | grep -v moku-advisor; echo "$DREAM_CRON") | crontab -
 echo "Dream cron installed."
+
+# ── Set up backup cron (daily at 06:00 UTC) ──────────────────────────────
+# Uses curl + GCE metadata server for auth — no gcloud SDK needed
+BACKUP_SCRIPT="/usr/local/bin/moku-backup.sh"
+cat > "$BACKUP_SCRIPT" << 'BACKUPEOF'
+#!/bin/bash
+# Daily SQLite backup to GCS backup bucket using metadata server auth
+set -u
+DB_DIR="/data/moku-advisor"
+BUCKET="moku-advisor-backups-${backup_bucket}"
+DATE=$(date +%Y%m%d)
+
+# Get GCE service account access token from metadata server
+TOKEN=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" -H "Metadata-Flavor: Google" | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || echo "")
+
+if [ -z "$TOKEN" ]; then
+  echo "ERROR: could not get GCE access token"
+  exit 1
+fi
+
+for db in memories session_log; do
+  if [ -f "$DB_DIR/$db.db" ]; then
+    sqlite3 "$DB_DIR/$db.db" ".backup $DB_DIR/backup-$db-$DATE.db"
+    gzip -f "$DB_DIR/backup-$db-$DATE.db"
+    curl -sf -X PUT --data-binary @"$DB_DIR/backup-$db-$DATE.db.gz" \
+      -H "Authorization: Bearer $TOKEN" \
+      "https://storage.googleapis.com/$BUCKET/$db-$DATE.db.gz"
+    RC=$?
+    rm -f "$DB_DIR/backup-$db-$DATE.db.gz"
+    if [ $RC -eq 0 ]; then
+      echo "OK: $db-$DATE.db.gz uploaded"
+    else
+      echo "FAIL: $db upload exit code $RC"
+    fi
+  fi
+done
+echo "Backup complete: $DATE"
+BACKUPEOF
+chmod 755 "$BACKUP_SCRIPT"
+BACKUP_CRON="0 6 * * * $BACKUP_SCRIPT >/data/moku-advisor/backup-cron.log 2>&1"
+(crontab -l 2>/dev/null | grep -v moku-backup; echo "$BACKUP_CRON") | crontab -
+echo "Backup cron installed."
