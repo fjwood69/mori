@@ -1,0 +1,7 @@
+[Unit]
+Description=Moku dream pipeline service
+Documentation=https://github.com/fjwood69/ai-stack
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/podman exec moku-advisor python -m moku_advisor.dream_job

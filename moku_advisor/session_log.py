@@ -30,9 +30,11 @@ class SessionLog:
 
     def _connect(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -252,14 +254,20 @@ class SessionLog:
         row = cur.fetchone()
         return row["value"] if row else default
 
-    def set_dream_state(self, key: str, value: str) -> None:
-        """Upsert a value into the dream_state table."""
-        self._conn.execute(
+    def set_dream_state(self, key: str, value: str, _conn: sqlite3.Connection | None = None) -> None:
+        """Upsert a value into the dream_state table.
+
+        Args:
+            _conn: Optional connection for transaction-wrapped writes.
+        """
+        conn = _conn or self._conn
+        conn.execute(
             "INSERT INTO dream_state (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
-        self._conn.commit()
+        if not _conn:
+            self._conn.commit()
 
     # ── maintenance ────────────────────────────────────────────────────
 
@@ -268,15 +276,20 @@ class SessionLog:
         cur = self._conn.execute("SELECT COUNT(*) FROM session_events")
         return cur.fetchone()[0]
 
-    def prune_events(self, before_event_id: int) -> int:
+    def prune_events(self, before_event_id: int, _conn: sqlite3.Connection | None = None) -> int:
         """Delete events older than the given event id.
+
+        Args:
+            _conn: Optional connection for transaction-wrapped writes.
 
         Returns number of rows deleted.
         """
-        cur = self._conn.execute(
+        conn = _conn or self._conn
+        cur = conn.execute(
             "DELETE FROM session_events WHERE id <= ?", (before_event_id,)
         )
-        self._conn.commit()
+        if not _conn:
+            self._conn.commit()
         return cur.rowcount
 
     def list_sessions(self) -> list[str]:

@@ -1,0 +1,17 @@
+# GCP project
+project_id = "moku-genai"
+region     = "northamerica-northeast2"
+zone       = "northamerica-northeast2-a"
+
+# Machine
+machine_type  = "e2-small"
+disk_size_gb  = 20
+
+# Container
+container_image = "localhost/moku-advisor:latest"
+
+# Tailscale
+tailscale_auth_key = "tskey-auth-..."
+
+# SSH key for VM access (from .secrets or your ~/.ssh/id_*.pub)
+ssh_public_key = "ssh-rsa AAAA..."

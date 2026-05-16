@@ -1404,10 +1404,75 @@ async def events_health(request: Request) -> JSONResponse:
     })
 
 
+# ── Observability endpoints ──────────────────────────────────────────────
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    """Liveness probe. Returns 200 if the server is running."""
+    return JSONResponse({"status": "ok", "service": "moku-advisor"})
+
+
+@mcp.custom_route("/ready", methods=["GET"])
+async def readiness(request: Request) -> JSONResponse:
+    """Readiness probe. Returns 200 if the database is accessible."""
+    try:
+        memory_store._conn.execute("SELECT 1")
+        session_log._conn.execute("SELECT 1")
+        return JSONResponse({"status": "ok", "db": "connected"})
+    except Exception as e:
+        return JSONResponse({"status": "error", "db": str(e)}, status_code=503)
+
+
+@mcp.custom_route("/metrics", methods=["GET"])
+async def metrics(request: Request) -> str:
+    """Prometheus metrics endpoint in exposition format."""
+    import time as _time
+
+    lines = [
+        "# HELP moku_up Was the last query successful",
+        "# TYPE moku_up gauge",
+        "moku_up 1",
+        "# HELP moku_memories_total Total number of memories in the store",
+        "# TYPE moku_memories_total gauge",
+        f"moku_memories_total {memory_store.count()}",
+        "# HELP moku_events_total Total number of session events logged",
+        "# TYPE moku_events_total gauge",
+        f"moku_events_total {session_log.count_events()}",
+        "# HELP moku_pending_writes Number of pending writes awaiting approval",
+        "# TYPE moku_pending_writes gauge",
+        f"moku_pending_writes {memory_store.pending_count()}",
+        "# HELP moku_eviction_queue_size Number of unresolved eviction queue entries",
+        "# TYPE moku_eviction_queue_size gauge",
+        f"moku_eviction_queue_size {memory_store.eviction_count()}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 # ── Entry point ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    # Structured JSON logging for GCP Cloud Logging
+    if os.environ.get("GCE_METADATA_HOST"):
+        import json as _json
+        import sys as _sys
+
+        class GCPJsonFormatter(logging.Formatter):
+            def format(self, record):
+                entry = {
+                    "severity": record.levelname,
+                    "message": record.getMessage(),
+                    "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S.%fZ"),
+                }
+                if record.exc_info and record.exc_info[0]:
+                    entry["exception"] = self.formatException(record.exc_info)
+                return _json.dumps(entry)
+
+        handler = logging.StreamHandler(_sys.stdout)
+        handler.setFormatter(GCPJsonFormatter())
+        logging.basicConfig(level=logging.INFO, handlers=[handler])
+    else:
+        logging.basicConfig(level=logging.INFO)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if STANDARDS_DIR:
         logger.info("Standards directory: %s", STANDARDS_DIR)

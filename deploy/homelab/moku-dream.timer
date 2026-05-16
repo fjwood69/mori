@@ -1,0 +1,11 @@
+[Unit]
+Description=Moku dream pipeline — every 4 hours
+Documentation=https://github.com/fjwood69/ai-stack
+
+[Timer]
+OnCalendar=*:0/4
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

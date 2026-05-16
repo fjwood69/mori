@@ -89,9 +89,11 @@ class MemoryStore:
         import sqlite3
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
     def _initialize(self):
@@ -284,6 +286,39 @@ class MemoryStore:
     def _format_tags(self, tags: list[str]) -> str:
         return json.dumps(tags or [])
 
+    # ── Count methods (for observability) ────────────────────────────────
+
+    def count(self) -> int:
+        """Total memory count."""
+        import sqlite3
+        try:
+            cur = self._conn.execute("SELECT COUNT(*) FROM memories")
+            return cur.fetchone()[0]
+        except sqlite3.Error:
+            return 0
+
+    def pending_count(self) -> int:
+        """Number of pending writes awaiting approval."""
+        import sqlite3
+        try:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending'"
+            )
+            return cur.fetchone()[0]
+        except sqlite3.Error:
+            return 0
+
+    def eviction_count(self) -> int:
+        """Number of unresolved eviction queue entries."""
+        import sqlite3
+        try:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) FROM eviction_queue WHERE resolved = 0"
+            )
+            return cur.fetchone()[0]
+        except sqlite3.Error:
+            return 0
+
     def _row_to_dict(self, row) -> dict:
         """Convert a tuple row from SELECT * on memories to a dict.
 
@@ -444,6 +479,7 @@ class MemoryStore:
         origin_clients: list[str] | None = None,
         client: str | None = None,
         _skip_protection: bool = False,
+        _conn: sqlite3.Connection | None = None,
     ) -> str:
         """Create or update a memory entry (upsert by name).
 
@@ -455,8 +491,12 @@ class MemoryStore:
         Args:
             _skip_protection: Internal flag to bypass protection checks
                               (used by standards import).
+            _conn: Optional connection for transaction-wrapped writes
+                   (used by dream pipeline).
         """
         import sqlite3
+
+        conn = _conn or self._conn
 
         effective_name = name if name else _slugify(title)
         if not effective_name:
@@ -469,7 +509,7 @@ class MemoryStore:
 
         # Check if existing memory exists and is protected
         try:
-            existing_cur = self._conn.execute(
+            existing_cur = conn.execute(
                 "SELECT * FROM memories WHERE name = ?", (effective_name,)
             )
             existing_row = existing_cur.fetchone()
@@ -479,7 +519,7 @@ class MemoryStore:
         if not _skip_protection and self._is_protected(effective_name, tags_list, existing_row):
             if not self._is_trusted_client(client):
                 # Queue as pending write instead
-                self._conn.execute(
+                conn.execute(
                     """
                     INSERT INTO pending_writes
                         (memory_name, title, description, type, body, tags,
@@ -498,7 +538,8 @@ class MemoryStore:
                         client or "unknown",
                     ),
                 )
-                self._conn.commit()
+                if not _conn:
+                    conn.commit()
                 return (
                     f"Memory '{effective_name}' is protected — "
                     f"change queued as pending write (trusted dreamer review required)."
@@ -547,7 +588,7 @@ class MemoryStore:
                 existing_tier = "canonical"
 
         try:
-            self._conn.execute(
+            conn.execute(
                 """
                 INSERT INTO memories
                     (name, title, description, type, tier, body, tags, origin_session_id,
@@ -574,7 +615,8 @@ class MemoryStore:
                     protected_val, protected_domains_val,
                 ),
             )
-            self._conn.commit()
+            if not _conn:
+                conn.commit()
             return f"Memory '{effective_name}' written."
         except sqlite3.Error as e:
             return f"Database error writing memory: {e}"

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -73,6 +74,25 @@ class DreamPipeline:
         self.trusted_dreamers = trusted_dreamers or []
         self.retention_buffer = retention_buffer
         self.nats_url = nats_url
+        self._txn_conn = None  # transaction connection for BEGIN IMMEDIATE
+
+    # ── Transaction support ──────────────────────────────────────────────
+
+    def _begin_immediate(self) -> sqlite3.Connection:
+        """Open a dedicated connection and begin IMMEDIATE transaction.
+
+        Prevents other writers (other container instances, concurrent
+        dream runs) from interfering during the dream pipeline.
+        Returns the connection, which the caller must commit/rollback.
+        """
+        import sqlite3 as _sqlite3
+
+        conn = _sqlite3.connect(str(self.db_path), timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("BEGIN IMMEDIATE")
+        return conn
 
     # ── Public API ───────────────────────────────────────────────────────
 
@@ -153,53 +173,65 @@ class DreamPipeline:
             e.get("client") for e in events if e.get("client")
         ))
 
-        written = 0
-        errors = 0
-        for mem in memories:
-            if not isinstance(mem, dict) or "path" not in mem:
-                logger.warning("Skipping invalid memory entry: %s", mem)
-                errors += 1
-                continue
+        # Begin IMMEDIATE transaction — if we crash between writing memories
+        # and advancing the watermark, the transaction rolls back and the
+        # next run re-processes events cleanly (no duplicates).
+        txn_conn = self._begin_immediate()
+        try:
+            written = 0
+            errors = 0
+            for mem in memories:
+                if not isinstance(mem, dict) or "path" not in mem:
+                    logger.warning("Skipping invalid memory entry: %s", mem)
+                    errors += 1
+                    continue
 
-            path = mem["path"]
-            action = mem.get("action", "CREATE")
-            body = mem.get("body", "")
-            if not body:
-                logger.warning("Skipping memory with empty body: %s", path)
-                errors += 1
-                continue
+                path = mem["path"]
+                action = mem.get("action", "CREATE")
+                body = mem.get("body", "")
+                if not body:
+                    logger.warning("Skipping memory with empty body: %s", path)
+                    errors += 1
+                    continue
 
-            name = self._path_to_name(path)
-            try:
-                self._write_memory(mem, name, action, batch_session_ids, batch_clients)
-                logger.info("  ✓ %s %s", action, name)
-                written += 1
-            except Exception as e:
-                logger.error("  ✗ %s %s — %s", action, name, e)
-                errors += 1
+                name = self._path_to_name(path)
+                try:
+                    self._write_memory(mem, name, action, batch_session_ids, batch_clients, _conn=txn_conn)
+                    logger.info("  ✓ %s %s", action, name)
+                    written += 1
+                except Exception as e:
+                    logger.error("  ✗ %s %s — %s", action, name, e)
+                    errors += 1
 
-        max_id = max(e["id"] for e in events)
-        self._set_watermark(max_id)
+            max_id = max(e["id"] for e in events)
+            self._set_watermark(max_id, _conn=txn_conn)
 
-        # Contradiction scan: check new memories against existing canonical ones
-        superseded = 0
-        if written > 0:
-            try:
-                superseded = self._contradiction_scan(memories)
-                if superseded > 0:
-                    logger.info("Contradiction scan: %s existing memories superseded", superseded)
-            except Exception as e:
-                logger.warning("Contradiction scan failed: %s", e)
+            # Contradiction scan: check new memories against existing canonical ones
+            superseded = 0
+            if written > 0:
+                try:
+                    superseded = self._contradiction_scan(memories, _conn=txn_conn)
+                    if superseded > 0:
+                        logger.info("Contradiction scan: %s existing memories superseded", superseded)
+                except Exception as e:
+                    logger.warning("Contradiction scan failed: %s", e)
 
-        # Notify via NATS if eviction events were detected
+            pruned = self.session_log.prune_events(max(0, max_id - self.retention_buffer))
+            logger.info("Pruned %s events older than id %s", pruned, max(0, max_id - self.retention_buffer))
+
+            txn_conn.commit()
+        except Exception:
+            txn_conn.rollback()
+            raise
+        finally:
+            txn_conn.close()
+
+        # NATS publish happens outside the transaction — fire-and-forget
         if superseded > 0 and self.nats_url:
             try:
                 self._publish_eviction_notice(superseded)
             except Exception as e:
                 logger.warning("NATS eviction notice failed: %s", e)
-
-        pruned = self.session_log.prune_events(max(0, max_id - self.retention_buffer))
-        logger.info("Pruned %s events older than id %s", pruned, max(0, max_id - self.retention_buffer))
 
         logger.info("Done: %s written, %s errors, watermark at id %s", written, errors, max_id)
         return memories
@@ -210,10 +242,10 @@ class DreamPipeline:
         val = self.session_log.get_dream_state("last_dreamed_event_id", "0")
         return int(val) if val else 0
 
-    def _set_watermark(self, event_id: int) -> None:
-        self.session_log.set_dream_state("last_dreamed_event_id", str(event_id))
+    def _set_watermark(self, event_id: int, _conn: sqlite3.Connection | None = None) -> None:
+        self.session_log.set_dream_state("last_dreamed_event_id", str(event_id), _conn=_conn)
         self.session_log.set_dream_state(
-            "last_dreamed_at", datetime.now(timezone.utc).isoformat()
+            "last_dreamed_at", datetime.now(timezone.utc).isoformat(), _conn=_conn
         )
 
     def _format_events(self, events: list[dict]) -> str:
@@ -313,6 +345,7 @@ class DreamPipeline:
         action: str,
         batch_session_ids: list[str],
         batch_clients: list[str],
+        _conn: sqlite3.Connection | None = None,
     ) -> str:
         from moku_advisor.memory_store import MemoryStore
 
@@ -331,6 +364,7 @@ class DreamPipeline:
             tags=["dream-phase", action.lower()],
             origin_session_ids=batch_session_ids,
             origin_clients=batch_clients,
+            _conn=_conn,
         )
         return f"{action} {name}"
 
@@ -371,7 +405,7 @@ class DreamPipeline:
 
     # ── Contradiction scan ────────────────────────────────────────────
 
-    def _contradiction_scan(self, new_memories: list[dict]) -> int:
+    def _contradiction_scan(self, new_memories: list[dict], _conn: sqlite3.Connection | None = None) -> int:
         """Check new memories against existing canonical ones for contradictions.
 
         For each new memory, searches for existing canonical memories with
@@ -380,7 +414,8 @@ class DreamPipeline:
         """
         from moku_advisor.memory_store import MemoryStore
         store = MemoryStore(db_path=self.db_path)
-        import sqlite3
+        # Use the transaction connection for writes, store's own connection for reads
+        write_conn = _conn or store._conn
 
         superseded_count = 0
 
@@ -428,15 +463,14 @@ class DreamPipeline:
                     )
                     verdict = (response or "").strip().upper()
                     if verdict == "SUPERSEDES":
-                        store._conn.execute(
+                        write_conn.execute(
                             "UPDATE memories SET superseded_by = ?, updated_at = datetime('now') WHERE name = ?",
                             (name, cand_name),
                         )
-                        store._conn.execute(
+                        write_conn.execute(
                             "INSERT INTO eviction_queue (memory_name, reason, detail) VALUES (?, 'superseded', ?)",
                             (cand_name, f"Superseded by '{name}' in dream run"),
                         )
-                        store._conn.commit()
                         superseded_count += 1
                         logger.info("Superseded %s with %s", cand_name, name)
                 except Exception as e:

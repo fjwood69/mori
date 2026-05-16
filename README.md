@@ -269,17 +269,29 @@ files, edit them, and re-import.
 
 ### 1. Deploy the server
 
-**Container (recommended):**
+**Container (recommended) — homelab:**
 
 ```bash
-# With a direct API provider:
-docker run -d --name moku --restart=unless-stopped -p 8968:8968 \
-  -v moku-data:/data/moku \
+podman build -t localhost/moku-advisor:latest .
+podman run -d --name moku --restart=unless-stopped --network=host \
+  -v /data/moku-advisor:/data/moku-advisor:Z \
   -e MOKU_PROVIDER_MODE=direct \
   -e MOKU_API_KEY=sk-your-provider-key \
   -e MOKU_BASE_URL=https://api.openai.com/v1 \
   -e MOKU_MODEL=gpt-4o \
-  ghcr.io/fjwood69/moku:latest
+  localhost/moku-advisor:latest
+```
+
+**Container — GCP (via Terraform):**
+
+See [deploy/gcp/](deploy/gcp/) for Terraform configs. Creates a GCE e2-small VM
+with Podman rootless, persistent disk, Tailscale, and GCP Secret Manager.
+
+```bash
+cd deploy/gcp
+terraform init
+terraform plan
+terraform apply
 ```
 
 **Python directly:**
@@ -295,8 +307,14 @@ MOKU_PROVIDER_MODE=direct \
 ### 2. Verify it's running
 
 ```bash
+curl http://localhost:8968/health
+# {"status":"ok","service":"moku-advisor"}
+
 curl http://localhost:8968/api/events/health
 # {"status":"ok","total_events":0}
+
+curl http://localhost:8968/metrics
+# Prometheus-formatted metrics
 ```
 
 ### 3. Connect Claude Code
@@ -459,6 +477,87 @@ See [Event Logging](#event-logging) below.
 
 ---
 
+## Deployment
+
+### Homelab (Podman rootless)
+
+The NUC setup uses docker-compose with Podman. Systemd user services
+for the dream timer and backup timer are in [deploy/homelab/](deploy/homelab/):
+
+```bash
+# Install systemd timers (user-level)
+cp deploy/homelab/moku-dream.*   ~/.config/systemd/user/
+cp deploy/homelab/moku-backup.*  ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now moku-dream.timer
+systemctl --user enable --now moku-backup.timer
+```
+
+The compose file is at `compose/moku-advisor.yml` in the ai-stack repo.
+
+### GCP (GCE VM)
+
+See [deploy/gcp/](deploy/gcp/) for Terraform configs. Creates:
+
+- GCE e2-small VM (2 vCPU, 2GB RAM, 20GB persistent disk) — ~$12/month
+- Ubuntu 24.04 LTS with Podman rootless
+- GCS bucket for SQLite backups (daily backup, 90-day archive lifecycle)
+- GCP Secret Manager for all secrets
+- Tailscale join for access (no public ports)
+- Systemd timers for dream and backup
+
+```bash
+cd deploy/gcp
+terraform init
+terraform apply
+# Then migrate secrets from the NUC:
+bash scripts/migrate-secrets.sh
+# SSH in and verify:
+gcloud compute ssh moku-advisor
+curl http://localhost:8968/health
+```
+
+### Dual deployment (migration period)
+
+During migration, both homelab and GCP instances can run in parallel pointing
+at separate databases. Claude Code points at either one via `.mcp.json`.
+
+To copy memories from an existing instance:
+1. On the old instance: `moku-memory_export_all` → flat `.md` files
+2. On the new instance: `moku-memory_import` → loads into new DB
+3. Verify with `moku-memory_list`
+
+No downtime — both instances serve during the cutover.
+
+### Observability endpoints
+
+| Endpoint | Purpose | Response |
+|----------|---------|----------|
+| `/health` | Liveness probe | 200 if process is alive |
+| `/ready` | Readiness probe | 200 if DB accessible, 503 otherwise |
+| `/metrics` | Prometheus exposition format | Counts for memories, events, pending writes, eviction queue |
+| `/api/events/health` | Legacy event endpoint | Event count |
+
+---
+
+## Provider Policy
+
+Moku routes all LLM inference through **US and EU sovereign endpoints only**. While
+Moku can use open-weight models created in the PRC (e.g. DeepSeek, Kimi, GLM,
+Qwen), inference runs entirely outside the PRC via US-based provider infrastructure:
+
+| Model | Origin | Provider Route |
+|-------|--------|----------------|
+| Kimi K2.6 | Moonshot AI (PRC) | DeepInfra / Novita / Parasail (US) |
+| DeepSeek V4 | DeepSeek (PRC) | DeepInfra / Novita (US) |
+| GLM-5 | Zhipu AI (PRC) | DeepInfra / Novita / Parasail / Vertex (US) |
+| Qwen | Alibaba (PRC) | Nebius / DeepInfra (US/EU) |
+
+This is explicitly documented in the README because the model names alone could
+mislead colleagues into thinking direct Moonshot/DeepSeek API usage is involved.
+**It is not.** All inference goes through US-based providers that happen to host
+open-weight models.
+
 ## For teams
 
 Each team member runs their own Claude Code connected to the same Moku.
@@ -476,7 +575,8 @@ Memories are shared. Trusted dreamers approve writes.
 ```bash
 git clone https://github.com/fjwood69/moku.git
 cd moku
-docker build -t ghcr.io/fjwood69/moku:latest .
+podman build -t localhost/moku-advisor:latest .
+# Or with Docker: docker build -t moku-advisor:latest .
 ```
 
 ## License
