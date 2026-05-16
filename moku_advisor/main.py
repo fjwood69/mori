@@ -1425,9 +1425,10 @@ async def readiness(request: Request) -> JSONResponse:
 
 
 @mcp.custom_route("/metrics", methods=["GET"])
-async def metrics(request: Request) -> str:
+async def metrics(request: Request) -> Response:
     """Prometheus metrics endpoint in exposition format."""
     import time as _time
+    from starlette.responses import PlainTextResponse
 
     lines = [
         "# HELP moku_up Was the last query successful",
@@ -1446,7 +1447,7 @@ async def metrics(request: Request) -> str:
         "# TYPE moku_eviction_queue_size gauge",
         f"moku_eviction_queue_size {memory_store.eviction_count()}",
     ]
-    return "\n".join(lines) + "\n"
+    return PlainTextResponse("\n".join(lines) + "\n")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────

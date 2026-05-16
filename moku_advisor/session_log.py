@@ -273,8 +273,12 @@ class SessionLog:
 
     def count_events(self) -> int:
         """Total event count (for monitoring)."""
-        cur = self._conn.execute("SELECT COUNT(*) FROM session_events")
-        return cur.fetchone()[0]
+        import sqlite3
+        try:
+            cur = self._conn.execute("SELECT COUNT(*) FROM session_events")
+            return cur.fetchone()[0]
+        except sqlite3.Error:
+            return 0
 
     def prune_events(self, before_event_id: int, _conn: sqlite3.Connection | None = None) -> int:
         """Delete events older than the given event id.
