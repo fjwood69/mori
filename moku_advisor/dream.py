@@ -15,6 +15,7 @@ from pathlib import Path
 
 from moku_advisor.bifrost_client import BifrostClient
 from moku_advisor.session_log import SessionLog
+from moku_advisor.memory_store import MemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ class DreamPipeline:
         self.db_path = Path(db_path)
         self.client = bifrost_client
         self.session_log = SessionLog(db_path)
+        self.memory_store = MemoryStore(db_path)
         self.trusted_dreamers = trusted_dreamers or []
         self.retention_buffer = retention_buffer
         self.nats_url = nats_url
@@ -347,14 +349,10 @@ class DreamPipeline:
         batch_clients: list[str],
         _conn: sqlite3.Connection | None = None,
     ) -> str:
-        from moku_advisor.memory_store import MemoryStore
-
-        store = MemoryStore(db_path=self.db_path)
-
         path = mem.get("path", name)
         body = mem.get("body", "")
 
-        store.write(
+        self.memory_store.write(
             name=name,
             title=path.replace(".md", "").replace("/", " — "),
             description=mem.get("reason", ""),
@@ -412,10 +410,7 @@ class DreamPipeline:
         overlapping tags/name prefixes and runs a lightweight LLM check.
         Returns count of supersessions detected.
         """
-        from moku_advisor.memory_store import MemoryStore
-        store = MemoryStore(db_path=self.db_path)
-        # Use the transaction connection for writes, store's own connection for reads
-        write_conn = _conn or store._conn
+        write_conn = _conn or self.memory_store._conn
 
         superseded_count = 0
 
@@ -429,7 +424,7 @@ class DreamPipeline:
             prefix = name.split("-")[0] if "-" in name else name
 
             try:
-                cur = store._conn.execute(
+                cur = self.memory_store._conn.execute(
                     """
                     SELECT name, title, body FROM memories
                     WHERE tier = 'canonical'
