@@ -1462,11 +1462,10 @@ async def precompact(request: Request) -> JSONResponse:
             stop_reason=event.stop_reason,
         )
 
-        # Run dream pipeline in thread executor to avoid blocking the event loop
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, lambda: dream_pipeline.run()
-        )
+        # Run dream pipeline synchronously. SQLite connections are thread-bound
+        # so this must run on the main thread. PreCompact fires once per
+        # compaction so blocking briefly is acceptable.
+        result = dream_pipeline.run()
         memories_count = len(result) if result else 0
         logger.info(
             "PreCompact: dreamed session %s (event_id=%s, memories=%s)",
