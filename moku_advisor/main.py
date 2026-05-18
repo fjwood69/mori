@@ -9,6 +9,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -1419,6 +1420,67 @@ async def events_health(request: Request) -> JSONResponse:
         "status": "ok",
         "total_events": session_log.count_events(),
     })
+
+
+@mcp.custom_route("/api/precompact", methods=["POST"])
+async def precompact(request: Request) -> JSONResponse:
+    """PreCompact hook: log the event and immediately run dream pipeline synchronously.
+
+    This endpoint is designed for the PreCompact lifecycle hook which fires before
+    context compression. Unlike /api/events/raw, this also triggers a synchronous
+    dream run so memories are distilled before the context window compacts.
+
+    The dream pipeline runs in a thread executor to avoid blocking the async event loop.
+    """
+    if not _check_auth(request):
+        return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
+
+    try:
+        body = await request.json()
+        if not body:
+            return JSONResponse({"status": "skipped", "reason": "empty body"}, status_code=200)
+
+        client = _get_client_from_request(request)
+        event = _map_hook_payload(body, client_override=client)
+
+        if not event.session_id:
+            return JSONResponse({"status": "skipped", "reason": "no session_id"}, status_code=200)
+
+        # Log the event first
+        row_id = session_log.append_event(
+            session_id=event.session_id,
+            event_name=event.event_name,
+            client=event.client,
+            tool_name=event.tool_name,
+            tool_input=event.tool_input,
+            tool_response=event.tool_response,
+            tool_error=event.tool_error,
+            model=event.model,
+            cwd=event.cwd,
+            transcript_path=event.transcript_path,
+            prompt=event.prompt,
+            stop_reason=event.stop_reason,
+        )
+
+        # Run dream pipeline in thread executor to avoid blocking the event loop
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, lambda: dream_pipeline.run()
+        )
+        memories_count = len(result) if result else 0
+        logger.info(
+            "PreCompact: dreamed session %s (event_id=%s, memories=%s)",
+            event.session_id, row_id, memories_count,
+        )
+        return JSONResponse({
+            "status": "dreamed",
+            "session_id": event.session_id,
+            "event_id": row_id,
+            "memories": memories_count,
+        }, status_code=200)
+    except Exception as e:
+        logger.error("PreCompact failed: %s", e)
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
 # ── Observability endpoints ──────────────────────────────────────────────
