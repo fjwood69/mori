@@ -1430,7 +1430,8 @@ async def precompact(request: Request) -> JSONResponse:
     context compression. Unlike /api/events/raw, this also triggers a synchronous
     dream run so memories are distilled before the context window compacts.
 
-    The dream pipeline runs in a thread executor to avoid blocking the async event loop.
+    The dream pipeline runs synchronously — SQLite connections are thread-bound.
+    PreCompact fires once per long session so blocking briefly is acceptable.
     """
     if not _check_auth(request):
         return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
@@ -1479,6 +1480,23 @@ async def precompact(request: Request) -> JSONResponse:
         }, status_code=200)
     except Exception as e:
         logger.error("PreCompact failed: %s", e)
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/dream/run", methods=["GET", "POST"])
+async def dream_trigger(request: Request) -> JSONResponse:
+    """Cron-triggerable dream run. Calls dream_pipeline.run() synchronously.
+
+    GET or POST. No auth required (only reachable via Tailscale).
+    Logs the result and returns summary.
+    """
+    try:
+        result = dream_pipeline.run()
+        count = len(result) if result else 0
+        logger.info("Cron dream: %s memories written", count)
+        return JSONResponse({"status": "ok", "memories": count})
+    except Exception as e:
+        logger.error("Cron dream failed: %s", e)
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
