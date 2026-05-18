@@ -31,7 +31,7 @@ Output a JSON array of memory objects:
 Capture: architecture, conventions, preferences, gotchas, recurring patterns, deferred decisions, cross-tool context.
 Ignore: one-off bugs, standard fixes, noise, anything recoverable from docs or git.
 
-Return ONLY the JSON array. No prose outside it."""
+CRITICAL: Begin your response must start with [ and end with ]. No prose before or after the JSON."""
 
 CONTRADICTION_SCAN_PROMPT = """You are comparing two technical memories for logical contradictions.
 
@@ -80,11 +80,12 @@ class DreamPipeline:
 
     # ── Transaction support ──────────────────────────────────────────────
 
-    def _begin_immediate(self) -> sqlite3.Connection:
-        """Open a dedicated connection and begin IMMEDIATE transaction.
+    def _begin_transaction(self) -> sqlite3.Connection:
+        """Open a dedicated connection and begin a transaction.
 
-        Prevents other writers (other container instances, concurrent
-        dream runs) from interfering during the dream pipeline.
+        Uses BEGIN DEFERRED so DDL-free operations (reads + writes
+        against already-initialised schema) don't contend with other
+        connections. Schema bootstrapping runs separately at startup.
         Returns the connection, which the caller must commit/rollback.
         """
         import sqlite3 as _sqlite3
@@ -93,7 +94,7 @@ class DreamPipeline:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("BEGIN DEFERRED")
         return conn
 
     # ── Public API ───────────────────────────────────────────────────────
@@ -178,7 +179,7 @@ class DreamPipeline:
         # Begin IMMEDIATE transaction — if we crash between writing memories
         # and advancing the watermark, the transaction rolls back and the
         # next run re-processes events cleanly (no duplicates).
-        txn_conn = self._begin_immediate()
+        txn_conn = self._begin_transaction()
         try:
             written = 0
             errors = 0
@@ -218,7 +219,7 @@ class DreamPipeline:
                 except Exception as e:
                     logger.warning("Contradiction scan failed: %s", e)
 
-            pruned = self.session_log.prune_events(max(0, max_id - self.retention_buffer))
+            pruned = self.session_log.prune_events(max(0, max_id - self.retention_buffer), _conn=txn_conn)
             logger.info("Pruned %s events older than id %s", pruned, max(0, max_id - self.retention_buffer))
 
             txn_conn.commit()
@@ -299,7 +300,7 @@ class DreamPipeline:
             system=DREAM_SYSTEM_PROMPT,
             user=events_text,
             vk="dream",
-            max_tokens=4096,
+            max_tokens=16384,
             temperature=0.3,
         )
 

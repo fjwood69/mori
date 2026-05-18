@@ -26,21 +26,19 @@ class SessionLog:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self._conn: sqlite3.Connection | None = None
-        self._initialize()
+        self._conn = self._connect()
 
-    def _connect(self) -> sqlite3.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.db_path), timeout=30)
+    @staticmethod
+    def bootstrap_schema(db_path: str | Path) -> None:
+        """Create all tables and indexes. Call once at startup before concurrency."""
+        p = Path(db_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(p), timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=30000")
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _initialize(self):
-        self._conn = self._connect()
-        self._conn.executescript("""
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS session_events (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id      TEXT NOT NULL,
@@ -65,7 +63,22 @@ class SessionLog:
                 value TEXT NOT NULL
             );
         """)
-        self._conn.commit()
+        conn.commit()
+        conn.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _initialize(self):
+        """Open the connection. Schema is bootstrapped by bootstrap_schema()."""
+        self._conn = self._connect()
 
     def close(self):
         if self._conn:
