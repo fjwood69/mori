@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 VK_CONFIG: dict[str, str] = {
     "advisor": "moku-advisor-local",
     "dream": "moku-dream-local",
+    "fast": "moku-fast-local",
 }
 
 
@@ -71,6 +72,12 @@ class BifrostClient:
         # Bifrost mode VK overrides
         self.bifrost_advisor_vk = os.environ.get("MOKU_BIFROST_ADVISOR_VK", "moku-advisor-local")
         self.bifrost_dream_vk = os.environ.get("MOKU_BIFROST_DREAM_VK", "moku-dream-local")
+        self.bifrost_fast_vk = os.environ.get("MOKU_BIFROST_FAST_VK", "moku-fast-local")
+
+        # Model names per VK (set via env, falls back to defaults)
+        self.advisor_model = os.environ.get("MOKU_ADVISOR_MODEL", "moonshotai/kimi-k2.6")
+        self.dream_model = os.environ.get("MOKU_DREAM_MODEL", "moonshotai/kimi-k2.6")
+        self.fast_model = os.environ.get("MOKU_FAST_MODEL", "deepseek/deepseek-v4-flash")
 
         if self.mode == "direct" and not self.direct_api_key:
             logger.warning(
@@ -92,10 +99,18 @@ class BifrostClient:
                 timeout=self.timeout,
             ), model
         else:
-            api_key = self.bifrost_dream_vk if vk == "dream" else self.bifrost_advisor_vk
-            # Also override VK_CONFIG for backwards compat
-            effective_key = VK_CONFIG.get(vk, api_key)
-            model = "kimi-k2.6" if vk == "advisor" else "deepseek-v4-flash"
+            key_map = {
+                "advisor": self.bifrost_advisor_vk,
+                "dream": self.bifrost_dream_vk,
+                "fast": self.bifrost_fast_vk,
+            }
+            effective_key = VK_CONFIG.get(vk) or key_map.get(vk, self.bifrost_advisor_vk)
+            model_map = {
+                "advisor": self.advisor_model,
+                "dream": self.dream_model,
+                "fast": self.fast_model,
+            }
+            model = model_map.get(vk, self.advisor_model)
             return OpenAI(
                 base_url=self.base_url,
                 api_key=effective_key,
@@ -106,7 +121,7 @@ class BifrostClient:
         self,
         system: str,
         user: str,
-        vk: Literal["advisor", "dream"] = "advisor",
+        vk: Literal["advisor", "dream", "fast"] = "advisor",
         max_tokens: int = 4096,
         temperature: float = 0.3,
     ) -> str:

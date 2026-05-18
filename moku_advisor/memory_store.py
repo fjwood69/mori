@@ -81,28 +81,30 @@ class MemoryStore:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self._conn = None
-        self._initialize()
+        self._conn = self._connect()
 
     # ── connection management ──────────────────────────────────────────
 
-    def _connect(self):
+    @staticmethod
+    def bootstrap_schema(db_path: str | Path) -> None:
+        """Create all tables, indexes, and config rows.
+
+        Must be called exactly once at process startup, before any
+        MemoryStore or SessionLog instances are created. Uses a
+        private connection that is closed after the schema is applied.
+        """
         import sqlite3
 
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.db_path), timeout=30)
+        p = Path(db_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(p), timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=30000")
-        return conn
-
-    def _initialize(self):
-        import sqlite3
-
-        self._conn = self._connect()
 
         # Main memories table
-        self._conn.execute(
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS memories (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,12 +137,12 @@ class MemoryStore:
         for col_def in new_columns:
             col_name = col_def.split()[0]
             try:
-                self._conn.execute(f"ALTER TABLE memories ADD COLUMN {col_def}")
+                conn.execute(f"ALTER TABLE memories ADD COLUMN {col_def}")
             except sqlite3.OperationalError:
                 pass  # column already exists
 
         # Memory versions table
-        self._conn.execute(
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS memory_versions (
                 version_id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,15 +159,15 @@ class MemoryStore:
             )
             """
         )
-        self._conn.execute(
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mem_versions_name ON memory_versions(memory_name)"
         )
-        self._conn.execute(
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mem_versions_time ON memory_versions(created_at)"
         )
 
         # Pending writes table (trusted dreamer approvals)
-        self._conn.execute(
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS pending_writes (
                 id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -186,15 +188,15 @@ class MemoryStore:
             )
             """
         )
-        self._conn.execute(
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_writes(status)"
         )
-        self._conn.execute(
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_pending_memory ON pending_writes(memory_name)"
         )
 
         # Dreamer config table
-        self._conn.execute(
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS dreamer_config (
                 key   TEXT PRIMARY KEY,
@@ -204,7 +206,7 @@ class MemoryStore:
         )
 
         # Eviction queue table
-        self._conn.execute(
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS eviction_queue (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -218,10 +220,10 @@ class MemoryStore:
             )
             """
         )
-        self._conn.execute(
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_evict_memory ON eviction_queue(memory_name)"
         )
-        self._conn.execute(
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_evict_status ON eviction_queue(resolved)"
         )
 
@@ -231,16 +233,34 @@ class MemoryStore:
             "MOKU_TRUSTED_DREAMERS",
             "[]",
         )
-        self._conn.execute(
+        conn.execute(
             "INSERT OR IGNORE INTO dreamer_config (key, value) VALUES (?, ?)",
             ("trusted_clients", default_trusted),
         )
-        self._conn.execute(
+        conn.execute(
             "INSERT OR IGNORE INTO dreamer_config (key, value) VALUES (?, ?)",
             ("protected_tag_prefixes", '["infra", "reference", "standard"]'),
         )
 
-        self._conn.commit()
+        conn.commit()
+        conn.close()
+
+    def _connect(self):
+        import sqlite3
+
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+        return conn
+
+    def _initialize(self):
+        """Open the connection. Schema is bootstrapped by bootstrap_schema()."""
+        import sqlite3
+
+        self._conn = self._connect()
 
     def close(self):
         if self._conn:
@@ -410,12 +430,14 @@ class MemoryStore:
                     return True
         return False
 
-    def _snapshot_to_versions(self, name: str, version_note: str = ""):
+    def _snapshot_to_versions(self, name: str, version_note: str = "", *, _conn: sqlite3.Connection | None = None):
         """Snapshot current memory state into memory_versions before upsert."""
         import sqlite3
 
+        conn = _conn or self._conn
+
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 "SELECT title, description, type, body, tags, origin_session_ids, origin_clients "
                 "FROM memories WHERE name = ?",
                 (name,),
@@ -427,7 +449,7 @@ class MemoryStore:
         if not row:
             return
 
-        self._conn.execute(
+        conn.execute(
             """
             INSERT INTO memory_versions
                 (memory_name, title, description, type, body, tags,
@@ -438,7 +460,7 @@ class MemoryStore:
         )
 
         # Prune oldest versions if over limit
-        self._conn.execute(
+        conn.execute(
             """
             DELETE FROM memory_versions
             WHERE version_id IN (
@@ -546,7 +568,7 @@ class MemoryStore:
                 )
 
         # Snapshot current state before upsert
-        self._snapshot_to_versions(effective_name, version_note="updated")
+        self._snapshot_to_versions(effective_name, version_note="updated", _conn=conn)
 
         # Merge origin arrays for attribution
         if existing_row:

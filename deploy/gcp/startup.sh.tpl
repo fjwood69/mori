@@ -134,16 +134,24 @@ sleep 5
 if [ ! -f /data/bifrost/config.db ]; then
   echo "Seeding Bifrost config..."
   python3 /dev/stdin << SEEDEOF
-import sqlite3, json, os, sys, uuid
+import sqlite3, json, os, sys, uuid, subprocess
 
+PROJECT = "${project_id}"
 DB = "/data/bifrost/config.db"
-conn = sqlite3.connect(DB)
 
-def env(name):
-    v = os.environ.get(name, "")
-    if not v:
-        print(f"  WARN: {name} not set, skipping")
-    return v
+def gcp_secret(name):
+    """Fetch a secret from GCP Secret Manager."""
+    try:
+        r = subprocess.run(
+            ["gcloud", "secrets", "versions", "access", "latest",
+             "--secret", name, "--project", PROJECT],
+            capture_output=True, text=True, timeout=10
+        )
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+conn = sqlite3.connect(DB)
 
 print("  Creating providers...")
 
@@ -170,16 +178,18 @@ prov_map = {r[1]: r[0] for r in conn.execute("SELECT id, name FROM config_provid
 print(f"  Provider IDs: {prov_map}")
 
 keys_map = {
-    "moku-genai-deepinfra": ("Deepinfra", env("DEEPINFRA_API_KEY")),
-    "moku-genai-novita": ("Novita", env("NOVITA_API_KEY")),
-    "moku-genai-parasail": ("parasail", env("PARASAIL_API_KEY")),
-    "moku-genai-vertex": ("vertex", env("VERTEX_API_KEY")),
-    "moku-genai-cloudflare": ("Cloudflare Workers AI", env("CLOUDFLARE_API_KEY")),
-    "moku-genai-fireworks": ("fireworks", env("FIREWORKS_API_KEY")),
+    "moku-genai-deepinfra": ("Deepinfra", "DEEPINFRA_API_KEY"),
+    "moku-genai-novita": ("Novita", "NOVITA_API_KEY"),
+    "moku-genai-parasail": ("parasail", "PARASAIL_API_KEY"),
+    "moku-genai-vertex": ("vertex", "VERTEX_API_KEY"),
+    "moku-genai-cloudflare": ("Cloudflare Workers AI", "CLOUDFLARE_API_KEY"),
+    "moku-genai-fireworks": ("fireworks", "FIREWORKS_API_KEY"),
 }
 
-for kname, (prov, value) in keys_map.items():
+for kname, (prov, secret_name) in keys_map.items():
+    value = gcp_secret(secret_name)
     if not value:
+        print(f"  WARN: {secret_name} not found in Secret Manager, skipping")
         continue
     pid = prov_map.get(prov)
     if not pid:
@@ -247,7 +257,7 @@ cat > "$BACKUP_SCRIPT" << 'BACKUPEOF'
 # Daily SQLite backup to GCS backup bucket using metadata server auth
 set -u
 DB_DIR="/data/moku-advisor"
-BUCKET="moku-advisor-backups-${backup_bucket}"
+BUCKET="${backup_bucket}"
 DATE=$(date +%Y%m%d)
 
 # Get GCE service account access token from metadata server

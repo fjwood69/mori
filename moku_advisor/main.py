@@ -22,6 +22,7 @@ from starlette.responses import JSONResponse
 from moku_advisor.bifrost_client import BifrostClient
 from moku_advisor.dream import DreamPipeline
 from moku_advisor.memory_store import MemoryStore
+from moku_advisor.metrics import init_metrics, shutdown_metrics
 from moku_advisor.session_log import SessionLog
 
 logger = logging.getLogger(__name__)
@@ -112,10 +113,26 @@ MAX_TOTAL_FILE_SIZE = 200 * 1024  # 200KB total
 
 # ── Global state ─────────────────────────────────────────────────────────
 
+# Bootstrap schema before any connections are created
+MemoryStore.bootstrap_schema(db_path=DATA_DIR / "memories.db")
+SessionLog.bootstrap_schema(db_path=DATA_DIR / "memories.db")
+
+# Initialise OpenTelemetry metrics
+init_metrics()
+
 mcp = FastMCP(MCP_SERVER_NAME)
 bifrost = BifrostClient(base_url=BIFROST_BASE_URL, timeout=BIFROST_TIMEOUT)
 session_log = SessionLog(db_path=DATA_DIR / "memories.db")
 memory_store = MemoryStore(db_path=DATA_DIR / "memories.db")
+
+# Verify WAL mode on all connections
+for label, conn in [("memory_store", memory_store._conn), ("session_log", session_log._conn)]:
+    try:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if mode != "wal":
+            logger.warning("PRAGMA journal_mode for %s journal_mode=%s (expected 'wal')", label, mode)
+    except Exception as e:
+        logger.warning("Could not verify journal_mode for %s: %s", label, e)
 dream_pipeline = DreamPipeline(
     db_path=DATA_DIR / "memories.db",
     bifrost_client=bifrost,
@@ -368,7 +385,7 @@ async def consult_advisor(
         except Exception:
             pass
 
-    max_tokens = {"quick": 1024, "balanced": 4096, "deep": 8192}.get(depth, 4096)
+    max_tokens = {"quick": 2048, "balanced": 8192, "deep": 16384}.get(depth, 8192)
 
     try:
         advice = bifrost.consult(
@@ -1425,29 +1442,46 @@ async def readiness(request: Request) -> JSONResponse:
 
 
 @mcp.custom_route("/metrics", methods=["GET"])
-async def metrics(request: Request) -> Response:
-    """Prometheus metrics endpoint in exposition format."""
-    import time as _time
+async def metrics(request: Request) -> PlainTextResponse:
+    """Prometheus metrics endpoint in OpenMetrics exposition format.
+
+    Serves from the OTel SDK's Prometheus exporter bridge. Gauges are
+    updated with current DB values on each scrape so the output is always
+    consistent with the store state.
+    """
     from starlette.responses import PlainTextResponse
 
-    lines = [
-        "# HELP moku_up Was the last query successful",
-        "# TYPE moku_up gauge",
-        "moku_up 1",
-        "# HELP moku_memories_total Total number of memories in the store",
-        "# TYPE moku_memories_total gauge",
-        f"moku_memories_total {memory_store.count()}",
-        "# HELP moku_events_total Total number of session events logged",
-        "# TYPE moku_events_total gauge",
-        f"moku_events_total {session_log.count_events()}",
-        "# HELP moku_pending_writes Number of pending writes awaiting approval",
-        "# TYPE moku_pending_writes gauge",
-        f"moku_pending_writes {memory_store.pending_count()}",
-        "# HELP moku_eviction_queue_size Number of unresolved eviction queue entries",
-        "# TYPE moku_eviction_queue_size gauge",
-        f"moku_eviction_queue_size {memory_store.eviction_count()}",
-    ]
-    return PlainTextResponse("\n".join(lines) + "\n")
+    try:
+        from prometheus_client import generate_latest, REGISTRY as prom_registry
+
+        # Push current DB values onto the global OTel instruments
+        memories_gauge.set(memory_store.count())
+        events_counter.set(session_log.count_events())
+        pending_writes_gauge.set(memory_store.pending_count())
+        eviction_queue_gauge.set(memory_store.eviction_count())
+
+        data = generate_latest(prom_registry)
+        return PlainTextResponse(data.decode("utf-8"))
+    except Exception:
+        # Fallback: hand-rolled text when Prometheus bridge not installed
+        lines = [
+            "# HELP moku_up Was the last query successful",
+            "# TYPE moku_up gauge",
+            "moku_up 1",
+            "# HELP moku_memories_total Total number of memories in the store",
+            "# TYPE moku_memories_total gauge",
+            f"moku_memories_total {memory_store.count()}",
+            "# HELP moku_events_total Total number of session events logged",
+            "# TYPE moku_events_total gauge",
+            f"moku_events_total {session_log.count_events()}",
+            "# HELP moku_pending_writes Number of pending writes awaiting approval",
+            "# TYPE moku_pending_writes gauge",
+            f"moku_pending_writes {memory_store.pending_count()}",
+            "# HELP moku_eviction_queue_size Number of unresolved eviction queue entries",
+            "# TYPE moku_eviction_queue_size gauge",
+            f"moku_eviction_queue_size {memory_store.eviction_count()}",
+        ]
+        return PlainTextResponse("\n".join(lines) + "\n")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────
@@ -1479,4 +1513,4 @@ if __name__ == "__main__":
         logger.info("Standards directory: %s", STANDARDS_DIR)
         result = import_standards()
         logger.info(result)
-    mcp.run(transport="sse", host="0.0.0.0", port=8968, log_level="info")
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=8968, log_level="info")
