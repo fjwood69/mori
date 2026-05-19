@@ -60,20 +60,20 @@ external dependencies.
 ### 3. Dream Phase
 
 Session events are captured via Claude Code lifecycle hooks (PostToolUse,
-UserPromptSubmit, Stop). The dream pipeline reads events since the last
-watermark, sends them to a configurable LLM, and writes extracted memories
-back to the store.
+PostToolUseFailure, UserPromptSubmit, Stop, PreCompact). The dream pipeline
+reads events since the last watermark, sends them to a configurable LLM, and
+writes extracted memories back to the store.
 
 ```
 Hook fires  →  POST /api/events/raw  →  SQLite events table
-                                           ↓
-                                    dream_run() reads since watermark
-                                           ↓
-                                    LLM distills events → structured memories
-                                           ↓
-                                    memories written to store (with attribution)
-                                           ↓
-                                    watermark advanced
+                                             ↓
+PreCompact  →  POST /api/precompact  →  dream_run() reads since watermark
+                                             ↓
+                                      LLM distills events → structured memories
+                                             ↓
+                                      memories written to store (with attribution)
+                                             ↓
+                                      watermark advanced
 ```
 
 Run it: `/dream` or `moku-dream_run`. Check state: `/dream --status`.
