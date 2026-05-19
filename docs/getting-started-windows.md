@@ -148,8 +148,9 @@ If you get a connection error:
 ## That's it
 
 You're now connected to a shared Moku. Every session event feeds the dream
-pipeline. Run `/dream` periodically to distil your sessions into the shared
-memory store. Run `/pensieve` to search what others have learned.
+pipeline automatically — the server runs it on a schedule and before context
+compression. You'll rarely need to run `/dream` yourself. Use `/pensieve` to
+search what others have learned.
 
 Your friend (the server owner) handles updates, backups, and scaling.
 You just use it.
