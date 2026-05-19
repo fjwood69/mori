@@ -14,7 +14,8 @@ account, no Bifrost required — though those all work too.
 ### 1. Event Logging
 
 Claude Code lifecycle hooks POST session events to `POST /api/events/raw`.
-These events feed the dream pipeline.
+These events feed the dream pipeline. The `PreCompact` hook posts to
+`POST /api/precompact` and triggers an immediate synchronous dream.
 
 ```bash
 # Minimal hook config — add to settings.json:
@@ -28,6 +29,8 @@ event log. This is the raw material everything else builds on.
 
 **What it captures:**
 - `PostToolUse` — tool name, input, output, errors
+- `PostToolUseFailure` — tool call errors (high-value for dream distillation)
+- `PreCompact` — session snapshot before context compression (triggers synchronous dream)
 - `UserPromptSubmit` — the prompt text
 - `Stop` / `SessionEnd` — stop reason, model used
 - Session ID, client hostname, working directory, transcript path
