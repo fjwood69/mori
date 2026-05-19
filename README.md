@@ -9,6 +9,105 @@ account, no Bifrost required — though those all work too.
 
 ---
 
+## Multi-Instance Coherence
+
+If you run Claude Code across multiple machines or profiles — one focused on the
+API layer, another on the frontend, a third on infrastructure — you already know
+the problem: each instance is brilliant in isolation, but none of them know what
+the others decided.
+
+Instance B doesn't know that Instance A just changed the auth contract. Instance C
+doesn't know that Instance B's deployment assumptions shifted. They find out the
+hard way, mid-task, when something breaks.
+
+Moku solves this.
+
+Every CC instance sends its session events — prompts, tool calls, errors, decisions
+— to the shared Moku server. The dream pipeline distils those events from **all
+instances** into a unified memory store. At the start of any session, `/brief`
+surfaces what the other instances have been doing: the cross-cutting decisions,
+the architectural tensions, the gotchas one instance hit that another is about
+to repeat.
+
+From turn one, each instance knows what the others know.
+
+```
+Instance A (API)          Instance B (Frontend)      Instance C (Infra)
+     │                          │                          │
+     └──────────────────────────┴──────────────────────────┘
+                                │
+                         Moku dream pipeline
+                                │
+                    Unified memory store (SQLite)
+                                │
+                    /brief injects shared context
+                    into every new session
+```
+
+### Real-time awareness via NATS
+
+The dream pipeline runs on a schedule. For decisions that
+can't wait, NATS provides real-time cross-instance messaging:
+
+```bash
+# Instance A just changed the auth contract:
+/nats pub "Auth contract changed — JWT now includes org_id claim. See memory: api-auth-contract"
+
+# Instance B picks it up immediately:
+/nats sub
+→ [Instance A] Auth contract changed — JWT now includes org_id claim.
+```
+
+Any instance can publish, any instance can subscribe. Messages replay for 7 days
+so instances that were offline don't miss decisions.
+
+### What gets shared
+
+The dream pipeline captures and synthesises across instances:
+
+- **Architecture decisions** — "Instance A moved to event-driven auth; Instance B
+  should update its session handling assumptions"
+- **Cross-cutting gotchas** — "This provider 429s under load; all instances should
+  use the fallback routing"
+- **Deferred decisions** — "Instance C flagged a migration risk; nobody has resolved it yet"
+- **Conventions** — patterns that emerge across sessions become shared standards
+
+What doesn't get shared: one-off bugs, noise, anything recoverable from docs or git.
+The dream pipeline filters aggressively. You get signal, not a transcript.
+
+### Setup for multi-instance use
+
+Point every instance at the same Moku server. That's it.
+
+```json
+{
+  "mcpServers": {
+    "moku": {
+      "type": "http",
+      "url": "http://<your-moku-server>:8968/mcp"
+    }
+  }
+}
+```
+
+Add the lifecycle hooks to each instance's `settings.json` so events flow in.
+Each instance gets a `?client=<hostname>` tag so the dream pipeline knows who
+contributed what. Attribution is preserved — you can always trace a memory back
+to the session and device that produced it.
+
+### Recommended dream cadence for multi-instance setups
+
+| Instances | Recommended interval |
+|-----------|---------------------|
+| 1–2 | 1 hour |
+| 3–5 | 30 minutes |
+| 5+ | 30 minutes + manual `/dream` after significant decisions |
+
+The `PreCompact` hook triggers an immediate dream run before any instance's
+context is compressed — ensuring nothing is lost at the moment it matters most.
+
+---
+
 ## Core capabilities
 
 ### 1. Event Logging
