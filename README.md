@@ -482,7 +482,7 @@ See [Event Logging](#event-logging) below.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MOKU_PROVIDER_MODE` | `bifrost` | `direct` or `bifrost` |
+| `MOKU_PROVIDER_MODE` | `bifrost` | `direct` or `bifrost`. New users without a custom gateway should set `direct`. |
 | `MOKU_API_KEY` | — | Provider key (required in `direct` mode) |
 | `MOKU_BASE_URL` | depends | OpenAI-compatible base URL |
 | `MOKU_MODEL` | `moonshotai/kimi-k2.6` | Advisor model |
@@ -495,6 +495,21 @@ See [Event Logging](#event-logging) below.
 | `MOKU_SKILLS_DIR` | — | Path to slash command skill files (for /update) |
 | `MOKU_BIFROST_TIMEOUT` | `300` | API timeout in seconds |
 
+### Dream interval
+
+How often to run the dream phase depends on session density. The `PreCompact`
+hook fires on context compression regardless of schedule, so the cron is just
+a safety net for sessions that never compact.
+
+| Team size | Suggested interval | Rationale |
+|-----------|-------------------|-----------|
+| Solo | 4–12 hours | Few events per session, low risk of losing context |
+| 1–4 people | 1–4 hours | More events, catches cold restarts and short sessions |
+| 5–10 people | 15–30 minutes | High event density, any session could be the last before the server goes down |
+
+Set via systemd timer (`deploy/homelab/moku-dream.timer`), cron, or
+`POST /api/dream/run` from your preferred scheduler.
+
 ### Ports
 
 | Port | Service |
@@ -505,10 +520,9 @@ See [Event Logging](#event-logging) below.
 
 ## Deployment
 
-### Homelab (Podman rootless)
+### Homelab (Podman)
 
-The NUC setup uses docker-compose with Podman. Systemd user services
-for the dream timer and backup timer are in [deploy/homelab/](deploy/homelab/):
+Systemd user services for the dream timer and backup timer are in [deploy/homelab/](deploy/homelab/):
 
 ```bash
 # Install systemd timers (user-level)
@@ -518,8 +532,6 @@ systemctl --user daemon-reload
 systemctl --user enable --now moku-dream.timer
 systemctl --user enable --now moku-backup.timer
 ```
-
-The compose file is at `compose/moku-advisor.yml` in the ai-stack repo.
 
 ### GCP (GCE VM)
 
@@ -578,7 +590,7 @@ Qwen), inference runs entirely outside the PRC via US-based provider infrastruct
 | DeepSeek V4 | DeepSeek | DeepInfra / Novita (US) |
 | GLM-5 | Zhipu AI | DeepInfra / Novita / Parasail / Vertex (US) |
 | Qwen | Alibaba | Nebius / DeepInfra (US/EU) |
-| Gemma 4 31B it | Google | Vertex AI (NAM)
+| Gemma 4 31B it | Google | Vertex AI (NAM) |
 | Gemini 3 Flash Preview | Google | Vertex AI (NAM)
 
 This is explicitly documented in the README because the model names alone could
