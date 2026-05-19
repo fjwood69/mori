@@ -413,6 +413,29 @@ See [Event Logging](#event-logging) below.
 
 **Slash commands**: `/brief`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`, `/req`
 
+### Quick Reference
+
+| Command | Usage | What it does |
+|---------|-------|-------------|
+| `/brief` | `/brief` | Load shared memories + standards + dream state into context |
+| `/consult` | `/consult "question" [--focus security] [--depth quick] [--file path]` | Get strategic guidance from the advisor model |
+| `/dream` | `/dream` | Distill undreamed events into memories |
+| | `/dream --status` | Show dream pipeline state (watermark, event counts) |
+| | `/dream --dry-run` | Preview what would be produced without writing |
+| `/pensieve` | `/pensieve <query>` | Search memories by keyword |
+| | `/pensieve read <name>` | Read a specific memory by its kebab-case name |
+| | `/pensieve --type decision --since 30d` | Filter by type and recency |
+| | `/pensieve --tag security` | Filter by tag |
+| `/req` | `/req` | Show requirements dashboard grouped by project |
+| | `/req --project bifrost` | Filter by project |
+| | `/req --project bifrost --status pending` | Filter by project and status |
+| | `/req add "Title" --project bifrost --pri high` | Create a new requirement |
+| | `/req done req-bifrost-<name>` | Mark a requirement complete |
+| `/nats` | `/nats ping` | Check NATS connection status |
+| | `/nats sub` | Show recent cross-device messages |
+| | `/nats pub "message"` | Publish a message to other devices |
+| `/update` | `/update --device twiggy --skill nats` | Generate install commands for a skill on a device |
+
 ---
 
 ## Architecture
