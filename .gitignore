@@ -8,6 +8,9 @@ dist/
 *.db
 /data/
 
+# Local proposals
+examples/standards/VS Code Event Shipper — Proposal.md
+
 # Terraform
 deploy/gcp/terraform.tfvars
 deploy/gcp/.terraform/
