@@ -7,6 +7,18 @@
         "command": "curl -sf -X POST 'http://localhost:8968/api/events/raw?client=my-hostname' -H 'Content-Type: application/json' -d @- >/dev/null 2>&1; exit 0"
       }]
     }],
+    "PostToolUseFailure": [{
+      "hooks": [{
+        "type": "command",
+        "command": "curl -sf -X POST 'http://localhost:8968/api/events/raw?client=my-hostname' -H 'Content-Type: application/json' -d @- >/dev/null 2>&1; exit 0"
+      }]
+    }],
+    "PreCompact": [{
+      "hooks": [{
+        "type": "command",
+        "command": "curl -sf -X POST 'http://localhost:8968/api/precompact?client=my-hostname' -H 'Content-Type: application/json' -d @- >/dev/null 2>&1; exit 0"
+      }]
+    }],
     "UserPromptSubmit": [{
       "hooks": [{
         "type": "command",

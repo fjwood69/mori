@@ -327,8 +327,8 @@ Create a `.mcp.json` file in your project root:
 {
   "mcpServers": {
     "moku": {
-      "type": "sse",
-      "url": "http://localhost:8968/sse"
+      "type": "http",
+      "url": "http://localhost:8968/mcp"
     }
   }
 }
@@ -342,8 +342,8 @@ on the same Tailscale tailnet), use the Tailscale IP:
 {
   "mcpServers": {
     "moku": {
-      "type": "sse",
-      "url": "http://100.84.128.79:8968/sse"
+      "type": "http",
+      "url": "http://100.84.128.79:8968/mcp"
     }
   }
 }
@@ -357,8 +357,8 @@ Add to `~/.claude/settings.json` under `mcpServers`:
 {
   "mcpServers": {
     "moku": {
-      "type": "sse",
-      "url": "http://localhost:8968/sse"
+      "type": "http",
+      "url": "http://localhost:8968/mcp"
     }
   }
 }
@@ -367,7 +367,7 @@ Add to `~/.claude/settings.json` under `mcpServers`:
 For user-global scope (works in VS Code extension):
 
 ```bash
-claude mcp add moku --scope user --type sse http://localhost:8968/sse
+claude mcp add moku --scope user --type http http://localhost:8968/mcp
 ```
 
 ### 4. Install slash commands
@@ -425,7 +425,7 @@ See [Event Logging](#event-logging) below.
 │       │            │            │            │            │
 │       └────────────┴──────┬─────┴────────────┘            │
 │                           │                                │
-│                    SSE / MCP tools                         │
+│                    HTTP / MCP tools                         │
 └───────────────────────────┬─────────────────────────────────┘
                             │
                             ▼
@@ -473,7 +473,7 @@ See [Event Logging](#event-logging) below.
 
 | Port | Service |
 |------|---------|
-| `8968` | MCP SSE server + event capture API |
+| `8968` | MCP server (streamable HTTP) + event capture API |
 
 ---
 
