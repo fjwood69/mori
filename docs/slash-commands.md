@@ -1,6 +1,6 @@
 # Moku Slash Commands
 
-Four slash commands — `/brief`, `/dream`, `/consult`, `/pensieve` — that wire Moku's MCP tools into Claude Code's workflow. Each is a thin SKILL.md that delegates to a deterministic MCP tool on the Moku server.
+Six slash commands — `/brief`, `/dream`, `/consult`, `/pensieve`, `/req`, `/nats` — that wire Moku's MCP tools into Claude Code's workflow. Each is a thin SKILL.md that delegates to a deterministic MCP tool on the Moku server.
 
 ---
 
@@ -35,7 +35,7 @@ Reads recent session events (tool calls, prompts, responses) since the last wate
 | `/dream --dry-run` | Preview what would be written |
 | `/dream --status` | Show watermark, event count, undreamed backlog |
 
-**Scheduled execution:** Runs via cron on the NUC every 4 hours (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC). Also via `/loop 3h /dream` in persistent sessions.
+**Scheduled execution:** Runs via cron on the server every 30 minutes. Also triggered synchronously by the `PreCompact` hook before context compression.
 
 **Dream model:** Configurable via `MOKU_DREAM_MODEL` (falls back to `MOKU_MODEL`). Prefer models with strong structured JSON output and rationalisation capabilities.
 
@@ -88,12 +88,50 @@ Search the shared memory store by keyword, type, tag, device, or time window.
 
 ---
 
+## `/req` — Requirements Tracking
+
+Create, filter, and track project requirements with status and priority.
+
+**MCP tool:** `moku_advisor-memory_req` / `moku_advisor-memory_write`
+
+**Examples:**
+
+| Command | Effect |
+|---|---|
+| `/req` | Dashboard — all requirements grouped by project |
+| `/req --project bifrost` | Filter by project |
+| `/req --project bifrost --status pending` | Filter by project and status |
+| `/req add "Add rate limiting" --project bifrost --pri high` | Create requirement |
+| `/req done req-bifrost-add-rate-limiting` | Mark complete |
+
+Requirements persist as tagged memories in the shared store. They surface automatically in `/brief` until marked done.
+
+---
+
+## `/nats` — Cross-Device Messaging
+
+Publish and subscribe to real-time messages across Claude Code instances (requires NATS server).
+
+**MCP tools:** `moku_advisor-nats_pub`, `moku_advisor-nats_sub`, `moku_advisor-nats_ping`
+
+**Examples:**
+
+| Command | Effect |
+|---|---|
+| `/nats ping` | Check NATS connection |
+| `/nats sub` | Show recent messages from all devices |
+| `/nats pub "deploying bifrost v2 — hold off on reboots"` | Publish a message |
+
+Messages persist for 7 days in the JetStream store. Offline instances catch up on reconnect.
+
+---
+
 ## Dependencies
 
 | Layer | Component |
 |---|---|
-| Moku server | Container on NUC (port 8968), deployed via Podman |
-| MCP proxy | Bifrost (port 8787) relays Moku's tools to CC sessions on all devices |
-| Storage | SQLite at `/data/moku-advisor/memories.db` (on NUC data drive) |
+| Moku server | Container on GCE VM (port 8968), deployed via Podman |
+| Client connection | Direct MCP (`type: "http"`) — no proxy required |
+| Storage | SQLite at `/data/moku-advisor/memories.db` (GCE persistent disk) |
 
-All four skills delegate to MCP tools on the server. The SKILL.md files are thin wrappers — no scripts, no fallback logic, no per-device customisation. Central control, instant rollback.
+All skills delegate to MCP tools on the server. The SKILL.md files are thin wrappers — no scripts, no fallback logic, no per-device customisation. Central control, instant rollback.
