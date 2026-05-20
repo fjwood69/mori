@@ -371,19 +371,18 @@ files, edit them, and re-import.
 
 ### 1. Pick your platform
 
-| Platform | Recommended path | Complexity |
-|----------|-----------------|------------|
-| Linux | Docker Compose or Podman Compose | Low |
-| macOS | Docker Desktop or native Python | Low |
-| Windows | Docker Desktop | Low |
-| Windows (advanced) | WSL2 + Podman Compose | Medium |
-| Cloud (any) | GCP Terraform ([deploy/gcp/](deploy/gcp/)) | Medium |
+| Platform | Section | Recommended path | Complexity |
+|----------|---------|-----------------|------------|
+| Linux | [1a](#1a-linux--docker-compose) | Docker Compose or Podman Compose | Low |
+| macOS | [1b](#1b-macos--docker-desktop) | Docker Desktop | Low |
+| macOS (dev) | [1c](#1c-macos--native-python) | Native Python | Low |
+| Windows | [1d](#1d-windows--docker-desktop) | Docker Desktop | Low |
+| Windows (advanced) | [1e](#1e-windows--wsl2--podman) | WSL2 + Podman Compose | Medium |
+| Cloud (any) | [1f](#1f-cloud--gcp-terraform) | GCP Terraform | Medium |
 
-### 1a. Docker Compose (Linux, macOS, Windows)
+### 1a. Linux — Docker Compose
 
-This is the simplest path for any platform. Works with Docker Desktop (macOS/Windows)
-and Podman Compose (Linux). No container knowledge needed — Docker Desktop handles
-the Linux container layer transparently on macOS and Windows.
+Works with Podman Compose (`podman compose`) or Docker Compose (`docker compose`).
 
 ```bash
 git clone https://github.com/fjwood69/moku.git
@@ -397,7 +396,22 @@ curl http://localhost:8968/health
 The compose file brings up Moku with a dream-cron sidecar that runs the dream
 pipeline on a schedule. Configure `MOKU_DREAM_INTERVAL` in `.env` (default: 60 minutes).
 
-### 1b. macOS — native Python
+### 1b. macOS — Docker Desktop
+
+Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) then:
+
+```bash
+git clone https://github.com/fjwood69/moku.git
+cd moku
+cp deploy/homelab/.env.example deploy/homelab/.env
+# Edit deploy/homelab/.env with your provider API key and model
+docker compose -f deploy/homelab/docker-compose.yml up -d
+curl http://localhost:8968/health
+```
+
+Docker Desktop handles the Linux container layer transparently — no extra setup needed.
+
+### 1c. macOS — native Python
 
 ```bash
 git clone https://github.com/fjwood69/moku.git
@@ -413,11 +427,13 @@ python -m moku_advisor.main &
 # 0 * * * * cd /path/to/moku && python -m moku_advisor.dream_job
 ```
 
-### 1c. Windows — Docker Desktop
+SQLite WAL mode works natively on macOS. No container needed.
+
+### 1d. Windows — Docker Desktop
+
+Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (handles WSL2 backend automatically) then in PowerShell:
 
 ```powershell
-# Install Docker Desktop from docker.com (handles WSL2 backend automatically)
-# Then in PowerShell:
 git clone https://github.com/fjwood69/moku.git
 cd moku
 copy deploy\homelab\.env.example deploy\homelab\.env
@@ -428,6 +444,16 @@ curl http://localhost:8968/health
 
 No WSL knowledge required. Docker Desktop runs the Linux container transparently.
 Dream cron is handled inside the container — no Windows Task Scheduler needed.
+
+### 1e. Windows — WSL2 + Podman
+
+Follow the [1a Linux path](#1a-linux--docker-compose) inside WSL2 Ubuntu. Docker
+Desktop (1d) is the easier path for most users.
+
+### 1f. Cloud — GCP Terraform
+
+See [deploy/gcp/](deploy/gcp/) for Terraform configs. Creates a GCE e2-small VM
+with Podman rootless, persistent disk, Tailscale, and GCP Secret Manager.
 
 ### 1d. Cloud — GCP (via Terraform)
 
@@ -674,6 +700,8 @@ dream-cron sidecar. Works with Docker Desktop (macOS/Windows), Podman Compose
 (Linux), and `docker compose`.
 
 ```bash
+git clone https://github.com/fjwood69/moku.git
+cd moku
 cp deploy/homelab/.env.example deploy/homelab/.env
 # Edit deploy/homelab/.env with your provider API key and model
 docker compose -f deploy/homelab/docker-compose.yml up -d
@@ -685,6 +713,8 @@ curl http://localhost:8968/health
 Systemd user services for the dream timer and backup timer are in [deploy/homelab/](deploy/homelab/):
 
 ```bash
+git clone https://github.com/fjwood69/moku.git
+cd moku
 podman build -t localhost/moku-advisor:latest .
 podman run -d --name moku --restart=unless-stopped --network=host \
   -v /data/moku-advisor:/data/moku-advisor:Z \
@@ -714,8 +744,11 @@ See [deploy/gcp/](deploy/gcp/) for Terraform configs. Creates:
 cd deploy/gcp
 terraform init
 terraform apply
-# Then migrate secrets from the NUC:
-bash scripts/migrate-secrets.sh
+# If migrating from an existing homelab NUC:
+#   bash scripts/migrate-secrets.sh
+# (Assumes you're on the NUC with ~/.claude/.secrets available.
+#  For a fresh GCP deployment without a NUC, create secrets manually
+#  in GCP Secret Manager and reference them in your Terraform variables.)
 # SSH in and verify:
 gcloud compute ssh moku-advisor
 curl http://localhost:8968/health
@@ -738,7 +771,7 @@ No downtime — both instances serve during the cutover.
 | Endpoint | Purpose | Response |
 |----------|---------|----------|
 | `/health` | Liveness probe | 200 if process is alive |
-| `/ready` | Readiness probe | 200 if DB accessible, 503 otherwise |
+| `/ready` | Readiness probe (HTTP endpoint, not the `/ready` slash command) | 200 if DB accessible, 503 otherwise |
 | `/metrics` | Prometheus exposition format | Counts for memories, events, pending writes, eviction queue |
 | `/api/events/health` | Legacy event endpoint | Event count |
 
