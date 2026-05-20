@@ -1,7 +1,7 @@
 variable "project_id" {
   description = "GCP project ID"
   type        = string
-  default     = "moku-genai"
+  default     = "mori-genai"
 }
 
 variable "region" {
@@ -41,9 +41,9 @@ variable "tailscale_auth_key" {
 }
 
 variable "container_image" {
-  description = "Container image tag for moku-advisor"
+  description = "Container image tag for mori-advisor"
   type        = string
-  default     = "localhost/moku-advisor:latest"
+  default     = "localhost/mori-advisor:latest"
 }
 
 variable "backup_retention_days" {

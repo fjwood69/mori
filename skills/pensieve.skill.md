@@ -9,6 +9,6 @@
    - `--since`: time filter — `7d`, `30d`, or ISO date
    - `--all`: show up to 50 results
    - `--limit`: max results (default 10)
-2. If the first positional is `read` followed by a kebab-case name, call `moku-memory_read` instead.
-3. Otherwise call `moku-memory_search` with the parsed arguments.
+2. If the first positional is `read` followed by a kebab-case name, call `mori-memory_read` instead.
+3. Otherwise call `mori-memory_search` with the parsed arguments.
 4. Present the result.

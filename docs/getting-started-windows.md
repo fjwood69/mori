@@ -1,15 +1,15 @@
 # Getting Started — Windows 11
 
-Connect your Windows Claude Code instance to a shared Moku server. No server to
-run — just point at your friend's Moku and you're done.
+Connect your Windows Claude Code instance to a shared Mori server. No server to
+run — just point at your friend's Mori and you're done.
 
 ---
 
 ## Prerequisites
 
 - Claude Code installed on Windows 11 (VS Code extension or CLI)
-- Tailscale installed and connected to the same tailnet as the Moku server
-- The Moku server's Tailscale IP address (ask your friend)
+- Tailscale installed and connected to the same tailnet as the Mori server
+- The Mori server's Tailscale IP address (ask your friend)
 
 ---
 
@@ -21,15 +21,15 @@ exist, create it:
 ```json
 {
   "mcpServers": {
-    "moku": {
+    "mori": {
       "type": "http",
-      "url": "http://<moku-tailscale-ip>:8968/mcp"
+      "url": "http://<mori-tailscale-ip>:8968/mcp"
     }
   }
 }
 ```
 
-Replace `<moku-tailscale-ip>` with the actual Tailscale IP.
+Replace `<mori-tailscale-ip>` with the actual Tailscale IP.
 
 **VS Code users:** Reload the window (`Ctrl+Shift+P` → Developer: Reload Window)
 after saving.
@@ -46,9 +46,9 @@ feed into the dream pipeline:
 ```json
 {
   "mcpServers": {
-    "moku": {
+    "mori": {
       "type": "http",
-      "url": "http://<moku-tailscale-ip>:8968/mcp"
+      "url": "http://<mori-tailscale-ip>:8968/mcp"
     }
   },
   "hooks": {
@@ -56,38 +56,38 @@ feed into the dream pipeline:
       "matcher": ".*",
       "hooks": [{
         "type": "command",
-        "command": "curl -sf -X POST 'http://<moku-tailscale-ip>:8968/api/events/raw?client=my-windows-pc' -H 'Content-Type: application/json' -d @- >nul 2>&1 & exit 0"
+        "command": "curl -sf -X POST 'http://<mori-tailscale-ip>:8968/api/events/raw?client=my-windows-pc' -H 'Content-Type: application/json' -d @- >nul 2>&1 & exit 0"
       }]
     }],
     "PostToolUseFailure": [{
       "hooks": [{
         "type": "command",
-        "command": "curl -sf -X POST 'http://<moku-tailscale-ip>:8968/api/events/raw?client=my-windows-pc' -H 'Content-Type: application/json' -d @- >nul 2>&1 & exit 0"
+        "command": "curl -sf -X POST 'http://<mori-tailscale-ip>:8968/api/events/raw?client=my-windows-pc' -H 'Content-Type: application/json' -d @- >nul 2>&1 & exit 0"
       }]
     }],
     "PreCompact": [{
       "hooks": [{
         "type": "command",
-        "command": "curl -sf -X POST 'http://<moku-tailscale-ip>:8968/api/precompact?client=my-windows-pc' -H 'Content-Type: application/json' -d @- >nul 2>&1 & exit 0"
+        "command": "curl -sf -X POST 'http://<mori-tailscale-ip>:8968/api/precompact?client=my-windows-pc' -H 'Content-Type: application/json' -d @- >nul 2>&1 & exit 0"
       }]
     }],
     "UserPromptSubmit": [{
       "hooks": [{
         "type": "command",
-        "command": "curl -sf -X POST 'http://<moku-tailscale-ip>:8968/api/events/raw?client=my-windows-pc' -H 'Content-Type: application/json' -d @- >nul 2>&1 & exit 0"
+        "command": "curl -sf -X POST 'http://<mori-tailscale-ip>:8968/api/events/raw?client=my-windows-pc' -H 'Content-Type: application/json' -d @- >nul 2>&1 & exit 0"
       }]
     }],
     "Stop": [{
       "hooks": [{
         "type": "command",
-        "command": "curl -sf -X POST 'http://<moku-tailscale-ip>:8968/api/events/raw?client=my-windows-pc' -H 'Content-Type: application/json' -d @- >nul 2>&1 & exit 0"
+        "command": "curl -sf -X POST 'http://<mori-tailscale-ip>:8968/api/events/raw?client=my-windows-pc' -H 'Content-Type: application/json' -d @- >nul 2>&1 & exit 0"
       }]
     }]
   }
 }
 ```
 
-Replace `<moku-tailscale-ip>` and `my-windows-pc` with your actual values.
+Replace `<mori-tailscale-ip>` and `my-windows-pc` with your actual values.
 
 > **Note:** Windows 11 ships with `curl` built in. The `>nul 2>&1 & exit 0`
 > silences output and prevents the hook from blocking Claude Code.
@@ -96,7 +96,7 @@ Replace `<moku-tailscale-ip>` and `my-windows-pc` with your actual values.
 
 ## 3. Install the slash commands
 
-Download the skill files from the [moku repo skills folder](https://github.com/fjwood69/moku/tree/main/skills) and place them in:
+Download the skill files from the [mori repo skills folder](https://github.com/fjwood69/mori/tree/main/skills) and place them in:
 
 ```
 %USERPROFILE%\.claude\skills\
@@ -110,14 +110,14 @@ The skills directory should contain these files:
 - `pensieve.skill.md`
 - `req.skill.md`
 
-**Quick PowerShell one-liner** (replace `MOKU_TAILSCALE_IP`):
+**Quick PowerShell one-liner** (replace `MORI_TAILSCALE_IP`):
 
 ```powershell
-$ip = "MOKU_TAILSCALE_IP"
+$ip = "MORI_TAILSCALE_IP"
 $dir = "$env:USERPROFILE\.claude\skills"
 mkdir $dir -Force
 @("brief","consult","dream","pensieve","req") | ForEach-Object {
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/fjwood69/moku/main/skills/$_.skill.md" -OutFile "$dir\$_.skill.md"
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/fjwood69/mori/main/skills/$_.skill.md" -OutFile "$dir\$_.skill.md"
 }
 ```
 
@@ -140,7 +140,7 @@ Ready — 45 memories, 5 standards loaded.
 If you get a connection error:
 
 1. Check Tailscale is running: `tailscale status` in PowerShell
-2. Verify you can reach the server: `curl http://<moku-tailscale-ip>:8968/health`
+2. Verify you can reach the server: `curl http://<mori-tailscale-ip>:8968/health`
 3. Reload VS Code / restart Claude Code CLI after changing `settings.json`
 
 ---

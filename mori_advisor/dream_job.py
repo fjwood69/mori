@@ -5,9 +5,9 @@ script that runs the dream pipeline once and exits — separate from the
 long-running MCP server.
 
 Usage:
-    python -m moku_advisor.dream_job
+    python -m mori_advisor.dream_job
     # or from the container:
-    podman exec moku-advisor python -m moku_advisor.dream_job
+    podman exec mori-advisor python -m mori_advisor.dream_job
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ class _GCPJsonFormatter(logging.Formatter):
         })
 
 
-DATA_DIR = Path(os.environ.get("MOKU_ADVISOR_DATA", "/data/moku-advisor"))
+DATA_DIR = Path(os.environ.get("MORI_ADVISOR_DATA", "/data/mori-advisor"))
 DB_PATH = DATA_DIR / "memories.db"
 
 if os.environ.get("GCE_METADATA_HOST"):
@@ -44,18 +44,18 @@ logger = logging.getLogger("dream-job")
 
 
 def main():
-    from moku_advisor.bifrost_client import BifrostClient
-    from moku_advisor.dream import DreamPipeline
+    from mori_advisor.bifrost_client import BifrostClient
+    from mori_advisor.dream import DreamPipeline
 
     bifrost = BifrostClient()
     pipeline = DreamPipeline(
         db_path=DB_PATH,
         bifrost_client=bifrost,
         trusted_dreamers=(
-            os.environ.get("MOKU_TRUSTED_DREAMERS", "").split(",")
-            if os.environ.get("MOKU_TRUSTED_DREAMERS") else []
+            os.environ.get("MORI_TRUSTED_DREAMERS", "").split(",")
+            if os.environ.get("MORI_TRUSTED_DREAMERS") else []
         ),
-        nats_url=os.environ.get("MOKU_NATS_URL") or None,
+        nats_url=os.environ.get("MORI_NATS_URL") or None,
     )
 
     logger.info("Dream job started")

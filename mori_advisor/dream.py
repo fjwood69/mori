@@ -1,6 +1,6 @@
 """Dream pipeline — distill session events into durable memories.
 
-Extracted from the homelab's moku-dream CLI into a library class
+Extracted from the homelab's mori-dream CLI into a library class
 that can be called from MCP tools or scheduled jobs. Operates
 entirely inside the container — no host filesystem access needed.
 """
@@ -13,9 +13,9 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from moku_advisor.bifrost_client import BifrostClient
-from moku_advisor.session_log import SessionLog
-from moku_advisor.memory_store import MemoryStore
+from mori_advisor.bifrost_client import BifrostClient
+from mori_advisor.session_log import SessionLog
+from mori_advisor.memory_store import MemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +395,7 @@ class DreamPipeline:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             nc = loop.run_until_complete(nats.connect(self.nats_url))
-            loop.run_until_complete(nc.publish("cc.moku", payload.encode()))
+            loop.run_until_complete(nc.publish("cc.mori", payload.encode()))
             loop.run_until_complete(nc.flush())
             loop.run_until_complete(nc.drain())
             loop.close()

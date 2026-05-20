@@ -1,5 +1,5 @@
 # GCP project
-project_id = "moku-genai"
+project_id = "mori-genai"
 region     = "northamerica-northeast2"
 zone       = "northamerica-northeast2-a"
 
@@ -8,7 +8,7 @@ machine_type  = "e2-small"
 disk_size_gb  = 20
 
 # Container
-container_image = "localhost/moku-advisor:latest"
+container_image = "localhost/mori-advisor:latest"
 
 # Tailscale
 tailscale_auth_key = "tskey-auth-..."

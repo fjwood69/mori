@@ -1,0 +1,19 @@
+[Unit]
+Description=Moku-advisor (rootless Podman)
+Documentation=https://github.com/fjwood69/ai-stack
+After=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+ExecStart=/usr/bin/podman run --rm --name mori-advisor \
+  --network=host \
+  -v /data/mori-advisor:/data/mori-advisor:Z \
+  --env-file /etc/mori-advisor.env \
+  localhost/mori-advisor:latest
+ExecStop=/usr/bin/podman stop mori-advisor
+ExecReload=/usr/bin/podman restart mori-advisor
+
+[Install]
+WantedBy=default.target

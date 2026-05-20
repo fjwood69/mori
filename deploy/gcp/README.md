@@ -1,6 +1,6 @@
-# Moku GCE Deployment — Terraform
+# Mori GCE Deployment — Terraform
 
-Deploys moku-advisor to a GCE VM in `northamerica-northeast2` (Toronto).
+Deploys mori-advisor to a GCE VM in `northamerica-northeast2` (Toronto).
 
 ## Resources
 
@@ -13,7 +13,7 @@ Deploys moku-advisor to a GCE VM in `northamerica-northeast2` (Toronto).
 
 ```bash
 gcloud auth application-default login
-gcloud config set project moku-genai
+gcloud config set project mori-genai
 ```
 
 ## Deploy
@@ -29,19 +29,19 @@ terraform apply
 
 1. **Migrate secrets** — from the NUC:
    ```bash
-   cd moku
+   cd mori
    bash scripts/migrate-secrets.sh
    ```
 
 2. **SSH in** and verify the container is running:
    ```bash
-   gcloud compute ssh moku-advisor --zone northamerica-northeast2-a
+   gcloud compute ssh mori-advisor --zone northamerica-northeast2-a
    sudo podman ps
    curl http://localhost:8968/health
    ```
 
 3. **Start the dream scheduler** on the GCE VM:
    ```bash
-   sudo systemctl enable --now moku-dream.timer
-   sudo systemctl enable --now moku-backup.timer
+   sudo systemctl enable --now mori-dream.timer
+   sudo systemctl enable --now mori-backup.timer
    ```

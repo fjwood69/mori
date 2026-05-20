@@ -1,8 +1,8 @@
 #!/bin/bash
 # Moku-advisor GCE startup script
 # Installs Podman + Tailscale, mounts the persistent data disk,
-# ensures the moku user has subuid mappings for rootless Podman,
-# then starts the container as the moku user.
+# ensures the mori user has subuid mappings for rootless Podman,
+# then starts the container as the mori user.
 
 set -u
 
@@ -16,26 +16,26 @@ if ! command -v podman &>/dev/null; then
   exit 1
 fi
 
-# ── Create moku user for rootless Podman ─────────────────────────────────
+# ── Create mori user for rootless Podman ─────────────────────────────────
 # NOTE: no -r flag — a regular user (GID=10001) gets auto subuid mappings.
-if ! id moku &>/dev/null; then
-  useradd -u 10001 -m -s /bin/bash moku
-  loginctl enable-linger moku
+if ! id mori &>/dev/null; then
+  useradd -u 10001 -m -s /bin/bash mori
+  loginctl enable-linger mori
 fi
 
-# Ensure home dir is accessible (su - moku needs this)
-chmod 755 /home/moku 2>/dev/null || true
+# Ensure home dir is accessible (su - mori needs this)
+chmod 755 /home/mori 2>/dev/null || true
 
 # ── Mount persistent data disk ──────────────────────────────────────────
-DATA_DEV=$(readlink -f /dev/disk/by-id/google-moku-data || echo "")
+DATA_DEV=$(readlink -f /dev/disk/by-id/google-mori-data || echo "")
 if [ -n "$DATA_DEV" ] && ! mountpoint -q /data; then
   mkdir -p /data
   # Only format if blkid explicitly says "no filesystem" (exit 2)
   blkid "$DATA_DEV" 2>&1 | grep -q "unrecognized" && mkfs.ext4 "$DATA_DEV" || true
   mount "$DATA_DEV" /data || echo "WARN: mount failed, disk may already be mounted"
-  mkdir -p /data/moku-advisor
-  chown moku:moku /data/moku-advisor
-  chmod 755 /data/moku-advisor
+  mkdir -p /data/mori-advisor
+  chown mori:mori /data/mori-advisor
+  chmod 755 /data/mori-advisor
   UUID=$(blkid -s UUID -o value "$DATA_DEV")
   if [ -n "$UUID" ] && ! grep -q "$UUID" /etc/fstab 2>/dev/null; then
     echo "UUID=$UUID /data ext4 defaults,nofail 0 2" >> /etc/fstab
@@ -45,19 +45,19 @@ fi
 # ── Install Tailscale ────────────────────────────────────────────────────
 if ! command -v tailscale &>/dev/null; then
   curl -fsSL https://tailscale.com/install.sh | sh
-  tailscale up --auth-key="${tailscale_auth_key}" --hostname=ca-gcp-moku-advisor
+  tailscale up --auth-key="${tailscale_auth_key}" --hostname=ca-gcp-mori-advisor
 fi
 
 # ── Fetch secrets as root (GCE service account) ─────────────────────────
-# The moku user can't call gcloud secrets — it runs under GCE's service
+# The mori user can't call gcloud secrets — it runs under GCE's service
 # account identity which is only available to root or via metadata server.
-MOKU_API_KEY=$(gcloud secrets versions access latest --secret=MOKU_API_KEY --project=${project_id} 2>/dev/null || echo "")
-MOKU_ADVISOR_API_KEY=$(gcloud secrets versions access latest --secret=MOKU_ADVISOR_API_KEY --project=${project_id} 2>/dev/null || echo "")
-MOKU_BASE_URL=$(gcloud secrets versions access latest --secret=MOKU_BASE_URL --project=${project_id} 2>/dev/null || echo "")
-MOKU_MODEL=$(gcloud secrets versions access latest --secret=MOKU_MODEL --project=${project_id} 2>/dev/null || echo "")
-MOKU_DREAM_MODEL=$(gcloud secrets versions access latest --secret=MOKU_DREAM_MODEL --project=${project_id} 2>/dev/null || echo "")
-MOKU_TRUSTED_DREAMERS=$(gcloud secrets versions access latest --secret=MOKU_TRUSTED_DREAMERS --project=${project_id} 2>/dev/null || echo "")
-MOKU_NATS_URL=$(gcloud secrets versions access latest --secret=MOKU_NATS_URL --project=${project_id} 2>/dev/null || echo "")
+MORI_API_KEY=$(gcloud secrets versions access latest --secret=MORI_API_KEY --project=${project_id} 2>/dev/null || echo "")
+MORI_ADVISOR_API_KEY=$(gcloud secrets versions access latest --secret=MORI_ADVISOR_API_KEY --project=${project_id} 2>/dev/null || echo "")
+MORI_BASE_URL=$(gcloud secrets versions access latest --secret=MORI_BASE_URL --project=${project_id} 2>/dev/null || echo "")
+MORI_MODEL=$(gcloud secrets versions access latest --secret=MORI_MODEL --project=${project_id} 2>/dev/null || echo "")
+MORI_DREAM_MODEL=$(gcloud secrets versions access latest --secret=MORI_DREAM_MODEL --project=${project_id} 2>/dev/null || echo "")
+MORI_TRUSTED_DREAMERS=$(gcloud secrets versions access latest --secret=MORI_TRUSTED_DREAMERS --project=${project_id} 2>/dev/null || echo "")
+MORI_NATS_URL=$(gcloud secrets versions access latest --secret=MORI_NATS_URL --project=${project_id} 2>/dev/null || echo "")
 GHCR_TOKEN=$(gcloud secrets versions access latest --secret=GHCR_TOKEN --project=${project_id} 2>/dev/null || echo "")
 BIFROST_ADMIN_PASSWORD=$(gcloud secrets versions access latest --secret=BIFROST_ADMIN_PASSWORD --project=${project_id} 2>/dev/null || echo "")
 DEEPINFRA_API_KEY=$(gcloud secrets versions access latest --secret=DEEPINFRA_API_KEY --project=${project_id} 2>/dev/null || echo "")
@@ -68,14 +68,14 @@ CLOUDFLARE_API_KEY=$(gcloud secrets versions access latest --secret=CLOUDFLARE_A
 FIREWORKS_API_KEY=$(gcloud secrets versions access latest --secret=FIREWORKS_API_KEY --project=${project_id} 2>/dev/null || echo "")
 
 # Validate critical secrets
-if [ -z "$MOKU_API_KEY" ]; then
-  echo "WARN: MOKU_API_KEY is empty — container will start without provider access"
+if [ -z "$MORI_API_KEY" ]; then
+  echo "WARN: MORI_API_KEY is empty — container will start without provider access"
 fi
 
 # ── Pull and run containers (rootless) ──────────────────────────────────
-# Uses su - moku -c so podman finds ~/.local/share/containers.
+# Uses su - mori -c so podman finds ~/.local/share/containers.
 # XDG_RUNTIME_DIR is required for rootless podman to talk to the session.
-# --user 0 maps container root → host UID 10001 (moku), so the container's
+# --user 0 maps container root → host UID 10001 (mori), so the container's
 # appuser can write to the bind-mounted /data directory.
 
 CONTAINER_IMAGE="${container_image}"
@@ -86,35 +86,35 @@ RUNTIME_DIR="/run/user/10001"
 # have created it yet on first boot)
 if [ ! -d "$RUNTIME_DIR" ]; then
   mkdir -p "$RUNTIME_DIR"
-  chown moku:moku "$RUNTIME_DIR"
+  chown mori:mori "$RUNTIME_DIR"
   chmod 700 "$RUNTIME_DIR"
 fi
 
 # Ensure Bifrost data dir exists
 mkdir -p /data/bifrost
-chown moku:moku /data/bifrost
+chown mori:mori /data/bifrost
 chmod 755 /data/bifrost
 
 # Authenticate to GHCR
 if [ -n "$GHCR_TOKEN" ]; then
-  echo "$GHCR_TOKEN" | su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman login ghcr.io -u fjwood69 --password-stdin"
+  echo "$GHCR_TOKEN" | su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman login ghcr.io -u fjwood69 --password-stdin"
 fi
 
 # Pull images with retries
 for img in "$CONTAINER_IMAGE" "$BIFROST_IMAGE"; do
   for i in 1 2 3; do
-    su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman pull '$img'" && break
+    su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman pull '$img'" && break
     echo "Pull attempt $i for $img failed, retrying in 10s..."
     sleep 10
   done
 done
 
 # Remove old containers if they exist
-su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f moku-advisor 2>/dev/null; true"
-su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f bifrost 2>/dev/null; true"
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f mori-advisor 2>/dev/null; true"
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f bifrost 2>/dev/null; true"
 
 # Start Bifrost container (port 8787)
-su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name bifrost --restart=always --network=host \
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name bifrost --restart=always --network=host \
   --user 0 \
   -v /data/bifrost:/app/data:Z \
   -e APP_PORT=8787 \
@@ -160,7 +160,7 @@ providers = {
     "Deepinfra": {"base_url": "https://api.deepinfra.com/v1/openai"},
     "Novita": {"base_url": "https://api.novita.ai/v3/openai"},
     "parasail": {"base_url": "https://api.parasail.io/v1"},
-    "vertex": {"base_url": "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/moku-genai/locations/us-central1/endpoints/openapi"},
+    "vertex": {"base_url": "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/mori-genai/locations/us-central1/endpoints/openapi"},
     "Cloudflare Workers AI": {"base_url": "https://api.cloudflare.com/client/v4/accounts/8d97411e384474732cfab7b9599a2253/ai"},
     "fireworks": {"base_url": "https://api.fireworks.ai/inference/v1"},
 }
@@ -178,12 +178,12 @@ prov_map = {r[1]: r[0] for r in conn.execute("SELECT id, name FROM config_provid
 print(f"  Provider IDs: {prov_map}")
 
 keys_map = {
-    "moku-genai-deepinfra": ("Deepinfra", "DEEPINFRA_API_KEY"),
-    "moku-genai-novita": ("Novita", "NOVITA_API_KEY"),
-    "moku-genai-parasail": ("parasail", "PARASAIL_API_KEY"),
-    "moku-genai-vertex": ("vertex", "VERTEX_API_KEY"),
-    "moku-genai-cloudflare": ("Cloudflare Workers AI", "CLOUDFLARE_API_KEY"),
-    "moku-genai-fireworks": ("fireworks", "FIREWORKS_API_KEY"),
+    "mori-genai-deepinfra": ("Deepinfra", "DEEPINFRA_API_KEY"),
+    "mori-genai-novita": ("Novita", "NOVITA_API_KEY"),
+    "mori-genai-parasail": ("parasail", "PARASAIL_API_KEY"),
+    "mori-genai-vertex": ("vertex", "VERTEX_API_KEY"),
+    "mori-genai-cloudflare": ("Cloudflare Workers AI", "CLOUDFLARE_API_KEY"),
+    "mori-genai-fireworks": ("fireworks", "FIREWORKS_API_KEY"),
 }
 
 for kname, (prov, secret_name) in keys_map.items():
@@ -203,13 +203,13 @@ for kname, (prov, secret_name) in keys_map.items():
 
 conn.commit()
 
-# ── Virtual Key for moku-advisor ───────────────────────────────────────
+# ── Virtual Key for mori-advisor ───────────────────────────────────────
 vk_id = str(uuid.uuid4())
-vk_value = "sk-bf-moku-advisor-gce-001"
+vk_value = "sk-bf-mori-advisor-gce-001"
 conn.execute("""
     INSERT OR IGNORE INTO governance_virtual_keys (id, name, value, description)
     VALUES (?, ?, ?, ?)
-""", (vk_id, "moku-advisor", vk_value, json.dumps({"model_override": "Deepinfra/deepseek-ai/DeepSeek-V4-Flash"})))
+""", (vk_id, "mori-advisor", vk_value, json.dumps({"model_override": "Deepinfra/deepseek-ai/DeepSeek-V4-Flash"})))
 print(f"  VK created: {vk_value}")
 
 # Link VK to all providers
@@ -226,37 +226,37 @@ SEEDEOF
   echo "Bifrost config seeded."
 fi
 
-# Start moku-advisor container (port 8968) — direct mode for now,
+# Start mori-advisor container (port 8968) — direct mode for now,
 # will switch to Bifrost proxy once Bifrost is verified
-su - moku -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name moku-advisor --restart=always --network=host \
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-advisor --restart=always --network=host \
   --user 0 \
-  -v /data/moku-advisor:/data/moku-advisor:Z \
-  -e MOKU_ADVISOR_DATA=/data/moku-advisor \
-  -e MOKU_PROVIDER_MODE=direct \
-  -e MOKU_API_KEY='$MOKU_API_KEY' \
-  -e MOKU_ADVISOR_API_KEY='$MOKU_ADVISOR_API_KEY' \
-  -e MOKU_BASE_URL='$MOKU_BASE_URL' \
-  -e MOKU_MODEL='$MOKU_MODEL' \
-  -e MOKU_DREAM_MODEL='$MOKU_DREAM_MODEL' \
-  -e MOKU_TRUSTED_DREAMERS='$MOKU_TRUSTED_DREAMERS' \
-  -e MOKU_NATS_URL='$MOKU_NATS_URL' \
+  -v /data/mori-advisor:/data/mori-advisor:Z \
+  -e MORI_ADVISOR_DATA=/data/mori-advisor \
+  -e MORI_PROVIDER_MODE=direct \
+  -e MORI_API_KEY='$MORI_API_KEY' \
+  -e MORI_ADVISOR_API_KEY='$MORI_ADVISOR_API_KEY' \
+  -e MORI_BASE_URL='$MORI_BASE_URL' \
+  -e MORI_MODEL='$MORI_MODEL' \
+  -e MORI_DREAM_MODEL='$MORI_DREAM_MODEL' \
+  -e MORI_TRUSTED_DREAMERS='$MORI_TRUSTED_DREAMERS' \
+  -e MORI_NATS_URL='$MORI_NATS_URL' \
   '$CONTAINER_IMAGE'"
 
 echo "Moku-advisor container started."
 
 # ── Set up dream cron (every 4 hours) ────────────────────────────────────
-DREAM_CRON="0 */4 * * * XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec moku-advisor python -m moku_advisor.dream_job >/data/moku-advisor/dream-cron.log 2>&1"
-(crontab -l 2>/dev/null | grep -v moku-advisor; echo "$DREAM_CRON") | crontab -
+DREAM_CRON="0 */4 * * * XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec mori-advisor python -m mori_advisor.dream_job >/data/mori-advisor/dream-cron.log 2>&1"
+(crontab -l 2>/dev/null | grep -v mori-advisor; echo "$DREAM_CRON") | crontab -
 echo "Dream cron installed."
 
 # ── Set up backup cron (daily at 06:00 UTC) ──────────────────────────────
 # Uses curl + GCE metadata server for auth — no gcloud SDK needed
-BACKUP_SCRIPT="/usr/local/bin/moku-backup.sh"
+BACKUP_SCRIPT="/usr/local/bin/mori-backup.sh"
 cat > "$BACKUP_SCRIPT" << 'BACKUPEOF'
 #!/bin/bash
 # Daily SQLite backup to GCS backup bucket using metadata server auth
 set -u
-DB_DIR="/data/moku-advisor"
+DB_DIR="/data/mori-advisor"
 BUCKET="${backup_bucket}"
 DATE=$(date +%Y%m%d)
 
@@ -287,6 +287,6 @@ done
 echo "Backup complete: $DATE"
 BACKUPEOF
 chmod 755 "$BACKUP_SCRIPT"
-BACKUP_CRON="0 6 * * * $BACKUP_SCRIPT >/data/moku-advisor/backup-cron.log 2>&1"
-(crontab -l 2>/dev/null | grep -v moku-backup; echo "$BACKUP_CRON") | crontab -
+BACKUP_CRON="0 6 * * * $BACKUP_SCRIPT >/data/mori-advisor/backup-cron.log 2>&1"
+(crontab -l 2>/dev/null | grep -v mori-backup; echo "$BACKUP_CRON") | crontab -
 echo "Backup cron installed."

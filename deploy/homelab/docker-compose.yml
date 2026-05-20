@@ -1,6 +1,6 @@
 version: "3.8"
 
-# Moku — Docker Compose deployment
+# Mori — Docker Compose deployment
 # Works with Docker Desktop (Windows/macOS), Podman Compose (Linux), and docker compose.
 #
 # Quickstart:
@@ -9,15 +9,15 @@ version: "3.8"
 #   3. curl http://localhost:8968/health
 
 services:
-  moku-advisor:
+  mori-advisor:
     build: ../..
-    image: moku-advisor:latest
-    container_name: moku-advisor
+    image: mori-advisor:latest
+    container_name: mori-advisor
     restart: unless-stopped
     ports:
       - "8968:8968"
     volumes:
-      - moku-data:/data/moku-advisor
+      - mori-data:/data/mori-advisor
     env_file:
       - .env
     healthcheck:
@@ -29,23 +29,23 @@ services:
 
   dream-cron:
     image: alpine:latest
-    container_name: moku-dream-cron
+    container_name: mori-dream-cron
     restart: unless-stopped
     depends_on:
-      moku-advisor:
+      mori-advisor:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         apk add --no-cache curl
-        INTERVAL=${MOKU_DREAM_INTERVAL:-60}
+        INTERVAL=${MORI_DREAM_INTERVAL:-60}
         while true; do
           sleep $(( INTERVAL * 60 ))
-          curl -sf -X POST http://moku-advisor:8968/api/dream/run && \
+          curl -sf -X POST http://mori-advisor:8968/api/dream/run && \
             echo "dream completed" || echo "dream skipped (no new events)"
         done
     env_file:
       - .env
 
 volumes:
-  moku-data:
+  mori-data:

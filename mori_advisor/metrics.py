@@ -1,10 +1,10 @@
-"""OpenTelemetry metrics for moku-advisor.
+"""OpenTelemetry metrics for mori-advisor.
 
 Instruments are created once at import time. Exporter is configured
 via standard OTel env vars:
     OTEL_EXPORTER_OTLP_ENDPOINT    — e.g. https://otlp.grafana.net/otlp
     OTEL_EXPORTER_OTLP_HEADERS     — "Authorization=Basic <base64>"
-    OTEL_SERVICE_NAME              — defaults to "moku-advisor"
+    OTEL_SERVICE_NAME              — defaults to "mori-advisor"
     OTEL_METRIC_EXPORT_INTERVAL    — seconds between pushes (default 60)
 """
 
@@ -20,7 +20,7 @@ from opentelemetry.sdk.resources import Resource
 
 logger = logging.getLogger(__name__)
 
-_service_name = os.environ.get("OTEL_SERVICE_NAME", "moku-advisor")
+_service_name = os.environ.get("OTEL_SERVICE_NAME", "mori-advisor")
 _resource = Resource.create({"service.name": _service_name})
 
 # ── Instruments ──────────────────────────────────────────────────────────
@@ -78,37 +78,37 @@ def init_metrics() -> None:
     _meter = metrics.get_meter(_service_name, version="0.1.0")
 
     memories_gauge = _meter.create_gauge(
-        name="moku_memories_total",
+        name="mori_memories_total",
         description="Total number of memories in the store",
         unit="1",
     )
     events_counter = _meter.create_counter(
-        name="moku_events_total",
+        name="mori_events_total",
         description="Total number of session events logged",
         unit="1",
     )
     pending_writes_gauge = _meter.create_gauge(
-        name="moku_pending_writes",
+        name="mori_pending_writes",
         description="Number of pending writes awaiting approval",
         unit="1",
     )
     eviction_queue_gauge = _meter.create_gauge(
-        name="moku_eviction_queue_size",
+        name="mori_eviction_queue_size",
         description="Number of unresolved eviction queue entries",
         unit="1",
     )
     consult_duration = _meter.create_histogram(
-        name="moku_consult_duration_ms",
+        name="mori_consult_duration_ms",
         description="Consult call duration in milliseconds",
         unit="ms",
     )
     dream_duration = _meter.create_histogram(
-        name="moku_dream_duration_ms",
+        name="mori_dream_duration_ms",
         description="Dream pipeline run duration in milliseconds",
         unit="ms",
     )
     consult_tokens = _meter.create_histogram(
-        name="moku_consult_tokens",
+        name="mori_consult_tokens",
         description="Tokens used per consult call",
         unit="1",
     )
