@@ -369,22 +369,67 @@ files, edit them, and re-import.
 
 ## Quickstart
 
-### 1. Deploy the server
+### 1. Pick your platform
 
-**Container (recommended) — homelab:**
+| Platform | Recommended path | Complexity |
+|----------|-----------------|------------|
+| Linux | Docker Compose or Podman Compose | Low |
+| macOS | Docker Desktop or native Python | Low |
+| Windows | Docker Desktop | Low |
+| Windows (advanced) | WSL2 + Podman Compose | Medium |
+| Cloud (any) | GCP Terraform ([deploy/gcp/](deploy/gcp/)) | Medium |
+
+### 1a. Docker Compose (Linux, macOS, Windows)
+
+This is the simplest path for any platform. Works with Docker Desktop (macOS/Windows)
+and Podman Compose (Linux). No container knowledge needed — Docker Desktop handles
+the Linux container layer transparently on macOS and Windows.
 
 ```bash
-podman build -t localhost/moku-advisor:latest .
-podman run -d --name moku --restart=unless-stopped --network=host \
-  -v /data/moku-advisor:/data/moku-advisor:Z \
-  -e MOKU_PROVIDER_MODE=direct \
-  -e MOKU_API_KEY=sk-your-provider-key \
-  -e MOKU_BASE_URL=https://api.openai.com/v1 \
-  -e MOKU_MODEL=gpt-4o \
-  localhost/moku-advisor:latest
+git clone https://github.com/fjwood69/moku.git
+cd moku
+cp deploy/homelab/.env.example deploy/homelab/.env
+# Edit deploy/homelab/.env with your provider API key and model
+docker compose -f deploy/homelab/docker-compose.yml up -d
+curl http://localhost:8968/health
 ```
 
-**Container — GCP (via Terraform):**
+The compose file brings up Moku with a dream-cron sidecar that runs the dream
+pipeline on a schedule. Configure `MOKU_DREAM_INTERVAL` in `.env` (default: 60 minutes).
+
+### 1b. macOS — native Python
+
+```bash
+git clone https://github.com/fjwood69/moku.git
+cd moku
+pip install -r requirements.txt
+cp deploy/homelab/.env.example deploy/homelab/.env
+# Edit deploy/homelab/.env with your provider API key
+source deploy/homelab/.env
+export MOKU_PROVIDER_MODE MOKU_API_KEY MOKU_BASE_URL MOKU_MODEL
+python -m moku_advisor.main &
+
+# Dream cron: add to crontab (runs every hour — adjust to match MOKU_DREAM_INTERVAL)
+# 0 * * * * cd /path/to/moku && python -m moku_advisor.dream_job
+```
+
+### 1c. Windows — Docker Desktop
+
+```powershell
+# Install Docker Desktop from docker.com (handles WSL2 backend automatically)
+# Then in PowerShell:
+git clone https://github.com/fjwood69/moku.git
+cd moku
+copy deploy\homelab\.env.example deploy\homelab\.env
+# Edit deploy\homelab\.env with your provider API key and model (Notepad works fine)
+docker compose -f deploy\homelab\docker-compose.yml up -d
+curl http://localhost:8968/health
+```
+
+No WSL knowledge required. Docker Desktop runs the Linux container transparently.
+Dream cron is handled inside the container — no Windows Task Scheduler needed.
+
+### 1d. Cloud — GCP (via Terraform)
 
 See [deploy/gcp/](deploy/gcp/) for Terraform configs. Creates a GCE e2-small VM
 with Podman rootless, persistent disk, Tailscale, and GCP Secret Manager.
@@ -394,16 +439,6 @@ cd deploy/gcp
 terraform init
 terraform plan
 terraform apply
-```
-
-**Python directly:**
-
-```bash
-pip install -r requirements.txt
-MOKU_PROVIDER_MODE=direct \
-  MOKU_API_KEY=sk-... \
-  MOKU_BASE_URL=https://api.openai.com/v1 \
-  python -m moku_advisor.main
 ```
 
 ### 2. Verify it's running
@@ -594,6 +629,7 @@ See [Event Logging](#event-logging) below.
 | `MOKU_TRUSTED_DREAMERS` | — | Comma-separated hostnames for write approval bypass |
 | `MOKU_STANDARDS_DIR` | — | Path to team standards .md directory |
 | `MOKU_SKILLS_DIR` | — | Path to slash command skill files (for /update) |
+| `MOKU_DREAM_INTERVAL` | `60` | Dream pipeline interval in minutes |
 | `MOKU_BIFROST_TIMEOUT` | `300` | API timeout in seconds |
 
 ### Dream interval
@@ -602,14 +638,14 @@ How often to run the dream phase depends on session density. The `PreCompact`
 hook fires on context compression regardless of schedule, so the cron is just
 a safety net for sessions that never compact.
 
+Set via `MOKU_DREAM_INTERVAL` in your `.env` file (used by the Docker Compose
+dream-cron sidecar). For Podman/systemd deployments, set via the dream timer.
+
 | Team size | Suggested interval | Rationale |
 |-----------|-------------------|-----------|
-| Solo | 4–12 hours | Few events per session, low risk of losing context |
-| 1–4 people | 1–4 hours | More events, catches cold restarts and short sessions |
-| 5–10 people | 15–30 minutes | High event density, any session could be the last before the server goes down |
-
-Set via systemd timer (`deploy/homelab/moku-dream.timer`), cron, or
-`POST /api/dream/run` from your preferred scheduler.
+| Solo | 240 (4 hours) | Few events per session, low risk of losing context |
+| 1–4 people | 60 (1 hour) | More events, catches cold restarts and short sessions |
+| 5–10 people | 30 minutes | High event density, any session could be the last before the server goes down |
 
 ### Ports
 
@@ -621,11 +657,40 @@ Set via systemd timer (`deploy/homelab/moku-dream.timer`), cron, or
 
 ## Deployment
 
-### Homelab (Podman)
+### Deployment matrix
+
+| Platform | Recommended path | Complexity |
+|----------|-----------------|------------|
+| Linux | Docker Compose or Podman Compose | Low |
+| macOS | Docker Desktop or native Python | Low |
+| Windows | Docker Desktop | Low |
+| Windows (advanced) | WSL2 + Podman Compose | Medium |
+| Cloud (any) | GCP Terraform ([deploy/gcp/](deploy/gcp/)) | Medium |
+
+### Docker Compose (all platforms — recommended)
+
+The compose file in `deploy/homelab/docker-compose.yml` brings up Moku with a
+dream-cron sidecar. Works with Docker Desktop (macOS/Windows), Podman Compose
+(Linux), and `docker compose`.
+
+```bash
+cp deploy/homelab/.env.example deploy/homelab/.env
+# Edit deploy/homelab/.env with your provider API key and model
+docker compose -f deploy/homelab/docker-compose.yml up -d
+curl http://localhost:8968/health
+```
+
+### Homelab (Podman raw, Linux advanced)
 
 Systemd user services for the dream timer and backup timer are in [deploy/homelab/](deploy/homelab/):
 
 ```bash
+podman build -t localhost/moku-advisor:latest .
+podman run -d --name moku --restart=unless-stopped --network=host \
+  -v /data/moku-advisor:/data/moku-advisor:Z \
+  --env-file deploy/homelab/.env \
+  localhost/moku-advisor:latest
+
 # Install systemd timers (user-level)
 cp deploy/homelab/moku-dream.*   ~/.config/systemd/user/
 cp deploy/homelab/moku-backup.*  ~/.config/systemd/user/
