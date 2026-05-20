@@ -2,7 +2,7 @@
 
 Mori (森) is a shared memory layer for AI coding agents — one that compounds.
 Sessions feed a dream pipeline that distils activity into durable knowledge,
-so every instance starts informed rather than cold. One Moku, many agents —
+so every instance starts informed rather than cold. One Mori, many agents —
 every session benefits from what every other session learned.
 
 Works with any OpenAI-compatible provider. No homelab, no Anthropic
