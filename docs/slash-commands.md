@@ -1,6 +1,6 @@
 # Moku Slash Commands
 
-Six slash commands — `/brief`, `/dream`, `/consult`, `/pensieve`, `/req`, `/nats` — that wire Moku's MCP tools into Claude Code's workflow. Each is a thin SKILL.md that delegates to a deterministic MCP tool on the Moku server.
+Nine slash commands — `/brief`, `/ready`, `/wrap`, `/dream`, `/consult`, `/pensieve`, `/req`, `/nats`, `/update` — that wire Moku's MCP tools into Claude Code's workflow. Each is a thin SKILL.md that delegates to a deterministic MCP tool on the Moku server.
 
 ---
 
@@ -18,6 +18,39 @@ Loads shared memories and team standards into context at the start of every sess
 **Usage:** Runs automatically at session start. `/brief` to re-run.
 
 **Design rationale — session grounding instead of RAG:** All context is loaded up front (one LLM cost), not retrieved per-query. Works because the corpus is small (<50 documents). Beyond that, scale via namespace-separated Moku instances rather than adding a vector database.
+
+---
+
+## `/ready` — Personal Session Bootstrap
+
+Fred's personal bootstrap for his machines only. Reads `~/dotfiles/session-brief.md` and follows every instruction: pulls dotfiles, loads shared memories, identifies device, checks cc-share and NATS for cross-session state.
+
+**MCP tool:** `moku_advisor-brief`
+
+**What it does:**
+1. Pull latest dotfiles (`git pull`)
+2. Load shared memories via `moku_advisor-brief`
+3. Identify device (NUC, Twiggy, CB14P, UX3405)
+4. Load remaining context (cc-share, recent transcript, state-of-play summaries)
+5. Report ready — no autonomous actions
+
+Usage: `/ready` at the start of any personal session. Not deployed to devices other than Fred's machines.
+
+---
+
+## `/wrap` — Session Wrap
+
+Session-closing counterpart to `/ready`. Summarises the session and publishes to cc-share and NATS so the next session (on any device) starts with context.
+
+**MCP tools:** cc-share (`POST /cc-share/`), `moku_advisor-nats_pub`, `moku_advisor-dream_run`
+
+**What it does:**
+1. Identifies the user and host
+2. Writes a concise session summary (key changes, pending, gotchas) to cc-share with a 7-day TTL
+3. Publishes a one-liner to NATS
+4. Runs `/dream` to flush any remaining undreamed events
+
+Usage: `/wrap` at the end of a session before closing.
 
 ---
 
