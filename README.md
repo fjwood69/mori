@@ -455,11 +455,6 @@ Desktop (1d) is the easier path for most users.
 See [deploy/gcp/](deploy/gcp/) for Terraform configs. Creates a GCE e2-small VM
 with Podman rootless, persistent disk, Tailscale, and GCP Secret Manager.
 
-### 1d. Cloud — GCP (via Terraform)
-
-See [deploy/gcp/](deploy/gcp/) for Terraform configs. Creates a GCE e2-small VM
-with Podman rootless, persistent disk, Tailscale, and GCP Secret Manager.
-
 ```bash
 cd deploy/gcp
 terraform init
