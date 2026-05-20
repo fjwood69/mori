@@ -816,3 +816,6 @@ podman build -t localhost/moku-advisor:latest .
 ## License
 
 MIT
+
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/moriapp)
+
