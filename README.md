@@ -1,8 +1,9 @@
 # Moku — Shared Memory & Dream Pipeline for Claude Code
 
-Moku is an MCP server that gives Claude Code persistent shared memory,
-strategic advisory, session grounding, and a "dream" pipeline that
-distills session activity into durable knowledge.
+Moku is a shared memory layer for AI coding agents — one that compounds.
+Sessions feed a dream pipeline that distils activity into durable knowledge,
+so every instance starts informed rather than cold. One Moku, many agents —
+every session benefits from what every other session learned.
 
 Works with any OpenAI-compatible provider. No homelab, no Anthropic
 account, no Bifrost required — though those all work too.
@@ -419,8 +420,7 @@ cd moku
 pip install -r requirements.txt
 cp deploy/homelab/.env.example deploy/homelab/.env
 # Edit deploy/homelab/.env with your provider API key
-source deploy/homelab/.env
-export MOKU_PROVIDER_MODE MOKU_API_KEY MOKU_BASE_URL MOKU_MODEL
+set -a; source deploy/homelab/.env; set +a
 python -m moku_advisor.main &
 
 # Dream cron: add to crontab (runs every hour — adjust to match MOKU_DREAM_INTERVAL)
