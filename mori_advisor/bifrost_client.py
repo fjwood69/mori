@@ -1,7 +1,7 @@
 """Bifrost / direct provider client — routes model calls through either
 Bifrost VKs or a direct OpenAI-compatible endpoint.
 
-Two modes controlled by MOKU_PROVIDER_MODE env var:
+Two modes controlled by MORI_PROVIDER_MODE env var:
 - bifrost (default): Uses dummy VK API keys matched by Bifrost gateway
 - direct: Uses a real provider API key + base URL
 """
@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 # to resolve VKs. Model routing is controlled by the VK's model_override
 # in Bifrost DB. Not used in direct mode.
 VK_CONFIG: dict[str, str] = {
-    "advisor": "moku-advisor-local",
-    "dream": "moku-dream-local",
-    "fast": "moku-fast-local",
+    "advisor": "mori-advisor-local",
+    "dream": "mori-dream-local",
+    "fast": "mori-fast-local",
 }
 
 
@@ -41,9 +41,9 @@ class BifrostClient:
         base_url: str | None = None,
         timeout: int = 300,
     ):
-        mode = os.environ.get("MOKU_PROVIDER_MODE", "bifrost")
+        mode = os.environ.get("MORI_PROVIDER_MODE", "bifrost")
         if mode not in ("bifrost", "direct"):
-            logger.warning("Unknown MOKU_PROVIDER_MODE=%s, falling back to bifrost", mode)
+            logger.warning("Unknown MORI_PROVIDER_MODE=%s, falling back to bifrost", mode)
             mode = "bifrost"
 
         self.mode = mode
@@ -52,9 +52,9 @@ class BifrostClient:
         if base_url is not None:
             self.base_url = base_url
         elif mode == "direct":
-            self.base_url = os.environ.get("MOKU_BASE_URL", "https://api.openai.com/v1")
+            self.base_url = os.environ.get("MORI_BASE_URL", "https://api.openai.com/v1")
         else:
-            self.base_url = os.environ.get("MOKU_BASE_URL", "http://localhost:8787")
+            self.base_url = os.environ.get("MORI_BASE_URL", "http://localhost:8787")
 
         # Ensure /v1 suffix
         if not self.base_url.endswith("/v1"):
@@ -63,25 +63,25 @@ class BifrostClient:
         self.timeout = timeout
 
         # Direct mode settings
-        self.direct_api_key = os.environ.get("MOKU_API_KEY", "")
-        self.direct_model = os.environ.get("MOKU_MODEL", "moonshotai/kimi-k2.6")
+        self.direct_api_key = os.environ.get("MORI_API_KEY", "")
+        self.direct_model = os.environ.get("MORI_MODEL", "moonshotai/kimi-k2.6")
         self.direct_dream_model = os.environ.get(
-            "MOKU_DREAM_MODEL", os.environ.get("MOKU_MODEL", "deepseek/deepseek-v4-flash")
+            "MORI_DREAM_MODEL", os.environ.get("MORI_MODEL", "deepseek/deepseek-v4-flash")
         )
 
         # Bifrost mode VK overrides
-        self.bifrost_advisor_vk = os.environ.get("MOKU_BIFROST_ADVISOR_VK", "moku-advisor-local")
-        self.bifrost_dream_vk = os.environ.get("MOKU_BIFROST_DREAM_VK", "moku-dream-local")
-        self.bifrost_fast_vk = os.environ.get("MOKU_BIFROST_FAST_VK", "moku-fast-local")
+        self.bifrost_advisor_vk = os.environ.get("MORI_BIFROST_ADVISOR_VK", "mori-advisor-local")
+        self.bifrost_dream_vk = os.environ.get("MORI_BIFROST_DREAM_VK", "mori-dream-local")
+        self.bifrost_fast_vk = os.environ.get("MORI_BIFROST_FAST_VK", "mori-fast-local")
 
         # Model names per VK (set via env, falls back to defaults)
-        self.advisor_model = os.environ.get("MOKU_ADVISOR_MODEL", "moonshotai/kimi-k2.6")
-        self.dream_model = os.environ.get("MOKU_DREAM_MODEL", "moonshotai/kimi-k2.6")
-        self.fast_model = os.environ.get("MOKU_FAST_MODEL", "deepseek/deepseek-v4-flash")
+        self.advisor_model = os.environ.get("MORI_ADVISOR_MODEL", "moonshotai/kimi-k2.6")
+        self.dream_model = os.environ.get("MORI_DREAM_MODEL", "moonshotai/kimi-k2.6")
+        self.fast_model = os.environ.get("MORI_FAST_MODEL", "deepseek/deepseek-v4-flash")
 
         if self.mode == "direct" and not self.direct_api_key:
             logger.warning(
-                "MOKU_PROVIDER_MODE=direct but MOKU_API_KEY is not set. "
+                "MORI_PROVIDER_MODE=direct but MORI_API_KEY is not set. "
                 "API calls will likely fail."
             )
 

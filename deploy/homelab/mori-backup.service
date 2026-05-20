@@ -4,4 +4,4 @@ Documentation=https://github.com/fjwood69/ai-stack
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/podman exec moku-advisor bash /app/scripts/backup-db.sh
+ExecStart=/usr/bin/podman exec mori-advisor bash /app/scripts/backup-db.sh

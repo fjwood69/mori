@@ -1,4 +1,4 @@
-# Moku — Shared Memory & Dream Pipeline for Claude Code
+# Mori — Shared Memory & Dream Pipeline for Claude Code
 
 Moku is a shared memory layer for AI coding agents — one that compounds.
 Sessions feed a dream pipeline that distils activity into durable knowledge,
@@ -24,7 +24,7 @@ hard way, mid-task, when something breaks.
 Moku solves this.
 
 Every CC instance sends its session events — prompts, tool calls, errors, decisions
-— to the shared Moku server. The dream pipeline distils those events from **all
+— to the shared Mori server. The dream pipeline distils those events from **all
 instances** into a unified memory store. At the start of any session, `/brief`
 surfaces what the other instances have been doing: the cross-cutting decisions,
 the architectural tensions, the gotchas one instance hit that another is about
@@ -37,7 +37,7 @@ Instance A (API)          Instance B (Frontend)      Instance C (Infra)
      │                          │                          │
      └──────────────────────────┴──────────────────────────┘
                                 │
-                         Moku dream pipeline
+                         Mori dream pipeline
                                 │
                     Unified memory store (SQLite)
                                 │
@@ -78,14 +78,14 @@ The dream pipeline filters aggressively. You get signal, not a transcript.
 
 ### Setup for multi-instance use
 
-Point every instance at the same Moku server. That's it.
+Point every instance at the same Mori server. That's it.
 
 ```json
 {
   "mcpServers": {
-    "moku": {
+    "mori": {
       "type": "http",
-      "url": "http://<your-moku-server>:8968/mcp"
+      "url": "http://<your-mori-server>:8968/mcp"
     }
   }
 }
@@ -124,7 +124,7 @@ curl -sf -X POST 'http://localhost:8968/api/events/raw?client=my-hostname' \
 ```
 
 Every Claude Code session emits lifecycle events — tool calls, prompts, errors,
-stop reasons. Moku receives these via HTTP POST and stores them in an append-only
+stop reasons. Mori receives these via HTTP POST and stores them in an append-only
 event log. This is the raw material everything else builds on.
 
 **What it captures:**
@@ -135,9 +135,9 @@ event log. This is the raw material everything else builds on.
 - `Stop` / `SessionEnd` — stop reason, model used
 - Session ID, client hostname, working directory, transcript path
 
-**Components required:** Moku server only. No LLM provider needed.
+**Components required:** Mori server only. No LLM provider needed.
 
-**Config:** `MOKU_ADVISOR_API_KEY` for auth (empty = no auth, only reachable via
+**Config:** `MORI_ADVISOR_API_KEY` for auth (empty = no auth, only reachable via
 Tailscale LAN or localhost).
 
 ---
@@ -152,7 +152,7 @@ Memories live in a single SQLite database (`memories.db`) with:
 - **Tagging** — memories are taggable (`security`, `architecture`, `decision`) for filtering.
 - **Search** — keyword search across name, title, description, and body.
 
-**Components required:** Moku server only. Memories persist in SQLite — no
+**Components required:** Mori server only. Memories persist in SQLite — no
 external dependencies.
 
 ---
@@ -176,7 +176,7 @@ PreCompact  →  POST /api/precompact  →  dream_run() reads since watermark
                                       watermark advanced
 ```
 
-Run it: `/dream` or `moku-dream_run`. Check state: `/dream --status`.
+Run it: `/dream` or `mori-dream_run`. Check state: `/dream --status`.
 
 #### Stale knowledge & eviction
 
@@ -201,8 +201,8 @@ not a batch delete.
 This avoids the classic "persistent memory" failure mode where a patched
 cluster's stale workaround poisons sessions for months.
 
-**Components required:** Moku server + LLM provider (for the distillation model).
-Config: `MOKU_DREAM_MODEL` (defaults to `MOKU_MODEL`, then `deepseek/deepseek-v4-flash`).
+**Components required:** Mori server + LLM provider (for the distillation model).
+Config: `MORI_DREAM_MODEL` (defaults to `MORI_MODEL`, then `deepseek/deepseek-v4-flash`).
 
 ---
 
@@ -237,14 +237,14 @@ Moku instances per namespace rather than adding a vector store:
 
 ```bash
 # Retail team
-docker run ... -e MOKU_STANDARDS_DIR=/standards/retail -p 8970:8968
+docker run ... -e MORI_STANDARDS_DIR=/standards/retail -p 8970:8968
 # Energy team
-docker run ... -e MOKU_STANDARDS_DIR=/standards/energy -p 8971:8968
+docker run ... -e MORI_STANDARDS_DIR=/standards/energy -p 8971:8968
 ```
 
 #### Standards ingestion
 
-Set `MOKU_STANDARDS_DIR` to a directory of `.md` files:
+Set `MORI_STANDARDS_DIR` to a directory of `.md` files:
 
 ```
 /path/to/standards/
@@ -260,9 +260,9 @@ Set `MOKU_STANDARDS_DIR` to a directory of `.md` files:
 On startup, every `.md` file is imported as a protected memory with `type: standard`
 and tags from its subdirectory. Standards are read-only to non-trusted dreamers.
 
-Update without restarting: `moku-standards_reload` (trusted dreamers only).
+Update without restarting: `mori-standards_reload` (trusted dreamers only).
 
-**Components required:** Moku server + `/brief` skill. Config: `MOKU_STANDARDS_DIR`.
+**Components required:** Mori server + `/brief` skill. Config: `MORI_STANDARDS_DIR`.
 
 ---
 
@@ -281,7 +281,7 @@ Chain tool output into the advisor:
 /consult "review this auth handler" --focus security --file src/auth.py --file snyk-report.json
 ```
 
-**Components required:** Moku server + LLM provider. Config: `MOKU_MODEL`
+**Components required:** Mori server + LLM provider. Config: `MORI_MODEL`
 (default `moonshotai/kimi-k2.6`).
 
 ---
@@ -296,7 +296,7 @@ Useful for awareness across a team or fleet of Claude Code instances.
 
 #### Skill deployment (`/update`)
 
-The `moku-update` tool generates install commands for skills and slash commands
+The `mori-update` tool generates install commands for skills and slash commands
 across devices. It knows each device's profile layout and produces the right
 shell commands — no manual copy-paste across machines:
 
@@ -317,7 +317,7 @@ Command output is base64-encoded to avoid shell quoting issues:
 This means pushing an updated skill to every Claude Code instance is a single
 `/update` command away.
 
-**Components required:** Moku server. NATS server for cross-device messaging
+**Components required:** Mori server. NATS server for cross-device messaging
 (optional).
 
 ---
@@ -325,7 +325,7 @@ This means pushing an updated skill to every Claude Code instance is a single
 ### 7. Governance — Memory Quality & Validity
 
 Memories accumulate over time. Without safeguards, they drift, conflict, or
-accumulate noise. Moku has several mechanisms to maintain quality:
+accumulate noise. Mori has several mechanisms to maintain quality:
 
 #### Trusted Dreamers
 
@@ -333,22 +333,22 @@ Certain client hostnames are designated as **trusted dreamers**. Only they can
 directly modify protected memories. Writes from other instances are queued as
 pending writes.
 
-Configured via `MOKU_TRUSTED_DREAMERS` env var (comma-separated hostnames)
+Configured via `MORI_TRUSTED_DREAMERS` env var (comma-separated hostnames)
 or in the `dreamer_config` table.
 
 #### Protection
 
-Any memory can be toggled protected via `moku-memory_protect`. When protected:
+Any memory can be toggled protected via `mori-memory_protect`. When protected:
 - Trusted dreamers write directly (no change in behaviour)
 - Other instances' writes go to `pending_writes` for review
-- `moku-memory_pending_list`, `moku-memory_approve`, `moku-memory_reject` manage the queue
+- `mori-memory_pending_list`, `mori-memory_approve`, `mori-memory_reject` manage the queue
 
 #### Versioning & Rollback
 
 Every write snapshots the previous state. You can:
-- View history: `moku-memory_history(name)`
-- Compare versions: `moku-memory_diff(name, from, to)`
-- Roll back: `moku-memory_rollback(name, version_id)` — rollbacks are themselves
+- View history: `mori-memory_history(name)`
+- Compare versions: `mori-memory_diff(name, from, to)`
+- Roll back: `mori-memory_rollback(name, version_id)` — rollbacks are themselves
   versioned, so they can be reversed
 
 #### Attribution
@@ -356,7 +356,7 @@ Every write snapshots the previous state. You can:
 Every memory tracks its origin:
 - `origin_session_ids` — which sessions contributed
 - `origin_clients` — which hostnames contributed
-- `moku-memory_session_summary(session_id)` — audit what a session produced
+- `mori-memory_session_summary(session_id)` — audit what a session produced
 
 This means you can trace any memory back to the session and device that created it.
 
@@ -386,24 +386,24 @@ files, edit them, and re-import.
 Works with Podman Compose (`podman compose`) or Docker Compose (`docker compose`).
 
 ```bash
-git clone https://github.com/fjwood69/moku.git
-cd moku
+git clone https://github.com/fjwood69/mori.git
+cd mori
 cp deploy/homelab/.env.example deploy/homelab/.env
 # Edit deploy/homelab/.env with your provider API key and model
 docker compose -f deploy/homelab/docker-compose.yml up -d
 curl http://localhost:8968/health
 ```
 
-The compose file brings up Moku with a dream-cron sidecar that runs the dream
-pipeline on a schedule. Configure `MOKU_DREAM_INTERVAL` in `.env` (default: 60 minutes).
+The compose file brings up Mori with a dream-cron sidecar that runs the dream
+pipeline on a schedule. Configure `MORI_DREAM_INTERVAL` in `.env` (default: 60 minutes).
 
 ### 1b. macOS — Docker Desktop
 
 Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) then:
 
 ```bash
-git clone https://github.com/fjwood69/moku.git
-cd moku
+git clone https://github.com/fjwood69/mori.git
+cd mori
 cp deploy/homelab/.env.example deploy/homelab/.env
 # Edit deploy/homelab/.env with your provider API key and model
 docker compose -f deploy/homelab/docker-compose.yml up -d
@@ -415,16 +415,16 @@ Docker Desktop handles the Linux container layer transparently — no extra setu
 ### 1c. macOS — native Python
 
 ```bash
-git clone https://github.com/fjwood69/moku.git
-cd moku
+git clone https://github.com/fjwood69/mori.git
+cd mori
 pip install -r requirements.txt
 cp deploy/homelab/.env.example deploy/homelab/.env
 # Edit deploy/homelab/.env with your provider API key
 set -a; source deploy/homelab/.env; set +a
-python -m moku_advisor.main &
+python -m mori_advisor.main &
 
-# Dream cron: add to crontab (runs every hour — adjust to match MOKU_DREAM_INTERVAL)
-# 0 * * * * cd /path/to/moku && python -m moku_advisor.dream_job
+# Dream cron: add to crontab (runs every hour — adjust to match MORI_DREAM_INTERVAL)
+# 0 * * * * cd /path/to/mori && python -m mori_advisor.dream_job
 ```
 
 SQLite WAL mode works natively on macOS. No container needed.
@@ -434,8 +434,8 @@ SQLite WAL mode works natively on macOS. No container needed.
 Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (handles WSL2 backend automatically) then in PowerShell:
 
 ```powershell
-git clone https://github.com/fjwood69/moku.git
-cd moku
+git clone https://github.com/fjwood69/mori.git
+cd mori
 copy deploy\homelab\.env.example deploy\homelab\.env
 # Edit deploy\homelab\.env with your provider API key and model (Notepad works fine)
 docker compose -f deploy\homelab\docker-compose.yml up -d
@@ -466,7 +466,7 @@ terraform apply
 
 ```bash
 curl http://localhost:8968/health
-# {"status":"ok","service":"moku-advisor"}
+# {"status":"ok","service":"mori-advisor"}
 
 curl http://localhost:8968/api/events/health
 # {"status":"ok","total_events":0}
@@ -484,7 +484,7 @@ Create a `.mcp.json` file in your project root:
 ```json
 {
   "mcpServers": {
-    "moku": {
+    "mori": {
       "type": "http",
       "url": "http://localhost:8968/mcp"
     }
@@ -493,13 +493,13 @@ Create a `.mcp.json` file in your project root:
 ```
 
 Claude Code picks this up automatically when working in that project directory
-— no global config needed. For a remote Moku server (e.g. on another machine
+— no global config needed. For a remote Mori server (e.g. on another machine
 on the same Tailscale tailnet), use the Tailscale IP:
 
 ```json
 {
   "mcpServers": {
-    "moku": {
+    "mori": {
       "type": "http",
       "url": "http://100.84.128.79:8968/mcp"
     }
@@ -514,7 +514,7 @@ Add to `~/.claude/settings.json` under `mcpServers`:
 ```json
 {
   "mcpServers": {
-    "moku": {
+    "mori": {
       "type": "http",
       "url": "http://localhost:8968/mcp"
     }
@@ -525,7 +525,7 @@ Add to `~/.claude/settings.json` under `mcpServers`:
 For user-global scope (works in VS Code extension):
 
 ```bash
-claude mcp add moku --scope user --type http http://localhost:8968/mcp
+claude mcp add mori --scope user --type http http://localhost:8968/mcp
 ```
 
 ### 4. Install slash commands
@@ -551,20 +551,20 @@ See [Event Logging](#event-logging) below.
 
 | Tool | What it does |
 |------|-------------|
-| `moku-memory_search/write/read/list/delete` | Full CRUD on shared memories |
-| `moku-memory_export/import/export_all` | Portability between instances |
-| `moku-memory_history/diff/rollback` | Versioning — track changes over time |
-| `moku-memory_session_summary` | Attribution — see what a session produced |
-| `moku-memory_pending_list/approve/reject/protect` | Governance — trusted dreamer workflow |
-| `moku-consult_advisor` | Strategic guidance mid-task (configurable model + focus) |
-| `moku-dream_run / dream_status` | Batch distills session events → memories |
-| `moku-standards_reload` | Re-import team standards from disk |
-| `moku-brief` | Session bootstrap — loads memories + standards + dream state |
-| `moku-pensieve` | Search/browse the shared memory store |
-| `moku-update` | Deploy slash command skills to devices |
-| `moku-nats_pub/sub/ping` | Cross-device message bus (NATS optional) |
-| `moku-memory_req` | Requirements tracking dashboard with status workflow |
-| `moku-event_log` | HTTP event capture endpoint for dream pipeline |
+| `mori-memory_search/write/read/list/delete` | Full CRUD on shared memories |
+| `mori-memory_export/import/export_all` | Portability between instances |
+| `mori-memory_history/diff/rollback` | Versioning — track changes over time |
+| `mori-memory_session_summary` | Attribution — see what a session produced |
+| `mori-memory_pending_list/approve/reject/protect` | Governance — trusted dreamer workflow |
+| `mori-consult_advisor` | Strategic guidance mid-task (configurable model + focus) |
+| `mori-dream_run / dream_status` | Batch distills session events → memories |
+| `mori-standards_reload` | Re-import team standards from disk |
+| `mori-brief` | Session bootstrap — loads memories + standards + dream state |
+| `mori-pensieve` | Search/browse the shared memory store |
+| `mori-update` | Deploy slash command skills to devices |
+| `mori-nats_pub/sub/ping` | Cross-device message bus (NATS optional) |
+| `mori-memory_req` | Requirements tracking dashboard with status workflow |
+| `mori-event_log` | HTTP event capture endpoint for dream pipeline |
 
 **Slash commands**: `/brief`, `/ready`, `/wrap`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`, `/req`
 
@@ -613,7 +613,7 @@ See [Event Logging](#event-logging) below.
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                       Moku Server                            │
+│                       Mori Server                            │
 │                                                              │
 │  ┌──────────────┐  ┌──────────┐  ┌──────────────────────┐   │
 │  │ Memory Store │  │ Dream    │  │ Consult Advisor      │   │
@@ -639,19 +639,19 @@ See [Event Logging](#event-logging) below.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MOKU_PROVIDER_MODE` | `bifrost` | `direct` or `bifrost`. New users without a custom gateway should set `direct`. |
-| `MOKU_API_KEY` | — | Provider key (required in `direct` mode) |
-| `MOKU_BASE_URL` | depends | OpenAI-compatible base URL |
-| `MOKU_MODEL` | `moonshotai/kimi-k2.6` | Advisor model |
-| `MOKU_DREAM_MODEL` | falls back | Dream pipeline model |
-| `MOKU_MCP_SERVER_NAME` | `moku` | MCP tool prefix |
-| `MOKU_ADVISOR_DATA` | `/data/moku-advisor` | SQLite DB location |
-| `MOKU_ADVISOR_API_KEY` | — | Event capture auth (empty = no auth) |
-| `MOKU_TRUSTED_DREAMERS` | — | Comma-separated hostnames for write approval bypass |
-| `MOKU_STANDARDS_DIR` | — | Path to team standards .md directory |
-| `MOKU_SKILLS_DIR` | — | Path to slash command skill files (for /update) |
-| `MOKU_DREAM_INTERVAL` | `60` | Dream pipeline interval in minutes |
-| `MOKU_BIFROST_TIMEOUT` | `300` | API timeout in seconds |
+| `MORI_PROVIDER_MODE` | `bifrost` | `direct` or `bifrost`. New users without a custom gateway should set `direct`. |
+| `MORI_API_KEY` | — | Provider key (required in `direct` mode) |
+| `MORI_BASE_URL` | depends | OpenAI-compatible base URL |
+| `MORI_MODEL` | `moonshotai/kimi-k2.6` | Advisor model |
+| `MORI_DREAM_MODEL` | falls back | Dream pipeline model |
+| `MORI_MCP_SERVER_NAME` | `mori` | MCP tool prefix |
+| `MORI_ADVISOR_DATA` | `/data/mori-advisor` | SQLite DB location |
+| `MORI_ADVISOR_API_KEY` | — | Event capture auth (empty = no auth) |
+| `MORI_TRUSTED_DREAMERS` | — | Comma-separated hostnames for write approval bypass |
+| `MORI_STANDARDS_DIR` | — | Path to team standards .md directory |
+| `MORI_SKILLS_DIR` | — | Path to slash command skill files (for /update) |
+| `MORI_DREAM_INTERVAL` | `60` | Dream pipeline interval in minutes |
+| `MORI_BIFROST_TIMEOUT` | `300` | API timeout in seconds |
 
 ### Dream interval
 
@@ -659,7 +659,7 @@ How often to run the dream phase depends on session density. The `PreCompact`
 hook fires on context compression regardless of schedule, so the cron is just
 a safety net for sessions that never compact.
 
-Set via `MOKU_DREAM_INTERVAL` in your `.env` file (used by the Docker Compose
+Set via `MORI_DREAM_INTERVAL` in your `.env` file (used by the Docker Compose
 dream-cron sidecar). For Podman/systemd deployments, set via the dream timer.
 
 | Team size | Suggested interval | Rationale |
@@ -690,13 +690,13 @@ dream-cron sidecar). For Podman/systemd deployments, set via the dream timer.
 
 ### Docker Compose (all platforms — recommended)
 
-The compose file in `deploy/homelab/docker-compose.yml` brings up Moku with a
+The compose file in `deploy/homelab/docker-compose.yml` brings up Mori with a
 dream-cron sidecar. Works with Docker Desktop (macOS/Windows), Podman Compose
 (Linux), and `docker compose`.
 
 ```bash
-git clone https://github.com/fjwood69/moku.git
-cd moku
+git clone https://github.com/fjwood69/mori.git
+cd mori
 cp deploy/homelab/.env.example deploy/homelab/.env
 # Edit deploy/homelab/.env with your provider API key and model
 docker compose -f deploy/homelab/docker-compose.yml up -d
@@ -708,20 +708,20 @@ curl http://localhost:8968/health
 Systemd user services for the dream timer and backup timer are in [deploy/homelab/](deploy/homelab/):
 
 ```bash
-git clone https://github.com/fjwood69/moku.git
-cd moku
-podman build -t localhost/moku-advisor:latest .
-podman run -d --name moku --restart=unless-stopped --network=host \
-  -v /data/moku-advisor:/data/moku-advisor:Z \
+git clone https://github.com/fjwood69/mori.git
+cd mori
+podman build -t localhost/mori-advisor:latest .
+podman run -d --name mori --restart=unless-stopped --network=host \
+  -v /data/mori-advisor:/data/mori-advisor:Z \
   --env-file deploy/homelab/.env \
-  localhost/moku-advisor:latest
+  localhost/mori-advisor:latest
 
 # Install systemd timers (user-level)
-cp deploy/homelab/moku-dream.*   ~/.config/systemd/user/
-cp deploy/homelab/moku-backup.*  ~/.config/systemd/user/
+cp deploy/homelab/mori-dream.*   ~/.config/systemd/user/
+cp deploy/homelab/mori-backup.*  ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now moku-dream.timer
-systemctl --user enable --now moku-backup.timer
+systemctl --user enable --now mori-dream.timer
+systemctl --user enable --now mori-backup.timer
 ```
 
 ### GCP (GCE VM)
@@ -745,7 +745,7 @@ terraform apply
 #  For a fresh GCP deployment without a NUC, create secrets manually
 #  in GCP Secret Manager and reference them in your Terraform variables.)
 # SSH in and verify:
-gcloud compute ssh moku-advisor
+gcloud compute ssh mori-advisor
 curl http://localhost:8968/health
 ```
 
@@ -755,9 +755,9 @@ During migration, both homelab and GCP instances can run in parallel pointing
 at separate databases. Claude Code points at either one via `.mcp.json`.
 
 To copy memories from an existing instance:
-1. On the old instance: `moku-memory_export_all` → flat `.md` files
-2. On the new instance: `moku-memory_import` → loads into new DB
-3. Verify with `moku-memory_list`
+1. On the old instance: `mori-memory_export_all` → flat `.md` files
+2. On the new instance: `mori-memory_import` → loads into new DB
+3. Verify with `mori-memory_list`
 
 No downtime — both instances serve during the cutover.
 
@@ -797,7 +797,7 @@ open-weight models.
 Each team member runs their own Claude Code connected to the same Moku.
 Memories are shared. Trusted dreamers approve writes.
 
-1. Run Moku on a shared server or as a cloud container
+1. Run Mori on a shared server or as a cloud container
 2. Each member points `mcpServers` at the shared URL
 3. Each member installs the skills and hooks
 4. Run `/dream` periodically on one instance to consolidate
@@ -807,10 +807,10 @@ Memories are shared. Trusted dreamers approve writes.
 ## Building
 
 ```bash
-git clone https://github.com/fjwood69/moku.git
-cd moku
-podman build -t localhost/moku-advisor:latest .
-# Or with Docker: docker build -t moku-advisor:latest .
+git clone https://github.com/fjwood69/mori.git
+cd mori
+podman build -t localhost/mori-advisor:latest .
+# Or with Docker: docker build -t mori-advisor:latest .
 ```
 
 ## License

@@ -1,4 +1,4 @@
-"""Pydantic schemas for Moku Advisor."""
+"""Pydantic schemas for Mori Advisor."""
 
 from __future__ import annotations
 

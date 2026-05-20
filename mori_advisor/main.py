@@ -1,10 +1,10 @@
-"""Moku — FastMCP server providing shared memory, consult, and dream tools.
+"""Mori — FastMCP server providing shared memory, consult, and dream tools.
 
 Routes model calls through either a Bifrost gateway (VK-based) or a
-direct OpenAI-compatible provider. Controlled by MOKU_PROVIDER_MODE env var.
+direct OpenAI-compatible provider. Controlled by MORI_PROVIDER_MODE env var.
 
 Usage:
-    MOKU_PROVIDER_MODE=direct MOKU_API_KEY=sk-... python -m moku_advisor.main
+    MORI_PROVIDER_MODE=direct MORI_API_KEY=sk-... python -m mori_advisor.main
 """
 
 from __future__ import annotations
@@ -20,36 +20,36 @@ from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from moku_advisor.bifrost_client import BifrostClient
-from moku_advisor.dream import DreamPipeline
-from moku_advisor.memory_store import MemoryStore
-from moku_advisor.metrics import init_metrics, shutdown_metrics
-from moku_advisor.session_log import SessionLog
+from mori_advisor.bifrost_client import BifrostClient
+from mori_advisor.dream import DreamPipeline
+from mori_advisor.memory_store import MemoryStore
+from mori_advisor.metrics import init_metrics, shutdown_metrics
+from mori_advisor.session_log import SessionLog
 
 logger = logging.getLogger(__name__)
 
 # ── Configuration from environment ──────────────────────────────────────
 
-DATA_DIR = Path(os.environ.get("MOKU_ADVISOR_DATA", "/data/moku-advisor"))
-MCP_SERVER_NAME = os.environ.get("MOKU_MCP_SERVER_NAME", "moku")
-BIFROST_BASE_URL = os.environ.get("MOKU_BASE_URL", "http://localhost:8787")
-BIFROST_TIMEOUT = int(os.environ.get("MOKU_BIFROST_TIMEOUT", "300"))
+DATA_DIR = Path(os.environ.get("MORI_ADVISOR_DATA", "/data/mori-advisor"))
+MCP_SERVER_NAME = os.environ.get("MORI_MCP_SERVER_NAME", "mori")
+BIFROST_BASE_URL = os.environ.get("MORI_BASE_URL", "http://localhost:8787")
+BIFROST_TIMEOUT = int(os.environ.get("MORI_BIFROST_TIMEOUT", "300"))
 TRUSTED_DREAMERS = os.environ.get(
-    "MOKU_TRUSTED_DREAMERS",
+    "MORI_TRUSTED_DREAMERS",
     "",
-).split(",") if os.environ.get("MOKU_TRUSTED_DREAMERS") else []
+).split(",") if os.environ.get("MORI_TRUSTED_DREAMERS") else []
 
 # Event capture auth
-EVENTS_API_KEY = os.environ.get("MOKU_ADVISOR_API_KEY", "")
+EVENTS_API_KEY = os.environ.get("MORI_ADVISOR_API_KEY", "")
 
 # Standards directory
-STANDARDS_DIR = os.environ.get("MOKU_STANDARDS_DIR", "")
+STANDARDS_DIR = os.environ.get("MORI_STANDARDS_DIR", "")
 
 # Skills directory (for /update tool to read skill content server-side)
-SKILLS_DIR = os.environ.get("MOKU_SKILLS_DIR", "")
+SKILLS_DIR = os.environ.get("MORI_SKILLS_DIR", "")
 
 NATS_URL = os.environ.get(
-    "MOKU_NATS_URL",
+    "MORI_NATS_URL",
     "nats://cc:MHRqnbvNew52VpDFTa8IM1PR@localhost:4222"
 )
 
@@ -335,7 +335,7 @@ async def brief() -> str:
 
     # State-of-play
     try:
-        from moku_advisor.dream import DreamPipeline
+        from mori_advisor.dream import DreamPipeline
         dp = DreamPipeline(db_path=DATA_DIR / "memories.db", bifrost_client=bifrost)
         status = dp.get_status()
         parts.append(f"**Dream state:** {status}")
@@ -413,7 +413,7 @@ def import_standards(standards_dir: str | None = None) -> str:
     """
     src = standards_dir or STANDARDS_DIR
     if not src:
-        return "No standards directory configured (set MOKU_STANDARDS_DIR)."
+        return "No standards directory configured (set MORI_STANDARDS_DIR)."
 
     src_path = Path(src)
     if not src_path.is_dir():
@@ -458,7 +458,7 @@ def import_standards(standards_dir: str | None = None) -> str:
 
 @mcp.tool()
 async def standards_reload() -> str:
-    """Re-import all standards from MOKU_STANDARDS_DIR.
+    """Re-import all standards from MORI_STANDARDS_DIR.
 
     Only trusted dreamers can call this. After reload, call
     memory_list with type_filter=standard to see what's available.
@@ -627,7 +627,7 @@ async def update(device: str, content: str = "", skill: str = "") -> str:
         if skill == "all":
             return _update_all(device)
         if not SKILLS_DIR:
-            return "Server skills directory not configured (set MOKU_SKILLS_DIR)."
+            return "Server skills directory not configured (set MORI_SKILLS_DIR)."
         skill_path = Path(SKILLS_DIR) / skill / "SKILL.md"
         if not skill_path.exists():
             available = _list_skills()
@@ -849,7 +849,7 @@ async def dream_run(dry_run: bool = False) -> str:
 async def dream_status() -> str:
     """Show dream phase state: event counts, watermark, undreamed backlog.
 
-    Returns the same info as the old moku-dream --status command.
+    Returns the same info as the old mori-dream --status command.
     """
     return dream_pipeline.get_status()
 
@@ -952,7 +952,7 @@ async def memory_req(
     or arbitrary tag. Returns a grouped Markdown table with summary counts.
 
     Args:
-        project: Project filter (e.g. "moku" to match tag project-moku).
+        project: Project filter (e.g. "mori" to match tag project-mori).
         status: Status filter (e.g. "done" to match tag status-done).
         tag: Arbitrary tag filter (overrides project/status if provided).
         limit: Max results (default 50).
@@ -1209,7 +1209,7 @@ async def memory_export_all(output_dir: str | None = None) -> str:
     """Export all memories to CC auto-memory .md files with YAML frontmatter.
 
     Args:
-        output_dir: Absolute path to write .md files (default: /data/moku-advisor/exports/).
+        output_dir: Absolute path to write .md files (default: /data/mori-advisor/exports/).
     """
     if output_dir is None:
         output_dir = str(DATA_DIR / "exports")
@@ -1506,7 +1506,7 @@ async def dream_trigger(request: Request) -> JSONResponse:
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
     """Liveness probe. Returns 200 if the server is running."""
-    return JSONResponse({"status": "ok", "service": "moku-advisor"})
+    return JSONResponse({"status": "ok", "service": "mori-advisor"})
 
 
 @mcp.custom_route("/ready", methods=["GET"])
@@ -1544,21 +1544,21 @@ async def metrics(request: Request) -> PlainTextResponse:
     except Exception:
         # Fallback: hand-rolled text when Prometheus bridge not installed
         lines = [
-            "# HELP moku_up Was the last query successful",
-            "# TYPE moku_up gauge",
-            "moku_up 1",
-            "# HELP moku_memories_total Total number of memories in the store",
-            "# TYPE moku_memories_total gauge",
-            f"moku_memories_total {memory_store.count()}",
-            "# HELP moku_events_total Total number of session events logged",
-            "# TYPE moku_events_total gauge",
-            f"moku_events_total {session_log.count_events()}",
-            "# HELP moku_pending_writes Number of pending writes awaiting approval",
-            "# TYPE moku_pending_writes gauge",
-            f"moku_pending_writes {memory_store.pending_count()}",
-            "# HELP moku_eviction_queue_size Number of unresolved eviction queue entries",
-            "# TYPE moku_eviction_queue_size gauge",
-            f"moku_eviction_queue_size {memory_store.eviction_count()}",
+            "# HELP mori_up Was the last query successful",
+            "# TYPE mori_up gauge",
+            "mori_up 1",
+            "# HELP mori_memories_total Total number of memories in the store",
+            "# TYPE mori_memories_total gauge",
+            f"mori_memories_total {memory_store.count()}",
+            "# HELP mori_events_total Total number of session events logged",
+            "# TYPE mori_events_total gauge",
+            f"mori_events_total {session_log.count_events()}",
+            "# HELP mori_pending_writes Number of pending writes awaiting approval",
+            "# TYPE mori_pending_writes gauge",
+            f"mori_pending_writes {memory_store.pending_count()}",
+            "# HELP mori_eviction_queue_size Number of unresolved eviction queue entries",
+            "# TYPE mori_eviction_queue_size gauge",
+            f"mori_eviction_queue_size {memory_store.eviction_count()}",
         ]
         return PlainTextResponse("\n".join(lines) + "\n")
 

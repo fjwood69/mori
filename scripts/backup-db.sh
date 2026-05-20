@@ -3,12 +3,12 @@
 # Uses sqlite3 .backup for a consistent snapshot (safe under concurrent writes).
 #
 # Usage: bash scripts/backup-db.sh
-# Or via systemd timer: systemctl start moku-backup
+# Or via systemd timer: systemctl start mori-backup
 
 set -euo pipefail
 
-DATA_DIR="${MOKU_ADVISOR_DATA:-/data/moku-advisor}"
-BACKUP_BUCKET="${MOKU_BACKUP_BUCKET:-gs://moku-advisor-backups-moku-genai}"
+DATA_DIR="${MORI_ADVISOR_DATA:-/data/mori-advisor}"
+BACKUP_BUCKET="${MORI_BACKUP_BUCKET:-gs://mori-advisor-backups-mori-genai}"
 DB_FILE="${DATA_DIR}/memories.db"
 TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
 BACKUP_PATH="${BACKUP_BUCKET}/memories-${TIMESTAMP}.db.gz"

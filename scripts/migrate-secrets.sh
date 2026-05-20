@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-PROJECT="${PROJECT_ID:-moku-genai}"
+PROJECT="${PROJECT_ID:-mori-genai}"
 DRY_RUN=false
 if [ "${1:-}" = "--dry-run" ]; then
   DRY_RUN=true
@@ -24,13 +24,13 @@ get_secret() {
 }
 
 MIGRATE=(
-  "MOKU_API_KEY"
-  "MOKU_ADVISOR_API_KEY"
-  "MOKU_BASE_URL"
-  "MOKU_MODEL"
-  "MOKU_DREAM_MODEL"
-  "MOKU_TRUSTED_DREAMERS"
-  "MOKU_NATS_URL"
+  "MORI_API_KEY"
+  "MORI_ADVISOR_API_KEY"
+  "MORI_BASE_URL"
+  "MORI_MODEL"
+  "MORI_DREAM_MODEL"
+  "MORI_TRUSTED_DREAMERS"
+  "MORI_NATS_URL"
 )
 
 for secret_id in "${MIGRATE[@]}"; do

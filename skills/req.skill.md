@@ -1,40 +1,40 @@
 # /req — Project Requirements and Delivery Tracking
 
-When the user runs `/req`, parse the arguments and call the `moku_advisor-memory_req` MCP tool, or perform CRUD operations on `type=requirement` memories.
+When the user runs `/req`, parse the arguments and call the `mori_advisor-memory_req` MCP tool, or perform CRUD operations on `type=requirement` memories.
 
 Do NOT search for files locally. All tool calls go through the MCP server.
 
 ## Modes
 
 ### `/req` — Dashboard
-Call `moku_advisor-memory_req()` with no arguments. Shows all requirements grouped by project with status counts.
+Call `mori_advisor-memory_req()` with no arguments. Shows all requirements grouped by project with status counts.
 
 ### `/req --project <name>` — Filter by project
-Call `moku_advisor-memory_req(project="<name>")`. Shows requirements tagged with `project-<name>`.
+Call `mori_advisor-memory_req(project="<name>")`. Shows requirements tagged with `project-<name>`.
 
 ### `/req --project <name> --status <value>` — Filter by project and status
-Call `moku_advisor-memory_req(project="<name>", status="<value>")`. Status values: `done`, `pending`, `in-progress`, `blocked`.
+Call `mori_advisor-memory_req(project="<name>", status="<value>")`. Status values: `done`, `pending`, `in-progress`, `blocked`.
 
 ### `/req add "<title>" --project <name> [--desc "<desc>"] [--pri high|medium|low] [--fr|--nfr]`
 
 Create a new requirement memory:
 1. Compute name as `req-<project>-<slugified-title>` (kebab-case)
 2. Build tags: `["project-<name>", "status-pending", "pri-<priority>"]` + `"fr"` or `"nfr"` if specified
-3. Call `moku_advisor-memory_write(name="<name>", title="<title>", description="<desc>", type="requirement", tags=<tags>, body="<desc>")`
+3. Call `mori_advisor-memory_write(name="<name>", title="<title>", description="<desc>", type="requirement", tags=<tags>, body="<desc>")`
 4. Report the created memory name
 
 ### `/req done <name>` — Mark complete
 
-1. Call `moku_advisor-memory_read(name)` to get current tags
+1. Call `mori_advisor-memory_read(name)` to get current tags
 2. Replace any existing `status-*` tag with `status-done`
-3. Call `moku_advisor-memory_write(name=..., tags=<updated tags>, type="requirement")` with the same name and updated tags
+3. Call `mori_advisor-memory_write(name=..., tags=<updated tags>, type="requirement")` with the same name and updated tags
 
 ### `/req block <name> [--reason "<text>"]` — Mark blocked
 
-1. Read current memory via `moku_advisor-memory_read(name)`
+1. Read current memory via `mori_advisor-memory_read(name)`
 2. Swap `status-*` to `status-blocked`
 3. Append reason to body if provided
-4. Write back via `moku_advisor-memory_write`
+4. Write back via `mori_advisor-memory_write`
 
 ### `/req wip <name>` — Mark in-progress
 
@@ -76,7 +76,7 @@ Parse the raw input string:
 |---|---|
 | `/req` | Dashboard of all requirements |
 | `/req --project bifrost` | View Bifrost requirements |
-| `/req --project moku --status done` | Completed Moku requirements |
+| `/req --project mori --status done` | Completed Mori requirements |
 | `/req add "OAuth2 login" --project bifrost --pri high --fr` | Create new FR |
 | `/req done req-bifrost-oauth2-login` | Mark as done |
 | `/req block req-bifrost-oauth2 --reason "Waiting on IAM"` | Block with reason |

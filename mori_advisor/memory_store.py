@@ -4,7 +4,7 @@ attribution, portability, and trusted dreamer protection.
 Uses stdlib sqlite3 with WAL mode for concurrent reads. No extra deps.
 
 Data Layout (runtime):
-  /data/moku-advisor/
+  /data/mori-advisor/
     memories.db          # SQLite database
     exports/             # Exported .md files (YAML frontmatter + body)
 """
@@ -230,7 +230,7 @@ class MemoryStore:
         # Seed default trusted dreamer config (overridable via env)
         import os
         default_trusted = os.environ.get(
-            "MOKU_TRUSTED_DREAMERS",
+            "MORI_TRUSTED_DREAMERS",
             "[]",
         )
         conn.execute(
