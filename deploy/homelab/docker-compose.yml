@@ -1,0 +1,51 @@
+version: "3.8"
+
+# Moku — Docker Compose deployment
+# Works with Docker Desktop (Windows/macOS), Podman Compose (Linux), and docker compose.
+#
+# Quickstart:
+#   1. Copy .env.example to .env and edit with your provider API key
+#   2. docker compose up -d
+#   3. curl http://localhost:8968/health
+
+services:
+  moku-advisor:
+    build: ../..
+    image: moku-advisor:latest
+    container_name: moku-advisor
+    restart: unless-stopped
+    ports:
+      - "8968:8968"
+    volumes:
+      - moku-data:/data/moku-advisor
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8968/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  dream-cron:
+    image: alpine:latest
+    container_name: moku-dream-cron
+    restart: unless-stopped
+    depends_on:
+      moku-advisor:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl
+        INTERVAL=${MOKU_DREAM_INTERVAL:-60}
+        while true; do
+          sleep $(( INTERVAL * 60 ))
+          curl -sf -X POST http://moku-advisor:8968/api/dream/run && \
+            echo "dream completed" || echo "dream skipped (no new events)"
+        done
+    env_file:
+      - .env
+
+volumes:
+  moku-data:
