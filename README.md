@@ -817,5 +817,7 @@ podman build -t localhost/moku-advisor:latest .
 
 MIT
 
-[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/moriapp)
+---
+
+[Support me on Ko-fi](https://ko-fi.com/moriapp)
 
