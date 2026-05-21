@@ -545,7 +545,231 @@ Each skill becomes a `/command`: `/brief`, `/consult`, `/dream`, `/pensieve`, `/
 ### 5. Enable event capture (required for dreams)
 
 Add the hooks from `examples/settings.json` to your `~/.claude/settings.json`.
-See [Event Logging](#event-logging) below.
+See [Claude Code CLI Setup](#claude-code-cli--mori-setup) below for a complete walkthrough.
+
+---
+
+## Claude Code CLI — Mori Setup
+
+This section covers the Claude Code CLI-specific configuration that enables
+the full Mori experience: event capture, dream pipeline, and session grounding.
+
+### 1. Connect Mori as an MCP server
+
+**Project-level** (recommended — per repo):
+```json
+// .mcp.json in your project root
+{
+  "mcpServers": {
+    "mori": {
+      "type": "http",
+      "url": "http://localhost:8968/mcp"
+    }
+  }
+}
+```
+
+**User-global** (available in all CC sessions):
+```bash
+claude mcp add mori --scope user --type http http://localhost:8968/mcp
+```
+
+For a remote Mori server on the same Tailscale tailnet:
+```json
+{
+  "mcpServers": {
+    "mori": {
+      "type": "http",
+      "url": "http://mori.yourteam.ts.net:8968/mcp"
+    }
+  }
+}
+```
+
+### 2. Enable event capture (required for dreams)
+
+Mori's dream pipeline is fed by Claude Code lifecycle hooks. Add these to
+`~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sf -X POST 'http://localhost:8968/api/events/raw?client=$(hostname)' -H 'Content-Type: application/json' -H 'X-Api-Key: your-api-key' -d @- >/dev/null 2>&1; exit 0"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sf -X POST 'http://localhost:8968/api/events/raw?client=$(hostname)' -H 'Content-Type: application/json' -H 'X-Api-Key: your-api-key' -d @- >/dev/null 2>&1; exit 0"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sf -X POST 'http://localhost:8968/api/events/raw?client=$(hostname)' -H 'Content-Type: application/json' -H 'X-Api-Key: your-api-key' -d @- >/dev/null 2>&1; exit 0"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sf -X POST 'http://localhost:8968/api/events/raw?client=$(hostname)' -H 'Content-Type: application/json' -H 'X-Api-Key: your-api-key' -d @- >/dev/null 2>&1; exit 0"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sf -X POST 'http://localhost:8968/api/precompact?client=$(hostname)' -H 'Content-Type: application/json' -H 'X-Api-Key: your-api-key' -d @- >/dev/null 2>&1; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Notes:**
+- Replace `your-api-key` with the value of `MORI_ADVISOR_API_KEY`
+- Replace `localhost:8968` with your Mori server address if running remotely
+- `$(hostname)` is evaluated at hook fire time — override with a fixed name
+  if your hostname is long or changes (e.g. `?client=twiggy`)
+- `PreCompact` posts to `/api/precompact` — this triggers an immediate
+  synchronous dream run before context compression. Expect 10–30s delay.
+  This is intentional — it preserves session knowledge before it is lost.
+- A full example `settings.json` is in [examples/settings.json](examples/settings.json)
+
+### 3. Install slash commands
+
+```bash
+# One-shot for all profiles:
+SKILLS_DIRS=(".claude" ".claude-sr" ".claude-sub" ".claude-api")
+for d in "${SKILLS_DIRS[@]}"; do
+  mkdir -p ~/$d/skills
+  cp -r skills/* ~/$d/skills/
+done
+```
+
+Each skill becomes a `/command` in Claude Code:
+
+| Command | What it does |
+|---------|-------------|
+| `/brief` | Load shared memories + standards + dream state into context |
+| `/dream` | Distil undreamed events into memories |
+| `/dream --status` | Show dream pipeline state |
+| `/dream --dry-run` | Preview without writing |
+| `/consult "question"` | Strategic guidance from the advisor model |
+| `/pensieve <query>` | Search memories by keyword |
+| `/pensieve read <name>` | Read a specific memory |
+| `/req` | Requirements dashboard |
+| `/nats ping` | Check cross-device messaging |
+| `/wrap` | Session close — summary, dream flush, NATS publish |
+
+### 4. Session grounding with CLAUDE.md
+
+Add a line to `~/.claude/CLAUDE.md` to ensure every session starts with
+shared context:
+
+```markdown
+At the start of every session, run /brief to load shared memories and
+dream pipeline state before responding to the user.
+```
+
+This ensures the agent bootstraps from the Mori memory store automatically,
+without requiring a manual `/brief` invocation each time.
+
+### 5. Trusted dreamer setup
+
+The device that runs the dream pipeline and writes directly to protected
+memories is the **trusted dreamer**. Set it in your Mori server config:
+
+```bash
+MORI_TRUSTED_DREAMERS=your-hostname
+```
+
+To find your hostname:
+```bash
+hostname
+```
+
+On Windows:
+```powershell
+$env:COMPUTERNAME
+```
+
+Multiple trusted dreamers (comma-separated):
+```bash
+MORI_TRUSTED_DREAMERS=macbook-pro,twiggy,nuc15pro
+```
+
+Writes from non-trusted devices are queued as pending writes for review
+via `mori-memory_pending_list`.
+
+### 6. Verify the full setup
+
+```bash
+# MCP tools available
+claude mcp list
+
+# Health check
+curl http://localhost:8968/health
+# → {"status":"ok","service":"mori-advisor"}
+
+# Send a test event
+curl -X POST 'http://localhost:8968/api/events/raw?client=test' \
+  -H 'Content-Type: application/json' \
+  -H 'X-Api-Key: your-api-key' \
+  -d '{"event_name":"UserPromptSubmit","prompt":"test"}'
+
+# Check dream state
+curl http://localhost:8968/metrics
+```
+
+Then start a Claude Code session and run `/brief` — if shared memories
+load into context, everything is working.
+
+### Dream cadence
+
+Configure how often the dream pipeline runs in `.env`:
+
+```bash
+MORI_DREAM_INTERVAL=60  # minutes
+```
+
+| Team size | Recommended |
+|-----------|-------------|
+| Solo | 240 min (4 hours) |
+| 1–4 people | 60 min (1 hour) |
+| 5–10 people | 30 min |
+
+The `PreCompact` hook fires an immediate dream regardless of cadence —
+so no session knowledge is lost at context compression time.
+
+---
 
 ## What you get
 

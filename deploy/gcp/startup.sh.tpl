@@ -226,20 +226,21 @@ SEEDEOF
   echo "Bifrost config seeded."
 fi
 
-# Start mori-advisor container (port 8968) — direct mode for now,
-# will switch to Bifrost proxy once Bifrost is verified
+# Start mori-advisor container (port 8968) — Bifrost mode via localhost:8787.
+# Uses ghcr.io/fjwood69/moku:latest until the mori image exists.
+# The moku image uses MOKU_* env vars (not MORI_*) — do not rename.
 su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-advisor --restart=always --network=host \
   --user 0 \
   -v /data/mori-advisor:/data/mori-advisor:Z \
-  -e MORI_ADVISOR_DATA=/data/mori-advisor \
-  -e MORI_PROVIDER_MODE=direct \
-  -e MORI_API_KEY='$MORI_API_KEY' \
-  -e MORI_ADVISOR_API_KEY='$MORI_ADVISOR_API_KEY' \
-  -e MORI_BASE_URL='$MORI_BASE_URL' \
-  -e MORI_MODEL='$MORI_MODEL' \
-  -e MORI_DREAM_MODEL='$MORI_DREAM_MODEL' \
-  -e MORI_TRUSTED_DREAMERS='$MORI_TRUSTED_DREAMERS' \
-  -e MORI_NATS_URL='$MORI_NATS_URL' \
+  -e MOKU_ADVISOR_DATA=/data/mori-advisor \
+  -e MOKU_PROVIDER_MODE=bifrost \
+  -e MOKU_API_KEY=sk-bf-mori-advisor-gce-001 \
+  -e MOKU_ADVISOR_API_KEY='$MORI_ADVISOR_API_KEY' \
+  -e MOKU_BASE_URL=http://localhost:8787 \
+  -e MOKU_MODEL='$MORI_MODEL' \
+  -e MOKU_DREAM_MODEL='$MORI_DREAM_MODEL' \
+  -e MOKU_TRUSTED_DREAMERS='$MORI_TRUSTED_DREAMERS' \
+  -e MOKU_NATS_URL='$MORI_NATS_URL' \
   '$CONTAINER_IMAGE'"
 
 echo "Moku-advisor container started."

@@ -8,7 +8,7 @@ machine_type  = "e2-small"
 disk_size_gb  = 20
 
 # Container
-container_image = "localhost/mori-advisor:latest"
+container_image = "ghcr.io/fjwood69/moku:latest"
 
 # Tailscale
 tailscale_auth_key = "tskey-auth-..."

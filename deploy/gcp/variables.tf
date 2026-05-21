@@ -41,9 +41,9 @@ variable "tailscale_auth_key" {
 }
 
 variable "container_image" {
-  description = "Container image tag for mori-advisor"
+  description = "Container image tag for mori-advisor (currently ghcr.io/fjwood69/moku:latest until mori image is published)"
   type        = string
-  default     = "localhost/mori-advisor:latest"
+  default     = "ghcr.io/fjwood69/moku:latest"
 }
 
 variable "backup_retention_days" {
