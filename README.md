@@ -1,4 +1,4 @@
-![Mori — A shared memory layer for AI coding agents](https://private-user-images.githubusercontent.com/67951118/596732420-6a831ff2-fda7-4d20-87b0-404186232888.svg?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3Nzk0NTA3MzgsIm5iZiI6MTc3OTQ1MDQzOCwicGF0aCI6Ii82Nzk1MTExOC81OTY3MzI0MjAtNmE4MzFmZjItZmRhNy00ZDIwLTg3YjAtNDA0MTg2MjMyODg4LnN2Zz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNjA1MjIlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTIyVDExNDcxOFomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTAwOGYyNmM3NmE1MTAyZjMzYWVmYzcxNjk5NjE2MTBjZGViMDFhM2UyOTJhOTlkNjkzOTJlODY5NWNlZjE3NTImWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JnJlc3BvbnNlLWNvbnRlbnQtdHlwZT1pbWFnZSUyRnN2ZyUyQnhtbCJ9.zGafYqsc20lfjv4GsGesGh0YtE65lou8asq4AAneA4M)
+![Mori — A shared memory layer for AI coding agents](https://github.com/fjwood69/mori/blob/main/docs/assets/header-dark.svg)
 
 
 Mori (森) is a shared memory layer for AI coding agents — one that compounds.
@@ -12,7 +12,7 @@ account, no LLM Gateway required — though those all work too.
 ---
 
 ## Multi-Instance Coherence
-![One Forest, Many Agents](https://private-user-images.githubusercontent.com/67951118/596732424-e57f6353-9a6b-4443-a6a9-5afe1631970f.svg?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3Nzk0NTExMjYsIm5iZiI6MTc3OTQ1MDgyNiwicGF0aCI6Ii82Nzk1MTExOC81OTY3MzI0MjQtZTU3ZjYzNTMtOWE2Yi00NDQzLWE2YTktNWFmZTE2MzE5NzBmLnN2Zz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNjA1MjIlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTIyVDExNTM0NlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPWY4OTZmN2IyYmY3YmUwNjc3NmU1Yjg3NzliOWIzNjFiMWZmMjczMTYyMjlmZWM0NzU1ODllNzgyMzMzMzUzZTgmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JnJlc3BvbnNlLWNvbnRlbnQtdHlwZT1pbWFnZSUyRnN2ZyUyQnhtbCJ9.-bEZDo2KTX_HPoQ-F3EZisOnH80HedcYByz01kh71Yo)
+![One Forest, Many Agents](https://github.com/fjwood69/mori/blob/main/docs/assets/figure-5-one-forest.svg)
 
 
 If you run Claude Code across multiple machines or profiles — one focused on the
@@ -143,7 +143,7 @@ Memories live in a single SQLite database (`memories.db`) with:
 - **Tagging** — memories are taggable (`security`, `architecture`, `decision`) for filtering.
 - **Search** — keyword search across name, title, description, and body.
 
-![The Forest Remembers](https://private-user-images.githubusercontent.com/67951118/596732422-d49b510c-5d23-487e-9845-947d6f96984b.svg?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3Nzk0NTE1MjIsIm5iZiI6MTc3OTQ1MTIyMiwicGF0aCI6Ii82Nzk1MTExOC81OTY3MzI0MjItZDQ5YjUxMGMtNWQyMy00ODdlLTk4NDUtOTQ3ZDZmOTY5ODRiLnN2Zz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNjA1MjIlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTIyVDEyMDAyMlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTExNjM2NGIxYzhiOGNjZDVkYmY5N2IwNzJmMzZhZmUxNTlhYTdhNDFmMjE4YjA5Y2Y4M2U0ZDEwODBlZjZmYTYmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JnJlc3BvbnNlLWNvbnRlbnQtdHlwZT1pbWFnZSUyRnN2ZyUyQnhtbCJ9.nwqceZbuQg0WBzfugnqipYg58emMrAV8Yg76p2WR8JY)
+![The Forest Remembers](https://github.com/fjwood69/mori/blob/main/docs/assets/figure-2-the-forest-remembers.svg)
 
 **Components required:** Mori server only. Memories persist in SQLite — no
 external dependencies.
@@ -170,7 +170,7 @@ PreCompact  →  POST /api/precompact  →  dream_run() reads since watermark
 ```
 
 
-![Dream Pipeline](https://private-user-images.githubusercontent.com/67951118/596732423-a3a67161-e004-4ef8-b5af-4151465d8667.svg?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3Nzk0NTExMjYsIm5iZiI6MTc3OTQ1MDgyNiwicGF0aCI6Ii82Nzk1MTExOC81OTY3MzI0MjMtYTNhNjcxNjEtZTAwNC00ZWY4LWI1YWYtNDE1MTQ2NWQ4NjY3LnN2Zz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNjA1MjIlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTIyVDExNTM0NlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPWQ1MmM5YjMzZmY1NjBiNGNlOTUzMjk4YmQ0YzM1ZGE1Njc5ZjgyYjRjM2YwN2MyZWJkMTcyNDhlZjg0N2M1NDcmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JnJlc3BvbnNlLWNvbnRlbnQtdHlwZT1pbWFnZSUyRnN2ZyUyQnhtbCJ9.ucTXuTOnPh93D40fA43C_C2dDxvQKsrZi8sC4KopY8Y)
+![Dream Pipeline](https://github.com/fjwood69/mori/blob/main/docs/assets/figure-1-dream-pipeline.svg)
 
 
 Run it: `/dream` or `mori-dream_run`. Check state: `/dream --status`.
@@ -817,7 +817,7 @@ so no session knowledge is lost at context compression time.
 
 ## Architecture
 
-![Mori Architecture](https://private-user-images.githubusercontent.com/67951118/596732419-da1388b6-c732-447b-b1cb-53de4494fc41.svg?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3Nzk0NTE1MjIsIm5iZiI6MTc3OTQ1MTIyMiwicGF0aCI6Ii82Nzk1MTExOC81OTY3MzI0MTktZGExMzg4YjYtYzczMi00NDdiLWIxY2ItNTNkZTQ0OTRmYzQxLnN2Zz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNjA1MjIlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwNTIyVDEyMDAyMlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTBhN2JhYWIxNzFjNzBiZDc1MzY2ZTU5MTA0YWEwZDg4ODNkNzlhNWUwNGJhMmUxYjk0NjNjYWM1OTQxNmQwMTEmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JnJlc3BvbnNlLWNvbnRlbnQtdHlwZT1pbWFnZSUyRnN2ZyUyQnhtbCJ9.-coO0xZLCGut-y_y1JhmifX1OQ7tDoJa0URhiXb5Ukc)
+![Mori Architecture](https://github.com/fjwood69/mori/blob/main/docs/assets/figure-4-architecture.svg)
 
 
 ---
