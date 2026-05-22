@@ -453,7 +453,7 @@ class DreamPipeline:
                     response = self.client.consult(
                         system=prompt,
                         user=f"new: {name}\nexisting: {cand_name}",
-                        vk="advisor",
+                        vk="fast",
                         max_tokens=16,
                         temperature=0.0,
                     )
