@@ -1,0 +1,18 @@
+{
+  "name": "mori-cline-plugin",
+  "version": "0.1.2",
+  "description": "Cline plugin for Mori — ships lifecycle events to Mori's dream pipeline",
+  "main": "dist/mori-plugin.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "dependencies": {
+    "@cline/sdk": "^0.0.41"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  },
+  "license": "MIT"
+}
