@@ -1,0 +1,80 @@
+{
+  "publisher": "fjwood69",
+  "name": "mori-shipper",
+  "displayName": "Mori Event Shipper",
+  "version": "0.1.1",
+  "description": "Ship Cline, Continue, and OpenCode conversation events to Mori's dream pipeline",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Mori Shipper",
+      "properties": {
+        "moriShipper.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:8968/api/events/raw",
+          "description": "Mori server endpoint for event ingestion"
+        },
+        "moriShipper.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Mori API key (X-Api-Key header)"
+        },
+        "moriShipper.clientName": {
+          "type": "string",
+          "default": "",
+          "description": "Client hostname sent as ?client= query param (defaults to OS hostname)"
+        },
+        "moriShipper.enableCline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Watch Cline conversation history"
+        },
+        "moriShipper.enableContinue": {
+          "type": "boolean",
+          "default": true,
+          "description": "Watch Continue session files"
+        },
+        "moriShipper.enableOpenCode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Watch OpenCode session files (requires moriShipper.openCodePath)"
+        },
+        "moriShipper.openCodePath": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to OpenCode session directory"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0",
+    "eslint": "^8.56.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fjwood69/mori.git"
+  },
+  "license": "MIT"
+}
