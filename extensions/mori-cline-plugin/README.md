@@ -1,148 +1,149 @@
 # Mori Cline Plugin — v0.1.2
 
-Ships lifecycle events (prompts, tool calls, session lifecycle) from Cline to
-Mori's dream pipeline for cross-session memory distillation.
-
-## How It Works
-
-The plugin hooks into Cline's agent runtime via the SDK's `AgentRuntimePlugin`
-interface. Four hooks capture events and POST them to the Mori advisor server:
-
-| SDK Hook | Mori Event | What it captures |
-|----------|-----------|-----------------|
-| `beforeRun` | — | Replays any spooled events from previous offline sessions |
-| `beforeModel` | `UserPromptSubmit` | Your prompt text, extracted from the pending model request |
-| `afterTool` | `PostToolUse` | Tool name, input, output, and error status |
-| `afterRun` | `Stop` + dream flush | Session end signal, then triggers dream distillation |
+Ships Cline session events (prompts, tool calls, session lifecycle) to Mori's
+dream pipeline for cross-session memory distillation. Works alongside the
+mori-shipper VS Code extension, which captures Continue and OpenCode sessions
+via file watching.
 
 All events are fire-and-forget — Mori failures never block or slow Cline.
 
-## Installation
+## Quick Start — 4 Steps
 
-### Via Cline CLI
-
-```bash
-cline plugin install ./extensions/mori-cline-plugin
-```
-
-### Global install (all projects)
+### 1. Clone the repo
 
 ```bash
-cp -r extensions/mori-cline-plugin ~/.cline/plugins/
+git clone https://github.com/fjwood69/mori.git
+cd mori
 ```
 
-### Or manual
+### 2. Set environment variables
 
-```bash
-cd extensions/mori-cline-plugin
-npm install
-npm run build
-```
+The plugin posts events to the Mori advisor server on a GCE VM via Tailscale.
+Set these before launching Cline:
 
-Then reference `dist/mori-plugin.js` in your Cline config.
-
-## Configuration
-
-Set these environment variables before launching Cline:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MORI_API_URL` | `http://localhost:8968` | Mori advisor server base URL |
-| `MORI_API_KEY` | `""` | API key sent as `X-Api-Key` header |
-| `MORI_CLIENT` | `os.hostname()` | Client name sent as `?client=` query param |
-
+**Linux / macOS:**
 ```bash
 export MORI_API_URL=<mori-server-url>
 export MORI_API_KEY=<mori-api-key>
 export MORI_CLIENT=$(hostname)
 ```
 
-Windows (PowerShell):
-
+**Windows (PowerShell):**
 ```powershell
 $env:MORI_API_URL = "<mori-server-url>"
 $env:MORI_API_KEY = "<mori-api-key>"
-$env:MORI_CLIENT  = "<hostname>"
+$env:MORI_CLIENT  = "twiggy"
 ```
 
-## MCP Server Config for Cline
+To make these permanent on Windows, add them as User environment variables:
+`Win+R` → `sysdm.cpl` → Advanced → Environment Variables → New (under User variables).
 
-Add Mori as an MCP server in Cline's settings so `/brief`, `/dream`, `/consult`,
-`/pensieve`, `/wrap`, `/req` are available as slash commands:
+### 3. Register the plugin
+
+**Via Cline CLI:**
+```bash
+clite plugin install /path/to/mori/extensions/mori-cline-plugin
+```
+
+**Via VS Code settings.json** (`Ctrl+Shift+P` → Preferences: Open User Settings (JSON)):
+```json
+{
+  "cline.agentRuntimePlugins": [
+    "/path/to/mori/extensions/mori-cline-plugin/dist/mori-plugin.js"
+  ]
+}
+```
+
+### 4. Add Mori MCP server
+
+Still in `settings.json`, add the Mori MCP server so `/pensieve`, `/dream`,
+`/brief`, `/consult`, `/req` slash commands work:
 
 ```json
 {
-  "mcpServers": {
+  "cline.mcpServers": {
     "mori": {
       "type": "http",
-      "url": "http://localhost:8968/mcp"
+      "url": "<mori-server-url>/mcp"
     }
   }
 }
 ```
 
-## Skills
+If you already have `mcpServers` in your settings, add the `"mori"` entry to it.
 
-Mori's existing Claude Code skills work in Cline without modification — Cline
-reads from `.claude/skills/` as a valid skill location. Copy or symlink:
+### 5. Reload and verify
+
+1. **Restart VS Code** completely (not just reload window)
+2. Start a Cline session and send a message
+3. The plugin works silently — verify events are flowing:
 
 ```bash
-# Cline also reads .cline/skills/ — symlink from CC skills
-ln -s .claude/skills .cline/skills
+curl <mori-server-url>/api/events/health
 ```
 
-This gives Cline users `/brief`, `/dream`, `/consult`, `/pensieve`, `/wrap`,
-`/req` slash commands identical to CC.
+If `total_events` is incrementing, the plugin is working.
 
-## Offline Resilience
+## Slash Commands
 
-Events that fail to reach the Mori server are spooled to disk:
+If you also use Claude Code, symlink its skills into Cline:
 
+**Linux / macOS:**
+```bash
+ln -s ~/.claude/skills ~/.cline/skills
+```
+
+**Windows (PowerShell, run as Admin):**
+```powershell
+New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.cline\skills" -Target "$env:USERPROFILE\.claude\skills" -Force
+```
+
+If admin isn't available, copy instead:
+```powershell
+Copy-Item -Recurse "$env:USERPROFILE\.claude\skills" "$env:USERPROFILE\.cline\skills" -Force
+```
+
+Then these work in Cline:
+| Command | What it does |
+|---------|-------------|
+| `/pensieve` | Search shared memories |
+| `/dream` | Run dream distillation now |
+| `/brief` | Load shared knowledge for this session |
+| `/consult` | Get strategic guidance on a question |
+| `/req` | Project requirements tracking |
+
+## How the Plugin Works
+
+| SDK Hook | Mori Event | What it captures |
+|----------|-----------|-----------------|
+| `beforeRun` | — | Replays any spooled events from previous offline sessions |
+| `beforeModel` | `UserPromptSubmit` | Your prompt text |
+| `afterTool` | `PostToolUse` | Tool name, input, output, and error status |
+| `afterRun` | `Stop` + dream flush | Session end signal, then triggers dream distillation |
+
+Events are fire-and-forget with a disk-backed spooler for offline resilience:
 - Spool directory: `~/.mori/queue/`
-- Retry schedule: 10s, 30s, 1m, 2m, 5m, 10m (capped at 10m)
-- Max retries: 10, then dead-lettered to `~/.mori/dead/`
-- At the start of your next session, `beforeRun` replays all pending spools
-
-## Building from Source
-
-```bash
-cd extensions/mori-cline-plugin
-npm install
-npm run build
-# Output: dist/mori-plugin.js
-```
+- Retry schedule: 10s, 30s, 1m, 2m, 5m, 10m (capped)
+- Max 10 retries, then dead-lettered to `~/.mori/dead/`
+- `beforeRun` replays any pending spools at session start
 
 ## Verification
 
-1. Confirm Mori advisor is running:
-   ```bash
-   curl http://localhost:8968/health
-   ```
+```bash
+# Check events are flowing
+curl <mori-server-url>/api/events/health
 
-2. Install the plugin and start a Cline session.
+# Trigger dream manually
+curl -X POST <mori-server-url>/api/dream/run
+```
 
-3. Send a message and check events landed:
-   ```bash
-   curl http://localhost:8968/api/events/health
-   # total_events should increment
-   ```
+## Project Structure
 
-4. Check event types in the database:
-   ```bash
-   sqlite3 /data/mori-advisor/memories.db \
-     "SELECT event_name FROM session_events ORDER BY id DESC LIMIT 5"
-   # Should show: UserPromptSubmit, PostToolUse, Stop
-   ```
-
-5. End the session — dream flush fires automatically:
-   ```bash
-   curl http://localhost:8968/api/events/health
-   # Dream state should show updated memory count
-   ```
-
-## Out of Scope for v0.1.2
-
-- VS Code extension — `mori-shipper` (v0.1.1) handles Continue and OpenCode
-- PreCompact hook — Cline has a `custom-compaction` mechanism; evaluate in v0.1.3
-- NATS integration — handled server-side by the Mori advisor
-- Plugin publishing to npm — manual install for now
+```
+extensions/mori-cline-plugin/
+├── package.json
+├── tsconfig.json
+├── src/mori-plugin.ts     # Source (TypeScript)
+├── dist/mori-plugin.js    # Built plugin (committed, no build needed)
+└── README.md
+```
