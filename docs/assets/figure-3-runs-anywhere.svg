@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="430" viewBox="0 0 900 430" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace">
+  
+  <rect width="900" height="430" fill="#e8eae1"></rect>
+  <g stroke="#d6d2c5" stroke-width="1" fill="none">
+  <path d="M12 22 L12 12 L22 12"></path><path d="M878 12 L888 12 L888 22"></path>
+  <path d="M12 408 L12 418 L22 418 M878 418 L888 418 L888 408"></path>
+</g>
+  
+  <text x="40" y="72" font-size="28" font-weight="500" letter-spacing="-0.04em" fill="#112418">Runs anywhere.</text>
+  <text x="860" y="56" text-anchor="end" font-size="10" font-weight="400" letter-spacing="0.08em" fill="#5a5f5b">ONE SERVER · MANY AGENTS</text>
+  <text x="40" y="170" font-size="11" letter-spacing="0.14em" fill="#5a5f5b">PLATFORM</text>
+  <text x="240" y="170" font-size="11" letter-spacing="0.14em" fill="#5a5f5b">PATH</text>
+  <line x1="40" y1="180" x2="860" y2="180" stroke="#5a5f5b" stroke-width="1" opacity="0.5"></line>
+  <g transform="translate(0 222)">
+      <g transform="translate(40 -10)" fill="none" stroke="#112418" stroke-width="1.3"><rect x="0" y="0" width="12" height="12"></rect></g>
+      <text x="64" y="0" font-size="14" font-weight="500" fill="#112418">Linux</text>
+      <text x="240" y="0" font-size="13" fill="#2a2f2c">Docker Compose · Podman</text>
+      <text x="850" y="0" text-anchor="end" font-size="14" fill="#c89a3a">●</text>
+      <line x1="40" y1="20" x2="860" y2="20" stroke="rgba(0,0,0,0.06)" stroke-width="1"></line>
+    </g><g transform="translate(0 266)">
+      <g transform="translate(40 -10)" fill="none" stroke="#112418" stroke-width="1.3"><circle cx="6" cy="6" r="6"></circle></g>
+      <text x="64" y="0" font-size="14" font-weight="500" fill="#112418">macOS</text>
+      <text x="240" y="0" font-size="13" fill="#2a2f2c">Docker Desktop · Native Python</text>
+      <text x="850" y="0" text-anchor="end" font-size="14" fill="#c89a3a">●</text>
+      <line x1="40" y1="20" x2="860" y2="20" stroke="rgba(0,0,0,0.06)" stroke-width="1"></line>
+    </g><g transform="translate(0 310)">
+      <g transform="translate(40 -10)" fill="none" stroke="#112418" stroke-width="1.3"><rect x="0" y="0" width="4.8" height="4.8"></rect><rect x="7.2" y="0" width="4.8" height="4.8"></rect><rect x="0" y="7.2" width="4.8" height="4.8"></rect><rect x="7.2" y="7.2" width="4.8" height="4.8"></rect></g>
+      <text x="64" y="0" font-size="14" font-weight="500" fill="#112418">Windows</text>
+      <text x="240" y="0" font-size="13" fill="#2a2f2c">Docker Desktop</text>
+      <text x="850" y="0" text-anchor="end" font-size="14" fill="#c89a3a">●</text>
+      <line x1="40" y1="20" x2="860" y2="20" stroke="rgba(0,0,0,0.06)" stroke-width="1"></line>
+    </g><g transform="translate(0 354)">
+      <g transform="translate(40 -10)" fill="none" stroke="#112418" stroke-width="1.3"><polygon points="6,0 12,12 0,12"></polygon></g>
+      <text x="64" y="0" font-size="14" font-weight="500" fill="#112418">Cloud</text>
+      <text x="240" y="0" font-size="13" fill="#2a2f2c">GCP Terraform · ~$12/month</text>
+      <text x="850" y="0" text-anchor="end" font-size="14" fill="#c89a3a">●</text>
+      <line x1="40" y1="20" x2="860" y2="20" stroke="rgba(0,0,0,0.06)" stroke-width="1"></line>
+    </g>
+  <line x1="40" y1="402" x2="860" y2="402" stroke="#5a5f5b" stroke-width="1" opacity="0.6"></line>
+</svg>
