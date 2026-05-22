@@ -77,7 +77,7 @@ class BifrostClient:
         # Model names per VK (set via env, falls back to defaults)
         self.advisor_model = os.environ.get("MORI_ADVISOR_MODEL", "moonshotai/kimi-k2.6")
         self.dream_model = os.environ.get("MORI_DREAM_MODEL", "moonshotai/kimi-k2.6")
-        self.fast_model = os.environ.get("MORI_FAST_MODEL", "deepseek/deepseek-v4-flash")
+        self.fast_model = os.environ.get("MORI_FAST_MODEL", "Novita/deepseek/deepseek-v4-flash")
 
         if self.mode == "direct" and not self.direct_api_key:
             logger.warning(
