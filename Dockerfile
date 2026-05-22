@@ -28,6 +28,9 @@ ENV PYTHONPATH="/app:$PYTHONPATH"
 
 WORKDIR /app
 
+# Apply latest security patches (sqlite-libs, libcrypto3, etc.)
+RUN apk upgrade --no-cache
+
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
