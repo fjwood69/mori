@@ -42,7 +42,7 @@ To make these permanent on Windows, add them as User environment variables:
 
 **Via Cline CLI:**
 ```bash
-clite plugin install /path/to/mori/extensions/mori-cline-plugin
+cline plugin install /path/to/mori/extensions/mori-cline-plugin
 ```
 
 **Via VS Code settings.json** (`Ctrl+Shift+P` → Preferences: Open User Settings (JSON)):
@@ -54,9 +54,9 @@ clite plugin install /path/to/mori/extensions/mori-cline-plugin
 }
 ```
 
-### 4. Add Mori MCP server
+### 4. Add MCP server, reload, and verify
 
-Still in `settings.json`, add the Mori MCP server so `/pensieve`, `/dream`,
+Add the Mori MCP server to `settings.json` so `/pensieve`, `/dream`,
 `/brief`, `/consult`, `/req` slash commands work:
 
 ```json
@@ -72,11 +72,8 @@ Still in `settings.json`, add the Mori MCP server so `/pensieve`, `/dream`,
 
 If you already have `mcpServers` in your settings, add the `"mori"` entry to it.
 
-### 5. Reload and verify
-
-1. **Restart VS Code** completely (not just reload window)
-2. Start a Cline session and send a message
-3. The plugin works silently — verify events are flowing:
+Then restart VS Code completely (not just reload window), start a Cline session
+and send a message. The plugin works silently — verify events are flowing:
 
 ```bash
 curl <mori-server-url>/api/events/health
@@ -93,12 +90,12 @@ If you also use Claude Code, symlink its skills into Cline:
 ln -s ~/.claude/skills ~/.cline/skills
 ```
 
-**Windows (PowerShell, run as Admin):**
+**Windows (requires Admin):**
 ```powershell
 New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.cline\skills" -Target "$env:USERPROFILE\.claude\skills" -Force
 ```
 
-If admin isn't available, copy instead:
+If admin isn't available, copying the files works just as well:
 ```powershell
 Copy-Item -Recurse "$env:USERPROFILE\.claude\skills" "$env:USERPROFILE\.cline\skills" -Force
 ```
@@ -144,6 +141,6 @@ extensions/mori-cline-plugin/
 ├── package.json
 ├── tsconfig.json
 ├── src/mori-plugin.ts     # Source (TypeScript)
-├── dist/mori-plugin.js    # Built plugin (committed, no build needed)
+├── dist/mori-plugin.js    # Built plugin — committed so users don't need Node/npm to install
 └── README.md
 ```
