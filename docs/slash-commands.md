@@ -1,6 +1,6 @@
 # Mori Slash Commands
 
-Nine slash commands — `/brief`, `/ready`, `/wrap`, `/dream`, `/consult`, `/pensieve`, `/req`, `/nats`, `/update` — that wire Mori's MCP tools into Claude Code's workflow. Each is a thin SKILL.md that delegates to a deterministic MCP tool on the Mori server.
+Eight slash commands — `/brief`, `/wrap`, `/dream`, `/consult`, `/pensieve`, `/req`, `/nats`, `/update` — that wire Mori's MCP tools into Claude Code's workflow. Each is a thin SKILL.md that delegates to a deterministic MCP tool on the Mori server.
 
 ---
 
@@ -21,26 +21,9 @@ Loads shared memories and team standards into context at the start of every sess
 
 ---
 
-## `/ready` — Personal Session Bootstrap
-
-Fred's personal bootstrap for his machines only. Reads `~/dotfiles/session-brief.md` and follows every instruction: pulls dotfiles, loads shared memories, identifies device, checks cc-share and NATS for cross-session state.
-
-**MCP tool:** `mori-brief`
-
-**What it does:**
-1. Pull latest dotfiles (`git pull`)
-2. Load shared memories via `mori-brief`
-3. Identify device (NUC, Twiggy, CB14P, UX3405)
-4. Load remaining context (cc-share, recent transcript, state-of-play summaries)
-5. Report ready — no autonomous actions
-
-Usage: `/ready` at the start of any personal session. Not deployed to devices other than Fred's machines.
-
----
-
 ## `/wrap` — Session Wrap
 
-Session-closing counterpart to `/ready`. Summarises the session and publishes to cc-share and NATS so the next session (on any device) starts with context.
+Session-closing counterpart to `/ready` (Fred's personal bootstrap). Summarises the session and publishes to cc-share and NATS so the next session (on any device) starts with context.
 
 **MCP tools:** cc-share (`POST /cc-share/`), `mori-nats_pub`, `mori-dream_run`
 
