@@ -1,9 +1,9 @@
 {
   "publisher": "fjwood69",
   "name": "mori-shipper",
-  "displayName": "Mori Event Shipper",
+  "displayName": "Mori VS Code Shipper",
   "version": "0.1.1",
-  "description": "Ship Cline, Continue, and OpenCode conversation events to Mori's dream pipeline",
+  "description": "Ship Continue and OpenCode conversation events to Mori's dream pipeline (VS Code extension for editors without a plugin SDK)",
   "icon": "icon.png",
   "engines": {
     "vscode": "^1.85.0"
