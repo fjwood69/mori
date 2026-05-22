@@ -790,14 +790,13 @@ so no session knowledge is lost at context compression time.
 | `mori-memory_req` | Requirements tracking dashboard with status workflow |
 | `mori-event_log` | HTTP event capture endpoint for dream pipeline |
 
-**Slash commands**: `/brief`, `/ready`, `/wrap`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`, `/req`
+**Slash commands**: `/brief`, `/wrap`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`, `/req`
 
 ### Quick Reference
 
 | Command | Usage | What it does |
 |---------|-------|-------------|
 | `/brief` | `/brief` | Load shared memories + standards + dream state into context |
-| `/ready` | `/ready` | Personal session bootstrap — pulls dotfiles, loads shared knowledge, identifies device |
 | `/wrap` | `/wrap` | Session wrap — writes summary to cc-share, publishes to NATS, runs dream |
 | `/consult` | `/consult "question" [--focus security] [--depth quick] [--file path]` | Get strategic guidance from the advisor model |
 | `/dream` | `/dream` | Distill undreamed events into memories |
