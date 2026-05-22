@@ -21,7 +21,7 @@ Instance B doesn't know that Instance A just changed the auth contract. Instance
 doesn't know that Instance B's deployment assumptions shifted. They find out the
 hard way, mid-task, when something breaks.
 
-Moku solves this.
+Mori solves this.
 
 Every CC instance sends its session events — prompts, tool calls, errors, decisions
 — to the shared Mori server. The dream pipeline distils those events from **all
@@ -208,7 +208,7 @@ Config: `MORI_DREAM_MODEL` (defaults to `MORI_MODEL`, then `deepseek/deepseek-v4
 
 ### 4. Session Context (`/brief`)
 
-Moku uses **session grounding** rather than per-query RAG. `/brief` loads
+Mori uses **session grounding** rather than per-query RAG. `/brief` loads
 shared memories, team standards, and dream pipeline state into context at
 session start. From turn one, the model knows your security baseline,
 coding conventions, and current project state — no retrieval needed.
@@ -233,7 +233,7 @@ No sync, no drift from JIRA or GH Projects.
 ```
 
 When the standards corpus grows beyond one context window, run separate
-Moku instances per namespace rather than adding a vector store:
+Mori instances per namespace rather than adding a vector store:
 
 ```bash
 # Retail team
@@ -998,8 +998,8 @@ No downtime — both instances serve during the cutover.
 
 ## Provider Policy
 
-Moku routes all LLM inference through **US and EU sovereign endpoints only**. While
-Moku can use open-weight models created in the PRC (e.g. DeepSeek, Kimi, GLM,
+Mori routes all LLM inference through **US and EU sovereign endpoints only**. While
+Mori can use open-weight models created in the PRC (e.g. DeepSeek, Kimi, GLM,
 Qwen), inference runs entirely outside the PRC via US-based provider infrastructure:
 
 | Model | Origin | Provider Route |
@@ -1018,7 +1018,7 @@ open-weight models.
 
 ## For teams
 
-Each team member runs their own Claude Code connected to the same Moku.
+Each team member runs their own Claude Code connected to the same Mori.
 Memories are shared. Trusted dreamers approve writes.
 
 1. Run Mori on a shared server or as a cloud container

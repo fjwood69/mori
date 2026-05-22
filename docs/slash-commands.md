@@ -1,6 +1,6 @@
 # Mori Slash Commands
 
-Nine slash commands — `/brief`, `/ready`, `/wrap`, `/dream`, `/consult`, `/pensieve`, `/req`, `/nats`, `/update` — that wire Moku's MCP tools into Claude Code's workflow. Each is a thin SKILL.md that delegates to a deterministic MCP tool on the Mori server.
+Nine slash commands — `/brief`, `/ready`, `/wrap`, `/dream`, `/consult`, `/pensieve`, `/req`, `/nats`, `/update` — that wire Mori's MCP tools into Claude Code's workflow. Each is a thin SKILL.md that delegates to a deterministic MCP tool on the Mori server.
 
 ---
 
@@ -8,7 +8,7 @@ Nine slash commands — `/brief`, `/ready`, `/wrap`, `/dream`, `/consult`, `/pen
 
 Loads shared memories and team standards into context at the start of every session. Also runs per-device bootstrap checks (dotfiles, hostname, caveats).
 
-**MCP tool:** `mori_advisor-brief`
+**MCP tool:** `mori-brief`
 
 **What it returns:**
 - Shared memory count (e.g. "45 memories loaded")
@@ -25,11 +25,11 @@ Loads shared memories and team standards into context at the start of every sess
 
 Fred's personal bootstrap for his machines only. Reads `~/dotfiles/session-brief.md` and follows every instruction: pulls dotfiles, loads shared memories, identifies device, checks cc-share and NATS for cross-session state.
 
-**MCP tool:** `mori_advisor-brief`
+**MCP tool:** `mori-brief`
 
 **What it does:**
 1. Pull latest dotfiles (`git pull`)
-2. Load shared memories via `mori_advisor-brief`
+2. Load shared memories via `mori-brief`
 3. Identify device (NUC, Twiggy, CB14P, UX3405)
 4. Load remaining context (cc-share, recent transcript, state-of-play summaries)
 5. Report ready — no autonomous actions
@@ -42,7 +42,7 @@ Usage: `/ready` at the start of any personal session. Not deployed to devices ot
 
 Session-closing counterpart to `/ready`. Summarises the session and publishes to cc-share and NATS so the next session (on any device) starts with context.
 
-**MCP tools:** cc-share (`POST /cc-share/`), `mori_advisor-nats_pub`, `mori_advisor-dream_run`
+**MCP tools:** cc-share (`POST /cc-share/`), `mori-nats_pub`, `mori-dream_run`
 
 **What it does:**
 1. Identifies the user and host
@@ -58,7 +58,7 @@ Usage: `/wrap` at the end of a session before closing.
 
 Reads recent session events (tool calls, prompts, responses) since the last watermark, sends them to a configurable dream model, and writes extracted memories back to the store. Runs in-container — no host filesystem access needed.
 
-**MCP tool:** `mori_advisor-dream_run`
+**MCP tool:** `mori-dream_run`
 
 **Variants:**
 
@@ -78,7 +78,7 @@ Reads recent session events (tool calls, prompts, responses) since the last wate
 
 Sends your question plus optional file context to a configurable advisor model. When a specific focus is given (`--focus security`), relevant team standards are automatically pulled from the memory store and injected into the prompt — so the advisor checks your code against your own baseline, not generic advice.
 
-**MCP tool:** `mori_advisor-consult_advisor`
+**MCP tool:** `mori-consult_advisor`
 
 **Parameters:**
 
@@ -105,7 +105,7 @@ The last example chains existing tooling (Snyk, linters, SAST scanners) into the
 
 Search the shared memory store by keyword, type, tag, device, or time window.
 
-**MCP tool:** `mori_advisor-memory_search`
+**MCP tool:** `mori-memory_search`
 
 **Examples:**
 
@@ -125,7 +125,7 @@ Search the shared memory store by keyword, type, tag, device, or time window.
 
 Create, filter, and track project requirements with status and priority.
 
-**MCP tool:** `mori_advisor-memory_req` / `mori_advisor-memory_write`
+**MCP tool:** `mori-memory_req` / `mori-memory_write`
 
 **Examples:**
 
@@ -145,7 +145,7 @@ Requirements persist as tagged memories in the shared store. They surface automa
 
 Publish and subscribe to real-time messages across Claude Code instances (requires NATS server).
 
-**MCP tools:** `mori_advisor-nats_pub`, `mori_advisor-nats_sub`, `mori_advisor-nats_ping`
+**MCP tools:** `mori-nats_pub`, `mori-nats_sub`, `mori-nats_ping`
 
 **Examples:**
 
