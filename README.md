@@ -1,4 +1,4 @@
-![Mori — A shared memory layer for AI coding agents](https://github.com/fjwood69/mori/blob/main/docs/assets/header-dark.svg)
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/5d55d248dc91fc7c8292c3deaf6d2a2aa40192ce/docs/assets/header-dark.svg)
 
 
 Mori (森) is a shared memory layer for AI coding agents — one that compounds.
@@ -12,7 +12,7 @@ account, no LLM Gateway required — though those all work too.
 ---
 
 ## Multi-Instance Coherence
-![One Forest, Many Agents](https://github.com/fjwood69/mori/blob/main/docs/assets/figure-5-one-forest.svg)
+![One Forest, Many Agents](https://raw.githubusercontent.com/fjwood69/mori/5d55d248dc91fc7c8292c3deaf6d2a2aa40192ce/docs/assets/figure-5-one-forest.svg)
 
 
 If you run Claude Code across multiple machines or profiles — one focused on the
@@ -143,7 +143,7 @@ Memories live in a single SQLite database (`memories.db`) with:
 - **Tagging** — memories are taggable (`security`, `architecture`, `decision`) for filtering.
 - **Search** — keyword search across name, title, description, and body.
 
-![The Forest Remembers](https://github.com/fjwood69/mori/blob/main/docs/assets/figure-2-the-forest-remembers.svg)
+![The Forest Remembers](https://raw.githubusercontent.com/fjwood69/mori/5d55d248dc91fc7c8292c3deaf6d2a2aa40192ce/docs/assets/figure-2-the-forest-remembers.svg)
 
 **Components required:** Mori server only. Memories persist in SQLite — no
 external dependencies.
@@ -170,7 +170,7 @@ PreCompact  →  POST /api/precompact  →  dream_run() reads since watermark
 ```
 
 
-![Dream Pipeline](https://github.com/fjwood69/mori/blob/main/docs/assets/figure-1-dream-pipeline.svg)
+![Dream Pipeline](https://raw.githubusercontent.com/fjwood69/mori/5d55d248dc91fc7c8292c3deaf6d2a2aa40192ce/docs/assets/figure-1-dream-pipeline.svg)
 
 
 Run it: `/dream` or `mori-dream_run`. Check state: `/dream --status`.
@@ -817,7 +817,7 @@ so no session knowledge is lost at context compression time.
 
 ## Architecture
 
-![Mori Architecture](https://github.com/fjwood69/mori/blob/main/docs/assets/figure-4-architecture.svg)
+![Mori Architecture](https://raw.githubusercontent.com/fjwood69/mori/5d55d248dc91fc7c8292c3deaf6d2a2aa40192ce/docs/assets/figure-4-architecture.svg)
 
 
 ---
