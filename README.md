@@ -550,6 +550,14 @@ See [Claude Code CLI Setup](#claude-code-cli--mori-setup) below for a complete w
 
 ---
 
+## Google Antigravity IDE — Mori Setup
+
+For developers using the **Google Antigravity IDE** and its agent framework, Mori provides a native HTTP MCP server integration and lifecycle hook setup.
+
+See [docs/getting-started-antigravity.md](docs/getting-started-antigravity.md) for the complete setup guide, including using the automated setup scripts.
+
+---
+
 ## Claude Code CLI — Mori Setup
 
 This section covers the Claude Code CLI-specific configuration that enables
