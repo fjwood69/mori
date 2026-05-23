@@ -254,6 +254,10 @@ Set `MORI_STANDARDS_DIR` to a directory of `.md` files:
     python-style-guide.md
 ```
 
+The mori repo ships built-in standards in `standards/`. To enable them,
+set `MORI_STANDARDS_DIR=/app/standards` (container) or point at the
+repo's `standards/` directory (native).
+
 On startup, every `.md` file is imported as a protected memory with `type: standard`
 and tags from its subdirectory. Standards are read-only to non-trusted dreamers.
 
