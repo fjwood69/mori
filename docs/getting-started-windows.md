@@ -3,6 +3,9 @@
 Connect your Windows Claude Code instance to a shared Mori server. No server to
 run — just point at your friend's Mori and you're done.
 
+> [!NOTE]
+> If you are using the **Google Antigravity IDE** instead of Claude Code on Windows, refer to the [Google Antigravity IDE setup guide](getting-started-antigravity.md) to use automated configuration scripts.
+
 ---
 
 ## Prerequisites
