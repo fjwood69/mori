@@ -961,25 +961,19 @@ No downtime — both instances serve during the cutover.
 
 ---
 
-## Provider Policy
+## Recommended Models
 
-Mori routes all LLM inference through **US and EU sovereign endpoints only**. While
-Mori can use open-weight models created in the PRC (e.g. DeepSeek, Kimi, GLM,
-Qwen), inference runs entirely outside the PRC via US-based provider infrastructure:
+Mori uses three model roles with different requirements:
 
-| Model | Origin | Provider Route |
-|-------|--------|----------------|
-| Kimi K2.6 | Moonshot AI | DeepInfra / Novita / Parasail (US) |
-| DeepSeek V4 | DeepSeek | DeepInfra / Novita (US) |
-| GLM-5 | Zhipu AI | DeepInfra / Novita / Parasail / Vertex (US) |
-| Qwen | Alibaba | Nebius / DeepInfra (US/EU) |
-| Gemma 4 31B it | Google | Vertex AI (NAM) |
-| Gemini 3 Flash Preview | Google | Vertex AI (NAM)
+| Role | Used for | Tier 1 | Tier 2 | Why |
+|------|----------|--------|--------|-----|
+| Dream | Session distillation | Kimi K2.6 · Claude Opus 4 · GPT-5 | GLM 5.1 | Reasoning depth, large context, synthesis quality |
+| Consult | Strategic guidance | Kimi K2.6 · Claude Opus 4 · GPT-5 | Gemini 3.5 Flash | Reasoning matters, latency acceptable |
+| Fast | Contradiction scan, freshness checks | Gemma 4 31B | DeepSeek V4 Flash | Speed over reasoning, binary classification |
 
-This is explicitly documented in the README because the model names alone could
-mislead colleagues into thinking direct Moonshot/DeepSeek API usage is involved.
-**It is not.** All inference goes through US-based providers that happen to host
-open-weight models.
+Provider recommendations: Novita, Parasail, DeepInfra, Nebius for open-weight models. Anthropic and OpenAI APIs directly for Claude and GPT.
+
+Works with any OpenAI-compatible endpoint — Ollama locally, or a gateway like Bifrost for routing, fallbacks, and cost visibility.
 
 ## For teams
 
