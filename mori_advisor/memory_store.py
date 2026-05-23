@@ -74,178 +74,23 @@ def _merge_json_arrays(existing: str, new_items: list[str]) -> str:
 class MemoryStore:
     """SQLite-backed persistent memory store with WAL mode.
 
-    Each instance owns a single connection. All methods return string
-    responses suitable for MCP tool output.
+    Uses short-lived per-method connections for safe concurrent access
+    in the async FastMCP server context. WAL mode makes open/close fast
+    (~1-2ms overhead).
     """
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
-        self._conn = None
-        self._conn = self._connect()
+        self._init_db()
 
     # ── connection management ──────────────────────────────────────────
 
-    @staticmethod
-    def bootstrap_schema(db_path: str | Path) -> None:
-        """Create all tables, indexes, and config rows.
+    def _get_conn(self):
+        """Open a short-lived connection with WAL and busy timeout.
 
-        Must be called exactly once at process startup, before any
-        MemoryStore or SessionLog instances are created. Uses a
-        private connection that is closed after the schema is applied.
+        Close after use. WAL mode makes repeated open/close fast
+        and avoids single-connection contention in the async server.
         """
-        import sqlite3
-
-        p = Path(db_path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(p), timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=30000")
-
-        # Main memories table
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS memories (
-                id                INTEGER PRIMARY KEY AUTOINCREMENT,
-                name              TEXT UNIQUE NOT NULL,
-                title             TEXT NOT NULL,
-                description       TEXT NOT NULL DEFAULT '',
-                type              TEXT NOT NULL DEFAULT 'project',
-                body              TEXT NOT NULL DEFAULT '',
-                tags              TEXT NOT NULL DEFAULT '[]',
-                origin_session_id TEXT,
-                created_at        TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-            """
-        )
-
-        # Add new columns for attribution, protection, eviction (safe to run if exist)
-        new_columns = [
-            "origin_session_ids TEXT NOT NULL DEFAULT '[]'",
-            "origin_clients TEXT NOT NULL DEFAULT '[]'",
-            "protected INTEGER NOT NULL DEFAULT 0",
-            "protected_domains TEXT NOT NULL DEFAULT '[]'",
-            "tier TEXT NOT NULL DEFAULT 'working'",
-            "last_retrieved_at TEXT",
-            "retrieval_count INTEGER NOT NULL DEFAULT 0",
-            "freshness_status TEXT NOT NULL DEFAULT 'unknown'",
-            "freshness_checked_at TEXT",
-            "superseded_by TEXT",
-        ]
-        for col_def in new_columns:
-            col_name = col_def.split()[0]
-            try:
-                conn.execute(f"ALTER TABLE memories ADD COLUMN {col_def}")
-            except sqlite3.OperationalError:
-                pass  # column already exists
-
-        # Memory versions table
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS memory_versions (
-                version_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                memory_name        TEXT NOT NULL,
-                title              TEXT NOT NULL,
-                description        TEXT NOT NULL DEFAULT '',
-                type               TEXT NOT NULL DEFAULT 'project',
-                body               TEXT NOT NULL DEFAULT '',
-                tags               TEXT NOT NULL DEFAULT '[]',
-                origin_session_ids TEXT NOT NULL DEFAULT '[]',
-                origin_clients     TEXT NOT NULL DEFAULT '[]',
-                version_note       TEXT NOT NULL DEFAULT '',
-                created_at         TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_mem_versions_name ON memory_versions(memory_name)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_mem_versions_time ON memory_versions(created_at)"
-        )
-
-        # Pending writes table (trusted dreamer approvals)
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS pending_writes (
-                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-                memory_name        TEXT NOT NULL,
-                title              TEXT NOT NULL,
-                description        TEXT NOT NULL DEFAULT '',
-                type               TEXT NOT NULL DEFAULT 'project',
-                body               TEXT NOT NULL DEFAULT '',
-                tags               TEXT NOT NULL DEFAULT '[]',
-                origin_session_ids TEXT NOT NULL DEFAULT '[]',
-                origin_clients     TEXT NOT NULL DEFAULT '[]',
-                proposed_at        TEXT NOT NULL DEFAULT (datetime('now')),
-                proposed_by        TEXT NOT NULL,
-                status             TEXT NOT NULL DEFAULT 'pending',
-                reviewed_at        TEXT,
-                reviewed_by        TEXT,
-                review_note        TEXT NOT NULL DEFAULT ''
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_writes(status)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_pending_memory ON pending_writes(memory_name)"
-        )
-
-        # Dreamer config table
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS dreamer_config (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-            """
-        )
-
-        # Eviction queue table
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS eviction_queue (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                memory_name TEXT NOT NULL,
-                reason      TEXT NOT NULL,
-                detail      TEXT NOT NULL DEFAULT '',
-                detected_at TEXT NOT NULL DEFAULT (datetime('now')),
-                resolved    INTEGER NOT NULL DEFAULT 0,
-                resolved_at TEXT,
-                note        TEXT NOT NULL DEFAULT ''
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_evict_memory ON eviction_queue(memory_name)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_evict_status ON eviction_queue(resolved)"
-        )
-
-        # Seed default trusted dreamer config (overridable via env)
-        import os
-        default_trusted = os.environ.get(
-            "MORI_TRUSTED_DREAMERS",
-            "[]",
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO dreamer_config (key, value) VALUES (?, ?)",
-            ("trusted_clients", default_trusted),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO dreamer_config (key, value) VALUES (?, ?)",
-            ("protected_tag_prefixes", '["infra", "reference", "standard"]'),
-        )
-
-        conn.commit()
-        conn.close()
-
-    def _connect(self):
         import sqlite3
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,16 +101,9 @@ class MemoryStore:
         conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
-    def _initialize(self):
-        """Open the connection. Schema is bootstrapped by bootstrap_schema()."""
-        import sqlite3
-
-        self._conn = self._connect()
-
-    def close(self):
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+    def _init_db(self):
+        """Just ensure the parent dir exists. Connections are per-method."""
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ── helpers ────────────────────────────────────────────────────────
 
@@ -283,16 +121,20 @@ class MemoryStore:
         import sqlite3
 
         try:
-            self._conn.execute(
-                """
-                UPDATE memories
-                SET retrieval_count = COALESCE(retrieval_count, 0) + 1,
-                    last_retrieved_at = datetime('now')
-                WHERE name = ?
-                """,
-                (name,),
-            )
-            self._conn.commit()
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """
+                    UPDATE memories
+                    SET retrieval_count = COALESCE(retrieval_count, 0) + 1,
+                        last_retrieved_at = datetime('now')
+                    WHERE name = ?
+                    """,
+                    (name,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
         except sqlite3.Error:
             logger.debug("Failed to bump retrieval for '%s'", name, exc_info=True)
 
@@ -312,8 +154,12 @@ class MemoryStore:
         """Total memory count."""
         import sqlite3
         try:
-            cur = self._conn.execute("SELECT COUNT(*) FROM memories")
-            return cur.fetchone()[0]
+            conn = self._get_conn()
+            try:
+                cur = conn.execute("SELECT COUNT(*) FROM memories")
+                return cur.fetchone()[0]
+            finally:
+                conn.close()
         except sqlite3.Error:
             return 0
 
@@ -321,10 +167,14 @@ class MemoryStore:
         """Number of pending writes awaiting approval."""
         import sqlite3
         try:
-            cur = self._conn.execute(
-                "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending'"
-            )
-            return cur.fetchone()[0]
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending'"
+                )
+                return cur.fetchone()[0]
+            finally:
+                conn.close()
         except sqlite3.Error:
             return 0
 
@@ -332,10 +182,14 @@ class MemoryStore:
         """Number of unresolved eviction queue entries."""
         import sqlite3
         try:
-            cur = self._conn.execute(
-                "SELECT COUNT(*) FROM eviction_queue WHERE resolved = 0"
-            )
-            return cur.fetchone()[0]
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "SELECT COUNT(*) FROM eviction_queue WHERE resolved = 0"
+                )
+                return cur.fetchone()[0]
+            finally:
+                conn.close()
         except sqlite3.Error:
             return 0
 
@@ -380,11 +234,15 @@ class MemoryStore:
         import sqlite3
 
         try:
-            cur = self._conn.execute(
-                "SELECT value FROM dreamer_config WHERE key = ?", (key,)
-            )
-            row = cur.fetchone()
-            return row[0] if row else default
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "SELECT value FROM dreamer_config WHERE key = ?", (key,)
+                )
+                row = cur.fetchone()
+                return row[0] if row else default
+            finally:
+                conn.close()
         except sqlite3.Error:
             return default
 
@@ -430,11 +288,14 @@ class MemoryStore:
                     return True
         return False
 
-    def _snapshot_to_versions(self, name: str, version_note: str = "", *, _conn: sqlite3.Connection | None = None):
-        """Snapshot current memory state into memory_versions before upsert."""
+    def _snapshot_to_versions(self, name: str, version_note: str = "", *, _conn: sqlite3.Connection):
+        """Snapshot current memory state into memory_versions before upsert.
+
+        Requires a connection (caller always provides one from write()).
+        """
         import sqlite3
 
-        conn = _conn or self._conn
+        conn = _conn
 
         try:
             cur = conn.execute(
@@ -477,13 +338,16 @@ class MemoryStore:
         """Check if a version_id exists in memory_versions."""
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 "SELECT 1 FROM memory_versions WHERE version_id = ?", (version_id,)
             )
             return cur.fetchone() is not None
         except sqlite3.Error:
             return False
+        finally:
+            conn.close()
 
     # ── CRUD methods ───────────────────────────────────────────────────
 
@@ -518,142 +382,154 @@ class MemoryStore:
         """
         import sqlite3
 
-        conn = _conn or self._conn
+        close_conn = False
+        if _conn is None:
+            conn = self._get_conn()
+            close_conn = True
+        else:
+            conn = _conn
 
-        effective_name = name if name else _slugify(title)
-        if not effective_name:
-            effective_name = f"memory-{int(time.time())}"
-
-        effective_type = self._ensure_type(type)
-        effective_tier = self._ensure_tier(tier)
-        tags_list = tags or []
-        tags_json = self._format_tags(tags_list)
-
-        # Check if existing memory exists and is protected
         try:
-            existing_cur = conn.execute(
-                "SELECT * FROM memories WHERE name = ?", (effective_name,)
-            )
-            existing_row = existing_cur.fetchone()
-        except sqlite3.Error:
-            existing_row = None
+            effective_name = name if name else _slugify(title)
+            if not effective_name:
+                effective_name = f"memory-{int(time.time())}"
 
-        if not _skip_protection and self._is_protected(effective_name, tags_list, existing_row):
-            if not self._is_trusted_client(client):
-                # Queue as pending write instead
+            effective_type = self._ensure_type(type)
+            effective_tier = self._ensure_tier(tier)
+            tags_list = tags or []
+            tags_json = self._format_tags(tags_list)
+
+            # Check if existing memory exists and is protected
+            try:
+                existing_cur = conn.execute(
+                    "SELECT * FROM memories WHERE name = ?", (effective_name,)
+                )
+                existing_row = existing_cur.fetchone()
+            except sqlite3.Error:
+                existing_row = None
+
+            if not _skip_protection and self._is_protected(effective_name, tags_list, existing_row):
+                if not self._is_trusted_client(client):
+                    # Queue as pending write instead
+                    conn.execute(
+                        """
+                        INSERT INTO pending_writes
+                            (memory_name, title, description, type, body, tags,
+                             origin_session_ids, origin_clients, proposed_by)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            effective_name,
+                            title,
+                            description,
+                            effective_type,
+                            body,
+                            tags_json,
+                            json.dumps(origin_session_ids or []),
+                            json.dumps(origin_clients or []),
+                            client or "unknown",
+                        ),
+                    )
+                    if close_conn:
+                        conn.commit()
+                    return (
+                        f"Memory '{effective_name}' is protected — "
+                        f"change queued as pending write (trusted dreamer review required)."
+                    )
+
+            # Snapshot current state before upsert
+            self._snapshot_to_versions(effective_name, version_note="updated", _conn=conn)
+
+            # Merge origin arrays for attribution
+            if existing_row:
+                existing_origin_ids = json.dumps(origin_session_ids or [])
+                existing_origin_clients = json.dumps(origin_clients or [])
+                if len(existing_row) > 10:
+                    existing_origin_ids = _merge_json_arrays(
+                        existing_row[10], origin_session_ids or []
+                    )
+                if len(existing_row) > 11:
+                    existing_origin_clients = _merge_json_arrays(
+                        existing_row[11], origin_clients or []
+                    )
+            else:
+                existing_origin_ids = json.dumps(origin_session_ids or [])
+                existing_origin_clients = json.dumps(origin_clients or [])
+
+            # Check if existing row has the new columns
+            if existing_row and len(existing_row) > 10:
+                merged_ids = existing_origin_ids
+                merged_clients = existing_origin_clients
+            else:
+                merged_ids = json.dumps(origin_session_ids or [])
+                merged_clients = json.dumps(origin_clients or [])
+
+            # Preserve existing protection flags and tier
+            protected_val = 0
+            protected_domains_val = "[]"
+            if existing_row and len(existing_row) > 12:
+                protected_val = existing_row[12]
+            if existing_row and len(existing_row) > 13:
+                protected_domains_val = existing_row[13]
+
+            # Don't downgrade canonical to working
+            existing_tier = effective_tier
+            if existing_row and len(existing_row) > 14:
+                existing_tier_val = existing_row[14]
+                if existing_tier_val == "canonical":
+                    existing_tier = "canonical"
+
+            try:
                 conn.execute(
                     """
-                    INSERT INTO pending_writes
-                        (memory_name, title, description, type, body, tags,
-                         origin_session_ids, origin_clients, proposed_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO memories
+                        (name, title, description, type, tier, body, tags, origin_session_id,
+                         origin_session_ids, origin_clients, protected, protected_domains)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET
+                        title               = excluded.title,
+                        description         = excluded.description,
+                        type                = excluded.type,
+                        tier                = excluded.tier,
+                        body                = excluded.body,
+                        tags                = excluded.tags,
+                        origin_session_id   = COALESCE(excluded.origin_session_id, memories.origin_session_id),
+                        origin_session_ids  = excluded.origin_session_ids,
+                        origin_clients      = excluded.origin_clients,
+                        protected           = excluded.protected,
+                        protected_domains   = excluded.protected_domains,
+                        updated_at          = datetime('now')
                     """,
                     (
-                        effective_name,
-                        title,
-                        description,
-                        effective_type,
-                        body,
-                        tags_json,
-                        json.dumps(origin_session_ids or []),
-                        json.dumps(origin_clients or []),
-                        client or "unknown",
+                        effective_name, title, description, effective_type, existing_tier, body,
+                        tags_json, origin_session_id,
+                        merged_ids, merged_clients,
+                        protected_val, protected_domains_val,
                     ),
                 )
-                if not _conn:
+                if close_conn:
                     conn.commit()
-                return (
-                    f"Memory '{effective_name}' is protected — "
-                    f"change queued as pending write (trusted dreamer review required)."
-                )
-
-        # Snapshot current state before upsert
-        self._snapshot_to_versions(effective_name, version_note="updated", _conn=conn)
-
-        # Merge origin arrays for attribution
-        if existing_row:
-            existing_origin_ids = json.dumps(origin_session_ids or [])
-            existing_origin_clients = json.dumps(origin_clients or [])
-            if len(existing_row) > 10:
-                existing_origin_ids = _merge_json_arrays(
-                    existing_row[10], origin_session_ids or []
-                )
-            if len(existing_row) > 11:
-                existing_origin_clients = _merge_json_arrays(
-                    existing_row[11], origin_clients or []
-                )
-        else:
-            existing_origin_ids = json.dumps(origin_session_ids or [])
-            existing_origin_clients = json.dumps(origin_clients or [])
-
-        # Check if existing row has the new columns
-        if existing_row and len(existing_row) > 10:
-            merged_ids = existing_origin_ids
-            merged_clients = existing_origin_clients
-        else:
-            merged_ids = json.dumps(origin_session_ids or [])
-            merged_clients = json.dumps(origin_clients or [])
-
-        # Preserve existing protection flags and tier
-        protected_val = 0
-        protected_domains_val = "[]"
-        if existing_row and len(existing_row) > 12:
-            protected_val = existing_row[12]
-        if existing_row and len(existing_row) > 13:
-            protected_domains_val = existing_row[13]
-
-        # Don't downgrade canonical to working
-        existing_tier = effective_tier
-        if existing_row and len(existing_row) > 14:
-            existing_tier_val = existing_row[14]
-            if existing_tier_val == "canonical":
-                existing_tier = "canonical"
-
-        try:
-            conn.execute(
-                """
-                INSERT INTO memories
-                    (name, title, description, type, tier, body, tags, origin_session_id,
-                     origin_session_ids, origin_clients, protected, protected_domains)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(name) DO UPDATE SET
-                    title               = excluded.title,
-                    description         = excluded.description,
-                    type                = excluded.type,
-                    tier                = excluded.tier,
-                    body                = excluded.body,
-                    tags                = excluded.tags,
-                    origin_session_id   = COALESCE(excluded.origin_session_id, memories.origin_session_id),
-                    origin_session_ids  = excluded.origin_session_ids,
-                    origin_clients      = excluded.origin_clients,
-                    protected           = excluded.protected,
-                    protected_domains   = excluded.protected_domains,
-                    updated_at          = datetime('now')
-                """,
-                (
-                    effective_name, title, description, effective_type, existing_tier, body,
-                    tags_json, origin_session_id,
-                    merged_ids, merged_clients,
-                    protected_val, protected_domains_val,
-                ),
-            )
-            if not _conn:
-                conn.commit()
-            return f"Memory '{effective_name}' written."
-        except sqlite3.Error as e:
-            return f"Database error writing memory: {e}"
+                return f"Memory '{effective_name}' written."
+            except sqlite3.Error as e:
+                return f"Database error writing memory: {e}"
+        finally:
+            if close_conn:
+                conn.close()
 
     def read(self, name: str) -> str:
         """Read a memory entry and return a formatted block."""
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 "SELECT * FROM memories WHERE name = ?", (name,)
             )
             row = cur.fetchone()
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
         if not row:
             return self._memory_not_found(name)
@@ -705,11 +581,14 @@ class MemoryStore:
         query += " ORDER BY updated_at DESC LIMIT ?"
         params.append(limit)
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(query, params)
+            cur = conn.execute(query, params)
             rows = cur.fetchall()
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
         if not rows:
             return "No memories found."
@@ -783,11 +662,14 @@ class MemoryStore:
         sql += " ORDER BY updated_at DESC LIMIT ?"
         params.append(limit)
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(sql, params)
+            cur = conn.execute(sql, params)
             rows = cur.fetchall()
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
         if not rows:
             return "No memories found matching your search."
@@ -820,16 +702,19 @@ class MemoryStore:
         """Delete a memory entry by name."""
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 "DELETE FROM memories WHERE name = ?", (name,)
             )
-            self._conn.commit()
+            conn.commit()
             if cur.rowcount == 0:
                 return self._memory_not_found(name)
             return f"Deleted memory '{name}'."
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
     def export(self, name: str, output_path: str | None = None) -> str:
         """Export a memory to a .md file with YAML frontmatter.
@@ -838,13 +723,16 @@ class MemoryStore:
         """
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 "SELECT * FROM memories WHERE name = ?", (name,)
             )
             row = cur.fetchone()
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
         if not row:
             return self._memory_not_found(name)
@@ -895,8 +783,9 @@ class MemoryStore:
         """List version history for a memory."""
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 """
                 SELECT version_id, version_note, created_at
                 FROM memory_versions
@@ -909,6 +798,8 @@ class MemoryStore:
             rows = cur.fetchall()
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
         if not rows:
             return f"No version history for '{name}'."
@@ -923,8 +814,9 @@ class MemoryStore:
         """Show unified diff of body between two versions."""
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 """
                 SELECT version_id, body, created_at
                 FROM memory_versions
@@ -936,6 +828,8 @@ class MemoryStore:
             rows = cur.fetchall()
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
         if len(rows) < 2:
             return f"Could not find both versions ({from_version}, {to_version}) for '{name}'."
@@ -950,8 +844,9 @@ class MemoryStore:
         """
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 """
                 SELECT title, description, type, body, tags, origin_session_ids, origin_clients
                 FROM memory_versions WHERE version_id = ? AND memory_name = ?
@@ -961,6 +856,8 @@ class MemoryStore:
             version_row = cur.fetchone()
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
         if not version_row:
             return f"Version {version_id} not found for '{name}'."
@@ -968,8 +865,9 @@ class MemoryStore:
         # Snapshot current state before rollback
         self._snapshot_to_versions(name, version_note=f"before rollback to v{version_id}")
 
+        conn2 = self._get_conn()
         try:
-            self._conn.execute(
+            conn2.execute(
                 """
                 UPDATE memories
                 SET title = ?, description = ?, type = ?, body = ?, tags = ?,
@@ -982,10 +880,12 @@ class MemoryStore:
                     version_row[4], version_row[5], version_row[6], name,
                 ),
             )
-            self._conn.commit()
+            conn2.commit()
             return f"Memory '{name}' rolled back to version {version_id}."
         except sqlite3.Error as e:
             return f"Database error during rollback: {e}"
+        finally:
+            conn2.close()
 
     # ── Attribution ────────────────────────────────────────────────────
 
@@ -1002,11 +902,14 @@ class MemoryStore:
         """
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute("SELECT * FROM memories ORDER BY name")
+            cur = conn.execute("SELECT * FROM memories ORDER BY name")
             rows = cur.fetchall()
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
         if not rows:
             return "No memories to export."
@@ -1129,8 +1032,9 @@ class MemoryStore:
         """List pending writes awaiting approval."""
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 """
                 SELECT id, memory_name, title, type, proposed_at, proposed_by, status
                 FROM pending_writes
@@ -1142,6 +1046,8 @@ class MemoryStore:
             rows = cur.fetchall()
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
         if not rows:
             return "No pending writes."
@@ -1160,14 +1066,17 @@ class MemoryStore:
         """Approve a pending write. Applies the change and records reviewer."""
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 "SELECT * FROM pending_writes WHERE id = ? AND status = 'pending'",
                 (write_id,),
             )
             row = cur.fetchone()
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
         if not row:
             return f"Pending write #{write_id} not found or already processed."
@@ -1197,8 +1106,9 @@ class MemoryStore:
         )
 
         # Update pending write status
+        conn2 = self._get_conn()
         try:
-            self._conn.execute(
+            conn2.execute(
                 """
                 UPDATE pending_writes
                 SET status = 'approved', reviewed_at = datetime('now'),
@@ -1207,9 +1117,11 @@ class MemoryStore:
                 """,
                 (reviewer or "trusted-dreamer", note, write_id),
             )
-            self._conn.commit()
+            conn2.commit()
         except sqlite3.Error as e:
             return f"Approved write but failed to update status: {e}"
+        finally:
+            conn2.close()
 
         return f"Pending write #{write_id} approved. {result}"
 
@@ -1217,8 +1129,9 @@ class MemoryStore:
         """Reject a pending write without applying."""
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            self._conn.execute(
+            conn.execute(
                 """
                 UPDATE pending_writes
                 SET status = 'rejected', reviewed_at = datetime('now'),
@@ -1227,31 +1140,31 @@ class MemoryStore:
                 """,
                 (reviewer or "trusted-dreamer", note, write_id),
             )
-            if self._conn.total_changes == 0:
-                self._conn.commit()
+            if conn.total_changes == 0:
+                conn.commit()
                 return f"Pending write #{write_id} not found or already processed."
-            self._conn.commit()
+            conn.commit()
             return f"Pending write #{write_id} rejected."
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
     def protect(self, name: str, domains: list[str] | None = None) -> str:
-        """Toggle protection on a memory. Trusted dreamers only.
-
-        Args:
-            name: Memory name to protect/unprotect.
-            domains: Tag prefixes that trigger protection. None = no change.
-        """
+        """Toggle protection on a memory. Trusted dreamers only."""
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 "SELECT protected, protected_domains FROM memories WHERE name = ?",
                 (name,),
             )
             row = cur.fetchone()
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
 
         if not row:
             return self._memory_not_found(name)
@@ -1260,16 +1173,19 @@ class MemoryStore:
         new_protected = 0 if current_protected else 1
         new_domains = json.dumps(domains or []) if domains else (row[1] if row else "[]")
 
+        conn2 = self._get_conn()
         try:
-            self._conn.execute(
+            conn2.execute(
                 "UPDATE memories SET protected = ?, protected_domains = ?, updated_at = datetime('now') WHERE name = ?",
                 (new_protected, new_domains, name),
             )
-            self._conn.commit()
+            conn2.commit()
             status = "protected" if new_protected else "unprotected"
             return f"Memory '{name}' is now {status}."
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn2.close()
 
     # ── Freshness and eviction ─────────────────────────────────────────
 
@@ -1292,8 +1208,9 @@ class MemoryStore:
         like_clauses = " OR ".join(["tags LIKE ?" for _ in cand_tag_patterns])
         params = [f'%"{t}"%' for t in cand_tag_patterns]
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 f"""
                 SELECT * FROM memories
                 WHERE tier = 'canonical'
@@ -1308,6 +1225,8 @@ class MemoryStore:
         except sqlite3.Error as e:
             logger.warning("Freshness check query failed: %s", e)
             return {"checked": 0, "fresh": 0, "stale": 0, "no": 0, "errors": 1}
+        finally:
+            conn.close()
 
         results = {"checked": 0, "fresh": 0, "stale": 0, "no": 0, "errors": 0}
 
@@ -1332,11 +1251,16 @@ class MemoryStore:
                 elif status == "STALE":
                     normalized = "stale"
 
-                self._conn.execute(
-                    "UPDATE memories SET freshness_status = ?, freshness_checked_at = datetime('now') WHERE name = ?",
-                    (normalized, m["name"]),
-                )
-                self._conn.commit()
+                write_conn = self._get_conn()
+                try:
+                    write_conn.execute(
+                        "UPDATE memories SET freshness_status = ?, freshness_checked_at = datetime('now') WHERE name = ?",
+                        (normalized, m["name"]),
+                    )
+                    write_conn.commit()
+                finally:
+                    write_conn.close()
+
                 results["checked"] += 1
                 if normalized == "fresh":
                     results["fresh"] += 1
@@ -1358,8 +1282,9 @@ class MemoryStore:
         """
         import sqlite3
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 """
                 SELECT name, title, type, last_retrieved_at, retrieval_count
                 FROM memories
@@ -1374,6 +1299,8 @@ class MemoryStore:
             rows = cur.fetchall()
         except sqlite3.Error as e:
             return f"Orphan scan failed: {e}"
+        finally:
+            conn.close()
 
         if not rows:
             return f"# Orphan Scan ({days}d window)\n\nNo orphans found."
@@ -1385,12 +1312,15 @@ class MemoryStore:
                 f"last retrieved {last_retrieved}, {count} retrievals"
             )
             if not dry_run:
-                self._conn.execute(
-                    "INSERT INTO eviction_queue (memory_name, reason, detail) VALUES (?, 'orphan', ?)",
-                    (name, f"Not retrieved in {days} days. Last: {last_retrieved}"),
-                )
-        if not dry_run:
-            self._conn.commit()
+                write_conn = self._get_conn()
+                try:
+                    write_conn.execute(
+                        "INSERT INTO eviction_queue (memory_name, reason, detail) VALUES (?, 'orphan', ?)",
+                        (name, f"Not retrieved in {days} days. Last: {last_retrieved}"),
+                    )
+                    write_conn.commit()
+                finally:
+                    write_conn.close()
 
         parts.append(f"\nTotal: {len(rows)} orphan{'s' if len(rows) != 1 else ''} flagged")
         return "\n".join(parts)

@@ -76,7 +76,6 @@ class DreamPipeline:
         self.trusted_dreamers = trusted_dreamers or []
         self.retention_buffer = retention_buffer
         self.nats_url = nats_url
-        self._txn_conn = None  # transaction connection for BEGIN IMMEDIATE
 
     # ── Transaction support ──────────────────────────────────────────────
 
@@ -209,16 +208,6 @@ class DreamPipeline:
             max_id = max(e["id"] for e in events)
             self._set_watermark(max_id, _conn=txn_conn)
 
-            # Contradiction scan: check new memories against existing canonical ones
-            superseded = 0
-            if written > 0:
-                try:
-                    superseded = self._contradiction_scan(memories, _conn=txn_conn)
-                    if superseded > 0:
-                        logger.info("Contradiction scan: %s existing memories superseded", superseded)
-                except Exception as e:
-                    logger.warning("Contradiction scan failed: %s", e)
-
             pruned = self.session_log.prune_events(max(0, max_id - self.retention_buffer), _conn=txn_conn)
             logger.info("Pruned %s events older than id %s", pruned, max(0, max_id - self.retention_buffer))
 
@@ -228,6 +217,19 @@ class DreamPipeline:
             raise
         finally:
             txn_conn.close()
+
+        # Contradiction scan runs AFTER the transaction commits.
+        # It calls the LLM (potentially slow) and must not hold the DB lock.
+        # If it fails, memories exist without contradiction markers until
+        # the next dream run — acceptable vs rolling back the entire batch.
+        superseded = 0
+        if written > 0:
+            try:
+                superseded = self._contradiction_scan(memories)
+                if superseded > 0:
+                    logger.info("Contradiction scan: %s existing memories superseded", superseded)
+            except Exception as e:
+                logger.warning("Contradiction scan failed: %s", e)
 
         # NATS publish happens outside the transaction — fire-and-forget
         if superseded > 0 and self.nats_url:
@@ -363,6 +365,7 @@ class DreamPipeline:
             tags=["dream-phase", action.lower()],
             origin_session_ids=batch_session_ids,
             origin_clients=batch_clients,
+            _skip_protection=True,
             _conn=_conn,
         )
         return f"{action} {name}"
@@ -404,72 +407,86 @@ class DreamPipeline:
 
     # ── Contradiction scan ────────────────────────────────────────────
 
-    def _contradiction_scan(self, new_memories: list[dict], _conn: sqlite3.Connection | None = None) -> int:
+    def _contradiction_scan(self, new_memories: list[dict]) -> int:
         """Check new memories against existing canonical ones for contradictions.
 
         For each new memory, searches for existing canonical memories with
         overlapping tags/name prefixes and runs a lightweight LLM check.
         Returns count of supersessions detected.
+
+        Opens its own connection for writes — does NOT participate in the
+        dream transaction, so LLM calls don't hold the DB lock.
         """
-        write_conn = _conn or self.memory_store._conn
+        import sqlite3 as _sqlite3
 
         superseded_count = 0
+        write_conn = None
 
-        for mem in new_memories:
-            path = mem.get("path", "")
-            if not path:
-                continue
+        try:
+            write_conn = _sqlite3.connect(str(self.db_path), timeout=30)
+            write_conn.execute("PRAGMA journal_mode=WAL")
+            write_conn.execute("PRAGMA synchronous=NORMAL")
+            write_conn.execute("PRAGMA busy_timeout=30000")
 
-            # Derive candidate search terms from the new memory
-            name = self._path_to_name(path)
-            prefix = name.split("-")[0] if "-" in name else name
-
-            try:
-                cur = self.memory_store._conn.execute(
-                    """
-                    SELECT name, title, body FROM memories
-                    WHERE tier = 'canonical'
-                      AND superseded_by IS NULL
-                      AND (name LIKE ? OR name LIKE ? OR tags LIKE ?)
-                    LIMIT 5
-                    """,
-                    (f"{prefix}%", f"%-{prefix}%", f'%"{prefix}"%'),
-                )
-                candidates = cur.fetchall()
-            except sqlite3.Error:
-                continue
-
-            for cand_name, cand_title, cand_body in candidates:
-                if not cand_body:
+            for mem in new_memories:
+                path = mem.get("path", "")
+                if not path:
                     continue
 
+                # Derive candidate search terms from the new memory
+                name = self._path_to_name(path)
+                prefix = name.split("-")[0] if "-" in name else name
+
                 try:
-                    prompt = CONTRADICTION_SCAN_PROMPT.format(
-                        new_title=path.replace("/", " — "),
-                        new_body=mem.get("body", "")[:2000],
-                        existing_title=cand_title,
-                        existing_body=cand_body[:2000],
+                    cur = write_conn.execute(
+                        """
+                        SELECT name, title, body FROM memories
+                        WHERE tier = 'canonical'
+                          AND superseded_by IS NULL
+                          AND (name LIKE ? OR name LIKE ? OR tags LIKE ?)
+                        LIMIT 5
+                        """,
+                        (f"{prefix}%", f"%-{prefix}%", f'%"{prefix}"%'),
                     )
-                    response = self.client.consult(
-                        system=prompt,
-                        user=f"new: {name}\nexisting: {cand_name}",
-                        vk="fast",
-                        max_tokens=16,
-                        temperature=0.0,
-                    )
-                    verdict = (response or "").strip().upper()
-                    if verdict == "SUPERSEDES":
-                        write_conn.execute(
-                            "UPDATE memories SET superseded_by = ?, updated_at = datetime('now') WHERE name = ?",
-                            (name, cand_name),
+                    candidates = cur.fetchall()
+                except _sqlite3.Error:
+                    continue
+
+                for cand_name, cand_title, cand_body in candidates:
+                    if not cand_body:
+                        continue
+
+                    try:
+                        prompt = CONTRADICTION_SCAN_PROMPT.format(
+                            new_title=path.replace("/", " — "),
+                            new_body=mem.get("body", "")[:2000],
+                            existing_title=cand_title,
+                            existing_body=cand_body[:2000],
                         )
-                        write_conn.execute(
-                            "INSERT INTO eviction_queue (memory_name, reason, detail) VALUES (?, 'superseded', ?)",
-                            (cand_name, f"Superseded by '{name}' in dream run"),
+                        response = self.client.consult(
+                            system=prompt,
+                            user=f"new: {name}\nexisting: {cand_name}",
+                            vk="fast",
+                            max_tokens=16,
+                            temperature=0.0,
                         )
-                        superseded_count += 1
-                        logger.info("Superseded %s with %s", cand_name, name)
-                except Exception as e:
-                    logger.debug("Contradiction check failed %s vs %s: %s", name, cand_name, e)
+                        verdict = (response or "").strip().upper()
+                        if verdict == "SUPERSEDES":
+                            write_conn.execute(
+                                "UPDATE memories SET superseded_by = ?, updated_at = datetime('now') WHERE name = ?",
+                                (name, cand_name),
+                            )
+                            write_conn.execute(
+                                "INSERT INTO eviction_queue (memory_name, reason, detail) VALUES (?, 'superseded', ?)",
+                                (cand_name, f"Superseded by '{name}' in dream run"),
+                            )
+                            write_conn.commit()
+                            superseded_count += 1
+                            logger.info("Superseded %s with %s", cand_name, name)
+                    except Exception as e:
+                        logger.debug("Contradiction check failed %s vs %s: %s", name, cand_name, e)
+        finally:
+            if write_conn:
+                write_conn.close()
 
         return superseded_count

@@ -21,12 +21,23 @@ class SessionLog:
 
     Stores structured event data (tool calls, prompts, errors) in the
     session_events table. Tracks dream phase watermark in dream_state table.
+
+    Uses short-lived per-method connections. WAL mode makes open/close fast.
     """
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
-        self._conn: sqlite3.Connection | None = None
-        self._conn = self._connect()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Open a short-lived connection with WAL mode."""
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.row_factory = sqlite3.Row
+        return conn
 
     @staticmethod
     def bootstrap_schema(db_path: str | Path) -> None:
@@ -66,25 +77,6 @@ class SessionLog:
         conn.commit()
         conn.close()
 
-    def _connect(self) -> sqlite3.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.db_path), timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=30000")
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _initialize(self):
-        """Open the connection. Schema is bootstrapped by bootstrap_schema()."""
-        self._conn = self._connect()
-
-    def close(self):
-        if self._conn:
-            self._conn.close()
-            self._conn = None
-
     # ── write ───────────────────────────────────────────────────────────
 
     def append_event(
@@ -107,22 +99,26 @@ class SessionLog:
         Returns the new row id.
         """
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        cur = self._conn.execute(
-            """
-            INSERT INTO session_events
-                (session_id, event_name, client, timestamp,
-                 tool_name, tool_input, tool_response, tool_error,
-                 model, cwd, transcript_path, prompt, stop_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                session_id, event_name, client, now,
-                tool_name, tool_input, tool_response, tool_error,
-                model, cwd, transcript_path, prompt, stop_reason,
-            ),
-        )
-        self._conn.commit()
-        return cur.lastrowid
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO session_events
+                    (session_id, event_name, client, timestamp,
+                     tool_name, tool_input, tool_response, tool_error,
+                     model, cwd, transcript_path, prompt, stop_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id, event_name, client, now,
+                    tool_name, tool_input, tool_response, tool_error,
+                    model, cwd, transcript_path, prompt, stop_reason,
+                ),
+            )
+            conn.commit()
+            return cur.lastrowid
+        finally:
+            conn.close()
 
     # ── compat: old dict-based API for a gradual migration ──────────────
 
@@ -191,12 +187,15 @@ class SessionLog:
             query += " LIMIT ?"
             params.append(limit)
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(query, params)
+            cur = conn.execute(query, params)
             rows = cur.fetchall()
         except sqlite3.Error as e:
             logger.warning("Error querying events: %s", e)
             return []
+        finally:
+            conn.close()
 
         return [dict(row) for row in rows]
 
@@ -231,12 +230,15 @@ class SessionLog:
         """
         params = [since_event_id, since_event_id, since_event_id, since_event_id]
 
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute(query, params)
+            cur = conn.execute(query, params)
             rows = cur.fetchall()
         except sqlite3.Error as e:
             logger.warning("Error in grouped query: %s", e)
             return []
+        finally:
+            conn.close()
 
         # Group by session client-side
         sessions: dict[str, list[dict]] = {}
@@ -261,11 +263,15 @@ class SessionLog:
 
     def get_dream_state(self, key: str, default: str | None = None) -> str | None:
         """Read a value from the dream_state table."""
-        cur = self._conn.execute(
-            "SELECT value FROM dream_state WHERE key = ?", (key,)
-        )
-        row = cur.fetchone()
-        return row["value"] if row else default
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                "SELECT value FROM dream_state WHERE key = ?", (key,)
+            )
+            row = cur.fetchone()
+            return row["value"] if row else default
+        finally:
+            conn.close()
 
     def set_dream_state(self, key: str, value: str, _conn: sqlite3.Connection | None = None) -> None:
         """Upsert a value into the dream_state table.
@@ -273,25 +279,37 @@ class SessionLog:
         Args:
             _conn: Optional connection for transaction-wrapped writes.
         """
-        conn = _conn or self._conn
-        conn.execute(
-            "INSERT INTO dream_state (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
-        if not _conn:
-            self._conn.commit()
+        if _conn:
+            _conn.execute(
+                "INSERT INTO dream_state (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+        else:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "INSERT INTO dream_state (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, value),
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     # ── maintenance ────────────────────────────────────────────────────
 
     def count_events(self) -> int:
         """Total event count (for monitoring)."""
         import sqlite3
+        conn = self._get_conn()
         try:
-            cur = self._conn.execute("SELECT COUNT(*) FROM session_events")
+            cur = conn.execute("SELECT COUNT(*) FROM session_events")
             return cur.fetchone()[0]
         except sqlite3.Error:
             return 0
+        finally:
+            conn.close()
 
     def prune_events(self, before_event_id: int, _conn: sqlite3.Connection | None = None) -> int:
         """Delete events older than the given event id.
@@ -301,23 +319,39 @@ class SessionLog:
 
         Returns number of rows deleted.
         """
-        conn = _conn or self._conn
-        cur = conn.execute(
-            "DELETE FROM session_events WHERE id <= ?", (before_event_id,)
-        )
-        if not _conn:
-            self._conn.commit()
-        return cur.rowcount
+        if _conn:
+            cur = _conn.execute(
+                "DELETE FROM session_events WHERE id <= ?", (before_event_id,)
+            )
+            return cur.rowcount
+        else:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM session_events WHERE id <= ?", (before_event_id,)
+                )
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
 
     def list_sessions(self) -> list[str]:
         """List all distinct session IDs that have events."""
-        cur = self._conn.execute(
-            "SELECT DISTINCT session_id FROM session_events ORDER BY session_id"
-        )
-        return [row["session_id"] for row in cur.fetchall()]
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                "SELECT DISTINCT session_id FROM session_events ORDER BY session_id"
+            )
+            return [row["session_id"] for row in cur.fetchall()]
+        finally:
+            conn.close()
 
     def clear(self) -> None:
         """Delete ALL events and dream state (irreversible)."""
-        self._conn.execute("DELETE FROM session_events")
-        self._conn.execute("DELETE FROM dream_state")
-        self._conn.commit()
+        conn = self._get_conn()
+        try:
+            conn.execute("DELETE FROM session_events")
+            conn.execute("DELETE FROM dream_state")
+            conn.commit()
+        finally:
+            conn.close()
