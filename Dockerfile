@@ -48,6 +48,7 @@ RUN adduser \
 # Copy source code
 COPY mori_advisor/ ./mori_advisor/
 COPY scripts/ ./scripts/
+COPY standards/ ./standards/
 
 # Data directory mounted from host, create for ownership
 RUN mkdir -p /data/mori-advisor && chown -R appuser:appuser /data/mori-advisor
