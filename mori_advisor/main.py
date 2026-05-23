@@ -126,14 +126,6 @@ bifrost = BifrostClient(base_url=BIFROST_BASE_URL, timeout=BIFROST_TIMEOUT)
 session_log = SessionLog(db_path=DATA_DIR / "memories.db")
 memory_store = MemoryStore(db_path=DATA_DIR / "memories.db")
 
-# Verify WAL mode on all connections
-for label, conn in [("memory_store", memory_store._conn), ("session_log", session_log._conn)]:
-    try:
-        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-        if mode != "wal":
-            logger.warning("PRAGMA journal_mode for %s journal_mode=%s (expected 'wal')", label, mode)
-    except Exception as e:
-        logger.warning("Could not verify journal_mode for %s: %s", label, e)
 dream_pipeline = DreamPipeline(
     db_path=DATA_DIR / "memories.db",
     bifrost_client=bifrost,
@@ -270,10 +262,14 @@ async def brief() -> str:
 
     # Eviction queue warning
     try:
-        cur = memory_store._conn.execute(
+        import sqlite3 as _sql
+        _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=10)
+        _c.execute("PRAGMA journal_mode=WAL")
+        cur = _c.execute(
             "SELECT COUNT(*) FROM eviction_queue WHERE resolved = 0"
         )
         unresolved = cur.fetchone()[0]
+        _c.close()
         if unresolved > 0:
             parts.append(
                 f"**⚠ Eviction queue:** {unresolved} unresolved item(s) — "
@@ -307,7 +303,10 @@ async def brief() -> str:
 
     # Goals summary — show unresolved requirements per project
     try:
-        cur = memory_store._conn.execute(
+        import sqlite3 as _sql
+        _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=10)
+        _c.execute("PRAGMA journal_mode=WAL")
+        cur = _c.execute(
             """
             SELECT name, title, tags FROM memories
             WHERE type = 'requirement'
@@ -317,6 +316,7 @@ async def brief() -> str:
             """
         )
         rows = cur.fetchall()
+        _c.close()
         if rows:
             projects: dict[str, list[str]] = {}
             for name, title, tags_raw in rows:
@@ -648,6 +648,10 @@ async def update(device: str, content: str = "", skill: str = "") -> str:
     if not inferred:
         return "Could not determine skill name. Provide it as the 'skill' argument."
 
+    import re
+    if not re.match(r"^[a-zA-Z0-9_-]+$", inferred):
+        return f"Invalid skill name '{inferred}'. Skill names must match ^[a-zA-Z0-9_-]+$."
+
     commands: list[str] = []
     profiles = cfg["profiles"]
 
@@ -869,14 +873,13 @@ async def memory_write(
     origin_session_id: str | None = None,
     origin_session_ids: list[str] | None = None,
     origin_clients: list[str] | None = None,
-    client: str | None = None,
 ) -> str:
     """Write a memory entry. Creates or updates (upserts by kebab-case name).
 
     If name is omitted it is auto-derived from the title.
 
-    If the memory is protected and the client is not a trusted dreamer,
-    the write is queued as a pending write instead.
+    If the memory is protected, the write is queued as a pending write
+    instead (MCP tool callers are treated as non-dreamers).
 
     Args:
         name: kebab-case identifier. Auto-derived from title if omitted.
@@ -889,7 +892,6 @@ async def memory_write(
         origin_session_id: UUID of the creating session (legacy single-UUID field).
         origin_session_ids: JSON array of session UUIDs that contributed.
         origin_clients: JSON array of client hostnames that contributed.
-        client: Client hostname making this request (for trusted dreamer check).
     """
     return memory_store.write(
         name=name,
@@ -902,7 +904,6 @@ async def memory_write(
         origin_session_id=origin_session_id,
         origin_session_ids=origin_session_ids,
         origin_clients=origin_clients,
-        client=client,
     )
 
 
@@ -977,10 +978,13 @@ async def memory_req(
     params.append(min(limit, 100))
 
     try:
-        cur = memory_store._conn.execute(sql, params)
+        _conn = memory_store._get_conn()
+        cur = _conn.execute(sql, params)
         rows = cur.fetchall()
     except sqlite3.Error as e:
         return f"Database error: {e}"
+    finally:
+        _conn.close()
 
     if not rows:
         return "No requirements found."
@@ -1140,11 +1144,13 @@ async def memory_review(
     # 2. Stale canonical
     parts.append("\n## Stale Canonical Memories")
     try:
-        cur = memory_store._conn.execute(
+        _conn = memory_store._get_conn()
+        cur = _conn.execute(
             "SELECT name, title, freshness_status, freshness_checked_at FROM memories "
             "WHERE freshness_status IN ('stale', 'no') ORDER BY freshness_checked_at DESC"
         )
         rows = cur.fetchall()
+        _conn.close()
         if rows:
             for name, title, status, checked_at in rows:
                 parts.append(f"- **{name}**: {title} ({status}) — checked {checked_at}")
@@ -1156,11 +1162,13 @@ async def memory_review(
     # 3. Superseded
     parts.append("\n## Superseded Memories")
     try:
-        cur = memory_store._conn.execute(
+        _conn = memory_store._get_conn()
+        cur = _conn.execute(
             "SELECT m1.name, m1.title, m1.superseded_by, m1.updated_at FROM memories m1 "
             "WHERE m1.superseded_by IS NOT NULL ORDER BY m1.updated_at DESC"
         )
         rows = cur.fetchall()
+        _conn.close()
         if rows:
             for name, title, superseded_by, updated_at in rows:
                 parts.append(f"- **{name}**: {title} → superseded by {superseded_by} ({updated_at})")
@@ -1172,11 +1180,13 @@ async def memory_review(
     # 4. Eviction queue summary
     parts.append("\n## Eviction Queue")
     try:
-        cur = memory_store._conn.execute(
+        _conn = memory_store._get_conn()
+        cur = _conn.execute(
             "SELECT reason, COUNT(*), SUM(CASE WHEN resolved THEN 1 ELSE 0 END) "
             "FROM eviction_queue GROUP BY reason"
         )
         rows = cur.fetchall()
+        _conn.close()
         if rows:
             for reason, total, resolved in rows:
                 parts.append(f"- **{reason}**: {total} total, {resolved} resolved")
@@ -1512,9 +1522,12 @@ async def health(request: Request) -> JSONResponse:
 @mcp.custom_route("/ready", methods=["GET"])
 async def readiness(request: Request) -> JSONResponse:
     """Readiness probe. Returns 200 if the database is accessible."""
+    import sqlite3 as _sql
     try:
-        memory_store._conn.execute("SELECT 1")
-        session_log._conn.execute("SELECT 1")
+        _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=5)
+        _c.execute("PRAGMA journal_mode=WAL")
+        _c.execute("SELECT 1")
+        _c.close()
         return JSONResponse({"status": "ok", "db": "connected"})
     except Exception as e:
         return JSONResponse({"status": "error", "db": str(e)}, status_code=503)
