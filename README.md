@@ -371,6 +371,8 @@ files, edit them, and re-import.
 
 ## Quickstart
 
+![Runs Anywhere](https://raw.githubusercontent.com/fjwood69/mori/c40e1804ae53e62e6c4a3e87b8f4277ad48f3aa2/docs/assets/figure-3-runs-anywhere.svg)
+
 ### 1. Pick your platform
 
 See [docs/deployment/quickstart.md](docs/deployment/quickstart.md) for platform-specific instructions (Docker Compose, Podman, macOS native, Windows, GCP).
@@ -466,8 +468,6 @@ Full reference: [docs/reference/slash-commands.md](docs/reference/slash-commands
 ## Architecture
 
 ![Mori Architecture](https://raw.githubusercontent.com/fjwood69/mori/5d55d248dc91fc7c8292c3deaf6d2a2aa40192ce/docs/assets/figure-4-architecture.svg)
-
-![Runs Anywhere](https://raw.githubusercontent.com/fjwood69/mori/53c7b6858fc30df265d7b1262192fef8bb5923fb/docs/assets/figure-3-runs-anywhere.svg)
 
 
 **Configuration** → [docs/reference/configuration.md](docs/reference/configuration.md)
