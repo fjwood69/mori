@@ -81,5 +81,5 @@ sshpass -p "$PASS" ssh piadmin@100.117.216.45 <command>
 ## Bifrost DB (sqlite3 on GCE)
 
 ```bash
-ssh -t jadmin@100.77.207.77 "sqlite3 /data/bifrost/config.db \"SELECT ...\""
+ssh -t jadmin@100.90.219.111 "sqlite3 /data/bifrost/config.db \"SELECT ...\""
 ```
