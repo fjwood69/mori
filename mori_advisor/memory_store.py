@@ -83,6 +83,118 @@ class MemoryStore:
         self.db_path = Path(db_path)
         self._init_db()
 
+    @staticmethod
+    def bootstrap_schema(db_path: str | Path) -> None:
+        """Create all tables, indexes, and config rows.
+
+        Must be called exactly once at process startup, before any
+        MemoryStore or SessionLog instances are created. Uses a
+        private connection that is closed after the schema is applied.
+        """
+        import sqlite3
+
+        p = Path(db_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(p), timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS memories ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  name TEXT UNIQUE NOT NULL,"
+            "  title TEXT NOT NULL,"
+            "  description TEXT NOT NULL DEFAULT '',"
+            "  type TEXT NOT NULL DEFAULT 'project',"
+            "  body TEXT NOT NULL DEFAULT '',"
+            "  tags TEXT NOT NULL DEFAULT '[]',"
+            "  origin_session_id TEXT,"
+            "  created_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            "  updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+        for col_def in [
+            "origin_session_ids TEXT NOT NULL DEFAULT '[]'",
+            "origin_clients TEXT NOT NULL DEFAULT '[]'",
+            "protected INTEGER NOT NULL DEFAULT 0",
+            "protected_domains TEXT NOT NULL DEFAULT '[]'",
+            "tier TEXT NOT NULL DEFAULT 'working'",
+            "last_retrieved_at TEXT",
+            "retrieval_count INTEGER NOT NULL DEFAULT 0",
+            "freshness_status TEXT NOT NULL DEFAULT 'unknown'",
+            "freshness_checked_at TEXT",
+            "superseded_by TEXT",
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE memories ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS memory_versions ("
+            "  version_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  memory_name TEXT NOT NULL,"
+            "  title TEXT NOT NULL,"
+            "  description TEXT NOT NULL DEFAULT '',"
+            "  type TEXT NOT NULL DEFAULT 'project',"
+            "  body TEXT NOT NULL DEFAULT '',"
+            "  tags TEXT NOT NULL DEFAULT '[]',"
+            "  origin_session_ids TEXT NOT NULL DEFAULT '[]',"
+            "  origin_clients TEXT NOT NULL DEFAULT '[]',"
+            "  version_note TEXT NOT NULL DEFAULT '',"
+            "  created_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_versions_name ON memory_versions(memory_name)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_versions_time ON memory_versions(created_at)")
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS pending_writes ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  memory_name TEXT NOT NULL,"
+            "  title TEXT NOT NULL,"
+            "  description TEXT NOT NULL DEFAULT '',"
+            "  type TEXT NOT NULL DEFAULT 'project',"
+            "  body TEXT NOT NULL DEFAULT '',"
+            "  tags TEXT NOT NULL DEFAULT '[]',"
+            "  origin_session_ids TEXT NOT NULL DEFAULT '[]',"
+            "  origin_clients TEXT NOT NULL DEFAULT '[]',"
+            "  proposed_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            "  proposed_by TEXT NOT NULL,"
+            "  status TEXT NOT NULL DEFAULT 'pending',"
+            "  reviewed_at TEXT,"
+            "  reviewed_by TEXT,"
+            "  review_note TEXT NOT NULL DEFAULT ''"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_writes(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_memory ON pending_writes(memory_name)")
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dreamer_config ("
+            "  key TEXT PRIMARY KEY,"
+            "  value TEXT NOT NULL"
+            ")"
+        )
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS eviction_queue ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  memory_name TEXT NOT NULL,"
+            "  reason TEXT NOT NULL,"
+            "  detail TEXT NOT NULL DEFAULT '',"
+            "  detected_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            "  resolved INTEGER NOT NULL DEFAULT 0,"
+            "  resolved_at TEXT,"
+            "  note TEXT NOT NULL DEFAULT ''"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_evict_memory ON eviction_queue(memory_name)")
+        conn.commit()
+        conn.close()
+
     # ── connection management ──────────────────────────────────────────
 
     def _get_conn(self):
