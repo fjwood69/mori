@@ -1,4 +1,4 @@
-![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/5d55d248dc91fc7c8292c3deaf6d2a2aa40192ce/docs/assets/header-dark.svg)
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/f76f7622984f72be1c4d4d28870d3972a320cb2e/docs/assets/header-dark-v0_1_2.svg)
 
 
 Mori (森) is a shared memory layer for AI coding agents — one that compounds.
