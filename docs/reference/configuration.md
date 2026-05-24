@@ -7,8 +7,12 @@
 | `MORI_PROVIDER_MODE` | `bifrost` | `direct` or `bifrost`. New users without a custom gateway should set `direct`. |
 | `MORI_API_KEY` | — | Provider key (required in `direct` mode) |
 | `MORI_BASE_URL` | depends | OpenAI-compatible base URL |
-| `MORI_MODEL` | `moonshotai/kimi-k2.6` | Advisor model |
-| `MORI_DREAM_MODEL` | falls back | Dream pipeline model |
+| `MORI_ADVISOR_MODEL` | `moonshotai/kimi-k2.6` | Advisor VK model (bifrost mode) |
+| `MORI_DREAM_MODEL` | `moonshotai/kimi-k2.6` | Dream VK model (bifrost mode) |
+| `MORI_FAST_MODEL` | `Novita/deepseek/deepseek-v4-flash` | Fast VK model — contradiction scans, cheap tasks (bifrost mode) |
+| `MORI_BIFROST_ADVISOR_VK` | `moku-advisor-local` | Bifrost virtual key name for advisor calls |
+| `MORI_BIFROST_DREAM_VK` | `moku-dream-local` | Bifrost virtual key name for dream calls |
+| `MORI_BIFROST_FAST_VK` | `moku-fast-local` | Bifrost virtual key name for fast calls |
 | `MORI_MCP_SERVER_NAME` | `mori` | MCP tool prefix |
 | `MORI_ADVISOR_DATA` | `/data/mori-advisor` | SQLite DB location |
 | `MORI_ADVISOR_API_KEY` | — | Event capture auth (empty = no auth) |

@@ -323,7 +323,40 @@ This means pushing an updated skill to every Claude Code instance is a single
 
 ---
 
-### 7. Governance — Memory Quality & Validity
+### 7. Universal Ingestion (`/ingest`)
+
+New team members start cold. Long-lived projects have months of architecture
+decisions locked in PDFs, screenshots, git history, and old session transcripts.
+`/ingest` feeds any source material through the same distillation pipeline
+that powers the dream phase — extracting durable memories, deduplicating,
+and contradiction-scanning — so the store boots up informed rather than empty.
+
+```
+# Preview what's in a repo (zero cost, no LLM):
+/ingest --source ~/my-project --preview
+
+# Dry-run to validate extraction quality:
+/ingest --source ~/my-project --dry-run --focus decisions
+
+# Commit everything:
+/ingest --source ~/my-project --source ~/another-repo --focus all --tier working
+```
+
+**Supported sources**: PDF, PNG/JPG/WebP screenshots (multimodal — Kimi K2.6 vision),
+CC transcripts (.jsonl), git history (`--since 30d`), text and code.
+
+**Cost guard**: `--max-cost` (default $5.00) estimates token spend before calling the LLM
+and aborts if exceeded. Preview mode is always free.
+
+**Re-ingest safely**: SHA256 dedup prevents double-processing. `--force` to override.
+
+Config: `MORI_DREAM_MODEL` for the distillation model (same model dreams use).
+
+**Components required:** Mori server + LLM provider (Kimi K2.6 with vision for images).
+
+---
+
+### 8. Governance — Memory Quality & Validity
 
 Memories accumulate over time. Without safeguards, they drift, conflict, or
 accumulate noise. Mori has several mechanisms to maintain quality:
@@ -435,8 +468,9 @@ See [docs/getting-started/claude-code.md](docs/getting-started/claude-code.md) f
 | `mori-nats_pub/sub/ping` | Cross-device message bus (NATS optional) |
 | `mori-memory_req` | Requirements tracking dashboard with status workflow |
 | `mori-event_log` | HTTP event capture endpoint for dream pipeline |
+| `mori-ingest / ingest_status / ingest_preview` | Feed source material → shared memories |
 
-**Slash commands**: `/brief`, `/wrap`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`, `/req`
+**Slash commands**: `/brief`, `/wrap`, `/consult`, `/dream`, `/pensieve`, `/update`, `/nats`, `/req`, `/ingest`
 
 ### Quick Reference
 
@@ -461,6 +495,7 @@ See [docs/getting-started/claude-code.md](docs/getting-started/claude-code.md) f
 | | `/nats sub` | Show recent cross-device messages |
 | | `/nats pub "message"` | Publish a message to other devices |
 | `/update` | `/update --device twiggy --skill nats` | Generate install commands for a skill on a device |
+| `/ingest` | `/ingest --source <path> [--preview / --dry-run]` | Feed source material through the distillation pipeline |
 Full reference: [docs/reference/slash-commands.md](docs/reference/slash-commands.md).
 
 ---
