@@ -16,6 +16,7 @@ from pathlib import Path
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.session_log import SessionLog
 from mori_advisor.memory_store import MemoryStore
+from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
 
 logger = logging.getLogger(__name__)
 
@@ -32,25 +33,6 @@ Capture: architecture, conventions, preferences, gotchas, recurring patterns, de
 Ignore: one-off bugs, standard fixes, noise, anything recoverable from docs or git.
 
 CRITICAL: Begin your response must start with [ and end with ]. No prose before or after the JSON."""
-
-CONTRADICTION_SCAN_PROMPT = """You are comparing two technical memories for logical contradictions.
-
-New memory (just written):
-Title: {new_title}
-Body:
-{new_body}
-
-Existing memory (from the shared store):
-Title: {existing_title}
-Body:
-{existing_body}
-
-Does the new memory contradict or supersede the existing memory?
-Answer with exactly one word: SUPERSEDES, RELATED, or UNRELATED.
-
-SUPERSEDES = the new memory invalidates, replaces, or directly contradicts the existing one.
-RELATED = they discuss related topics but don't contradict each other.
-UNRELATED = they cover completely different topics."""
 
 
 class DreamPipeline:
@@ -306,30 +288,13 @@ class DreamPipeline:
             temperature=0.3,
         )
 
-    def _parse_response(self, text: str) -> list[dict] | None:
-        """Parse model response into a list of memory dicts."""
-        text = text.strip()
+    def _parse_response(self, text: str) -> list[dict]:
+        """Parse model response into a list of memory dicts.
 
-        # Strategy 1: full response is valid JSON array
-        try:
-            result = json.loads(text)
-            if isinstance(result, list):
-                return result
-        except json.JSONDecodeError:
-            pass
-
-        # Strategy 2: extract JSON array from surrounding text
-        start = text.find("[")
-        end = text.rfind("]")
-        if start != -1 and end > start:
-            try:
-                result = json.loads(text[start : end + 1])
-                if isinstance(result, list):
-                    return result
-            except json.JSONDecodeError:
-                pass
-
-        return None
+        Delegates to the shared parse_model_json_response utility.
+        Returns empty list on failure (matches legacy None → [] behaviour).
+        """
+        return parse_model_json_response(text)
 
     def _path_to_name(self, path: str) -> str:
         return path.replace(".md", "").replace("/", "-").replace("_", "-")
@@ -410,83 +375,17 @@ class DreamPipeline:
     def _contradiction_scan(self, new_memories: list[dict]) -> int:
         """Check new memories against existing canonical ones for contradictions.
 
-        For each new memory, searches for existing canonical memories with
-        overlapping tags/name prefixes and runs a lightweight LLM check.
-        Returns count of supersessions detected.
-
-        Opens its own connection for writes — does NOT participate in the
-        dream transaction, so LLM calls don't hold the DB lock.
+        Delegates to the shared run_contradiction_scan utility.
         """
-        import sqlite3 as _sqlite3
+        # Consult wrapper matching the expected callable signature
+        def consult_fn(system, user, vk, max_tokens, temperature):
+            return self.client.consult(
+                system=system, user=user, vk=vk,
+                max_tokens=max_tokens, temperature=temperature,
+            )
 
-        superseded_count = 0
-        write_conn = None
-
-        try:
-            write_conn = _sqlite3.connect(str(self.db_path), timeout=30)
-            write_conn.execute("PRAGMA journal_mode=WAL")
-            write_conn.execute("PRAGMA synchronous=NORMAL")
-            write_conn.execute("PRAGMA busy_timeout=30000")
-
-            for mem in new_memories:
-                path = mem.get("path", "")
-                if not path:
-                    continue
-
-                # Derive candidate search terms from the new memory
-                name = self._path_to_name(path)
-                prefix = name.split("-")[0] if "-" in name else name
-
-                try:
-                    cur = write_conn.execute(
-                        """
-                        SELECT name, title, body FROM memories
-                        WHERE tier = 'canonical'
-                          AND superseded_by IS NULL
-                          AND (name LIKE ? OR name LIKE ? OR tags LIKE ?)
-                        LIMIT 5
-                        """,
-                        (f"{prefix}%", f"%-{prefix}%", f'%"{prefix}"%'),
-                    )
-                    candidates = cur.fetchall()
-                except _sqlite3.Error:
-                    continue
-
-                for cand_name, cand_title, cand_body in candidates:
-                    if not cand_body:
-                        continue
-
-                    try:
-                        prompt = CONTRADICTION_SCAN_PROMPT.format(
-                            new_title=path.replace("/", " — "),
-                            new_body=mem.get("body", "")[:2000],
-                            existing_title=cand_title,
-                            existing_body=cand_body[:2000],
-                        )
-                        response = self.client.consult(
-                            system=prompt,
-                            user=f"new: {name}\nexisting: {cand_name}",
-                            vk="fast",
-                            max_tokens=16,
-                            temperature=0.0,
-                        )
-                        verdict = (response or "").strip().upper()
-                        if verdict == "SUPERSEDES":
-                            write_conn.execute(
-                                "UPDATE memories SET superseded_by = ?, updated_at = datetime('now') WHERE name = ?",
-                                (name, cand_name),
-                            )
-                            write_conn.execute(
-                                "INSERT INTO eviction_queue (memory_name, reason, detail) VALUES (?, 'superseded', ?)",
-                                (cand_name, f"Superseded by '{name}' in dream run"),
-                            )
-                            write_conn.commit()
-                            superseded_count += 1
-                            logger.info("Superseded %s with %s", cand_name, name)
-                    except Exception as e:
-                        logger.debug("Contradiction check failed %s vs %s: %s", name, cand_name, e)
-        finally:
-            if write_conn:
-                write_conn.close()
-
-        return superseded_count
+        return run_contradiction_scan(
+            new_memories=new_memories,
+            db_path=self.db_path,
+            consult_fn=consult_fn,
+        )
