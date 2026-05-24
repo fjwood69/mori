@@ -558,7 +558,7 @@ For developers using the **Google Antigravity IDE** and its agent framework, Mor
 - Windows: `powershell -File scripts/install-mori-antigravity.ps1`
 - Linux/macOS: `./scripts/install-mori-antigravity.sh`
 
-See [docs/getting-started-antigravity.md](docs/getting-started-antigravity.md) for full details.
+See [docs/getting-started/antigravity.md](docs/getting-started/antigravity.md) for full details.
 
 ---
 
@@ -834,6 +834,7 @@ so no session knowledge is lost at context compression time.
 | | `/nats sub` | Show recent cross-device messages |
 | | `/nats pub "message"` | Publish a message to other devices |
 | `/update` | `/update --device twiggy --skill nats` | Generate install commands for a skill on a device |
+Full reference: [docs/reference/slash-commands.md](docs/reference/slash-commands.md).
 
 ---
 

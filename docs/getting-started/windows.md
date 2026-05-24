@@ -4,7 +4,7 @@ Connect your Windows Claude Code instance to a shared Mori server. No server to
 run — just point at your friend's Mori and you're done.
 
 > [!NOTE]
-> If you are using the **Google Antigravity IDE** instead of Claude Code on Windows, refer to the [Google Antigravity IDE setup guide](getting-started-antigravity.md) to use automated configuration scripts.
+> If you are using the **Google Antigravity IDE** instead of Claude Code on Windows, refer to the [Google Antigravity IDE setup guide](antigravity.md) to use automated configuration scripts.
 
 ---
 
@@ -154,7 +154,7 @@ You're now connected to a shared Moku. Every session event feeds the dream
 pipeline automatically — the server runs it on a schedule and before context
 compression. You'll rarely need to run `/dream` yourself.
 
-See [slash-commands.md](slash-commands.md) for a full guide to all available
+See [slash-commands.md](../reference/slash-commands.md) for a full guide to all available
 commands: `/brief`, `/consult`, `/dream`, `/pensieve`, `/req`, `/nats`.
 
 Your friend (the server owner) handles updates, backups, and scaling.
