@@ -62,7 +62,7 @@ echo "--- Mori Antigravity Bridge Setup Wizard ---"
 
 # Step-by-step interactive inputs
 if [ "$URL_SPECIFIED" = "false" ]; then
-  read -p "Enter Mori Server URL [http://localhost:8968]: " input_url
+  read -p "Enter Mori Server URL [http://localhost:8968] (e.g. http://192.168.0.100:8968): " input_url
   if [ -n "$input_url" ]; then
     MORI_URL="$input_url"
   fi
