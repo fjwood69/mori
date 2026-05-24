@@ -467,6 +467,8 @@ Full reference: [docs/reference/slash-commands.md](docs/reference/slash-commands
 
 ![Mori Architecture](https://raw.githubusercontent.com/fjwood69/mori/5d55d248dc91fc7c8292c3deaf6d2a2aa40192ce/docs/assets/figure-4-architecture.svg)
 
+![Runs Anywhere](https://raw.githubusercontent.com/fjwood69/mori/53c7b6858fc30df265d7b1262192fef8bb5923fb/docs/assets/figure-3-runs-anywhere.svg)
+
 
 **Configuration** → [docs/reference/configuration.md](docs/reference/configuration.md)
 **Deployment guides** → [docs/deployment/quickstart.md](docs/deployment/quickstart.md)
