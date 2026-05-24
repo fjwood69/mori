@@ -192,6 +192,25 @@ class MemoryStore:
             ")"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evict_memory ON eviction_queue(memory_name)")
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS ingestion_log ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  source_path TEXT NOT NULL,"
+            "  source_hash TEXT NOT NULL,"
+            "  ingested_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            "  memories_written INTEGER NOT NULL DEFAULT 0,"
+            "  model TEXT NOT NULL DEFAULT '',"
+            "  focus TEXT NOT NULL DEFAULT 'all',"
+            "  tier TEXT NOT NULL DEFAULT 'working',"
+            "  tags TEXT NOT NULL DEFAULT '[]',"
+            "  dry_run INTEGER NOT NULL DEFAULT 0,"
+            "  error_count INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ingestion_hash ON ingestion_log(source_hash)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ingestion_path ON ingestion_log(source_path)")
+
         conn.commit()
         conn.close()
 

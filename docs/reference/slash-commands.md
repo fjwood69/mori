@@ -142,6 +142,52 @@ Messages persist for 7 days in the JetStream store. Offline instances catch up o
 
 ---
 
+## `/ingest` — Universal Ingestion
+
+Extracts durable memories from PDFs, images, CC transcripts, git history, and code files into the shared memory store. Solves the cold-start problem for new users and unlocks institutional knowledge locked in files.
+
+**MCP tools:** `mori-ingest`, `mori-ingest_status`, `mori-ingest_preview`
+
+**Parameters:**
+
+| Parameter | Values | Default |
+|---|---|---|
+| `--source` | File or directory path (repeatable) | required |
+| `--type` | auto, transcripts, git, docs, image | auto |
+| `--focus` | all, decisions, architecture, conventions, gotchas | all |
+| `--tier` | working, canonical, ephemeral | working |
+| `--tags` | Comma-separated | — |
+| `--since` | 30d, 90d (for transcripts/git) | — |
+| `--dry-run` | Full pipeline with LLM, no writes | false |
+| `--preview` | Zero-cost parse-only, no LLM call | false |
+| `--force` | Re-ingest even if previously ingested | false |
+| `--max-cost` | Abort if estimated cost exceeds (USD) | $5.00 |
+
+**Three tiers of execution:**
+
+| Command | LLM called? | Writes to DB? | Cost |
+|---|---|---|---|
+| `/ingest --preview --source <path>` | No | No | Zero |
+| `/ingest --dry-run --source <path>` | Yes | No | Full |
+| `/ingest --source <path>` | Yes | Yes | Full |
+
+**Examples:**
+
+```
+/ingest --source ~/docs/arch-review.pdf --focus architecture
+/ingest --source ~/project/docs/ --focus decisions --tier canonical
+/ingest --source ~/whiteboard.jpg --focus architecture
+/ingest --source ~/.claude/projects/ --type transcripts --since 30d
+/ingest --source ~/my-project --type git --since 90d
+/ingest --preview --source ~/docs/ --focus all
+```
+
+**Cost estimation note:** Token estimates are approximate — image-heavy PDFs may vary 2–3×. Use `--preview` before large ingestions.
+
+**Supported parsers:** text/code (.py, .ts, .md, .json, etc.), PDF (.pdf via pymupdf/pypdf2), images (.png, .jpg, .webp via Pillow), CC transcripts (.jsonl), git history (git log + diffs via subprocess).
+
+---
+
 ## Dependencies
 
 | Layer | Component |

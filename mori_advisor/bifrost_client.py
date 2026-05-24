@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 # to resolve VKs. Model routing is controlled by the VK's model_override
 # in Bifrost DB. Not used in direct mode.
 VK_CONFIG: dict[str, str] = {
-    "advisor": "mori-advisor-local",
-    "dream": "mori-dream-local",
-    "fast": "mori-fast-local",
+    "advisor": "moku-advisor-local",
+    "dream": "moku-dream-local",
+    "fast": "moku-fast-local",
 }
 
 
@@ -156,4 +156,57 @@ class BifrostClient:
             return response.choices[0].message.content or ""
         except Exception as e:
             logger.error("Consult failed (vk=%s, mode=%s): %s", vk, self.mode, e)
+            raise
+
+    def consult_vision(
+        self,
+        system: str,
+        user_text: str,
+        images: list[str],
+        vk: str = "dream",
+        max_tokens: int = 16384,
+        temperature: float = 0.3,
+    ) -> str:
+        """Send a multimodal consult request with images.
+
+        Builds an OpenAI Vision API content array: text block + image_url
+        blocks with base64 data URIs. Routes through Kimi K2.6 via the
+        dream VK — the fast model (DeepSeek V4 Flash) does not support vision.
+
+        Args:
+            system: System prompt.
+            user_text: Text portion of the user message.
+            images: List of base64 data URI strings (e.g. "data:image/png;base64,...").
+            vk: VK profile (must support vision — "dream" only in bifrost mode).
+            max_tokens: Max output tokens.
+            temperature: Sampling temperature.
+
+        Returns:
+            The model's response text.
+        """
+        client, model = self._client_for(vk)
+
+        # Build multimodal content array
+        content: list[dict] = [
+            {"type": "text", "text": user_text},
+        ]
+        for img_uri in images:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": img_uri},
+            })
+
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": content},
+                ],
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            logger.error("Consult vision failed (vk=%s, mode=%s): %s", vk, self.mode, e)
             raise

@@ -22,6 +22,7 @@ from starlette.responses import JSONResponse
 
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.dream import DreamPipeline
+from mori_advisor.ingestion import IngestionPipeline
 from mori_advisor.memory_store import MemoryStore
 from mori_advisor.metrics import init_metrics, shutdown_metrics
 from mori_advisor.session_log import SessionLog
@@ -131,6 +132,12 @@ dream_pipeline = DreamPipeline(
     bifrost_client=bifrost,
     trusted_dreamers=TRUSTED_DREAMERS,
     nats_url=NATS_URL,
+)
+
+ingestion_pipeline = IngestionPipeline(
+    db_path=DATA_DIR / "memories.db",
+    bifrost_client=bifrost,
+    memory_store=memory_store,
 )
 
 
@@ -812,6 +819,120 @@ async def nats_ping() -> str:
         return f"NATS server reachable at {info}"
     except Exception as e:
         return f"NATS server not reachable: {e}"
+
+
+# ── Ingestion tools ─────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def mori_ingest(
+    source: list[str],
+    type: str = "auto",
+    focus: str = "all",
+    tier: str = "working",
+    tags: str = "",
+    since: str = "",
+    dry_run: bool = False,
+    model: str = "",
+    max_cost: float = 5.00,
+    force: bool = False,
+) -> str:
+    """Run ingestion on source material — extract durable memories from
+    PDFs, images, CC transcripts, git history, and text/code files.
+
+    Feeds source material through the distillation model (Kimi K2.6)
+    and writes structured memories to the shared store.
+
+    Use mori-ingest_preview for a zero-cost preview of what would be parsed.
+    Use mori-ingest_status to see past ingestion runs.
+
+    Args:
+        source: File or directory paths to ingest (repeatable).
+        type: Source type — auto (default), transcripts, git, docs, image.
+        focus: What to extract — all, decisions, architecture, conventions, gotchas.
+        tier: Memory tier — working (default), canonical, ephemeral.
+        tags: Comma-separated tags to apply to produced memories.
+        since: Time filter for transcripts/git (e.g. "30d", "90d").
+        dry_run: If true, calls the LLM but does not write anything.
+        model: Override distillation model (ignored — uses dream VK).
+        max_cost: Abort if estimated cost exceeds this threshold in USD.
+        force: Re-ingest even if previously ingested.
+    """
+    parsed_tags = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+
+    if tier not in ("working", "canonical", "ephemeral"):
+        return f"Invalid tier '{tier}'. Must be working, canonical, or ephemeral."
+
+    try:
+        result = ingestion_pipeline.ingest(
+            sources=source,
+            source_type=type,
+            focus=focus,
+            tier=tier,
+            tags=parsed_tags,
+            since=since,
+            dry_run=dry_run,
+            preview=False,
+            force=force,
+        )
+
+        parts = [
+            f"**Ingestion {'preview (dry-run)' if dry_run else 'complete'}**",
+            f"  Sources processed: {result['sources']}",
+            f"  Chunks sent:       {result['chunks']}",
+            f"  Skipped (cached):  {result['skipped']}",
+            f"  Errors:            {result['errors']}",
+            f"  Est. cost:         ${result['cost_estimate']:.4f}",
+        ]
+
+        if dry_run:
+            if result.get("memories_candidates", 0) > 0:
+                parts.append(f"  Would write:       {result['memories_candidates']} memories")
+            else:
+                parts.append("  No memories would be written.")
+            parts.append("\nRun without --dry-run to commit.")
+        else:
+            parts.append(f"  Memories written:  {result['memories_written']}")
+
+        return "\n".join(parts)
+
+    except Exception as e:
+        logger.error("mori-ingest failed: %s", e)
+        return f"Ingestion failed: {e}"
+
+
+@mcp.tool()
+async def mori_ingest_status(limit: int = 20) -> str:
+    """Show ingestion log — what's been ingested, when, and how many memories.
+
+    Args:
+        limit: Maximum entries to show (default 20).
+    """
+    return IngestionPipeline.get_status(DATA_DIR / "memories.db", limit=limit)
+
+
+@mcp.tool()
+async def mori_ingest_preview(
+    source: list[str],
+    type: str = "auto",
+    since: str = "",
+) -> str:
+    """Preview what would be ingested — zero-cost, no LLM calls.
+
+    Parses sources and shows chunk breakdown, token estimates, and
+    expected memory counts. Use this before running mori-ingest to
+    understand what you'll get and how much it will cost.
+
+    Args:
+        source: File or directory paths to preview (repeatable).
+        type: Source type — auto (default), transcripts, git, docs, image.
+        since: Time filter for transcripts/git (e.g. "30d").
+    """
+    return IngestionPipeline.preview(
+        sources=source,
+        source_type=type,
+        since=since,
+    )
 
 
 # ── Dream tools ──────────────────────────────────────────────────────────
