@@ -371,7 +371,7 @@ files, edit them, and re-import.
 
 ## Quickstart
 
-![Runs Anywhere](https://raw.githubusercontent.com/fjwood69/mori/c40e1804ae53e62e6c4a3e87b8f4277ad48f3aa2/docs/assets/figure-3-runs-anywhere.svg)
+![Runs Anywhere](https://raw.githubusercontent.com/fjwood69/mori/74f13d4dbb321d8af6bf3ea5640566d255f33c6c/docs/assets/figure-3-runs-anywhere.svg)
 
 ### 1. Pick your platform
 
