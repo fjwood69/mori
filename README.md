@@ -554,11 +554,21 @@ See [Claude Code CLI Setup](#claude-code-cli--mori-setup) below for a complete w
 
 For developers using the **Google Antigravity IDE** and its agent framework, Mori provides a native HTTP MCP server integration and lifecycle hook setup.
 
-See [docs/getting-started-antigravity.md](docs/getting-started-antigravity.md) for the complete setup guide, including using the automated setup scripts.
+**Automated setup** (recommended): Run the interactive wizard from the repository root:
+- Windows: `powershell -File scripts/install-mori-antigravity.ps1`
+- Linux/macOS: `./scripts/install-mori-antigravity.sh`
+
+See [docs/getting-started-antigravity.md](docs/getting-started-antigravity.md) for full details.
 
 ---
 
 ## Claude Code CLI — Mori Setup
+
+**Automated setup** (recommended): Run the interactive wizard from the repository root:
+- Windows: `powershell -File scripts/install-mori-claude.ps1`
+- Linux/macOS: `./scripts/install-mori-claude.sh`
+
+The wizard will configure MCP server, event hooks, and skills for CLI, VS Code, or both.
 
 This section covers the Claude Code CLI-specific configuration that enables
 the full Mori experience: event capture, dream pipeline, and session grounding.
