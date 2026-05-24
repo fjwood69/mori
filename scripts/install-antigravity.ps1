@@ -14,7 +14,7 @@ $ErrorActionPreference = "Stop"
 Write-Host "--- Mori Antigravity Bridge Setup Wizard ---" -ForegroundColor Cyan
 
 if (-not $PSBoundParameters.ContainsKey('MoriUrl')) {
-    $PromptUrl = Read-Host "Enter Mori Server URL [http://localhost:8968]"
+    $PromptUrl = Read-Host "Enter Mori Server URL [http://localhost:8968] (e.g. http://192.168.0.100:8968)"
     if ([string]::IsNullOrWhiteSpace($PromptUrl)) {
         $MoriUrl = "http://localhost:8968"
     } else {
