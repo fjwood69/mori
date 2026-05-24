@@ -15,7 +15,7 @@ CLIENT_SPECIFIED=false
 
 # Help function
 show_help() {
-  echo "Usage: install-antigravity.sh [options]"
+  echo "Usage: install-mori-antigravity.sh [options]"
   echo "Options:"
   echo "  --url <url>      Mori server base URL (default: http://localhost:8968)"
   echo "  --api-key <key>  Optional API key for event logging auth"

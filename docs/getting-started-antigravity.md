@@ -21,13 +21,13 @@ Run the setup script from the root of the Mori repository. The script will guide
 ### Windows (PowerShell)
 Open PowerShell and run:
 ```powershell
-powershell -File scripts/install-antigravity.ps1
+powershell -File scripts/install-mori-antigravity.ps1
 ```
 
 ### Linux / macOS (Bash)
 Open your terminal and run:
 ```bash
-./scripts/install-antigravity.sh
+./scripts/install-mori-antigravity.sh
 ```
 
 ---
@@ -67,12 +67,12 @@ If you are scripting the installation or running in CI/CD, you can bypass the wi
 
 ### PowerShell Options:
 ```powershell
-powershell -File scripts/install-antigravity.ps1 -MoriUrl "http://10.0.0.5:8968" -ApiKey "secret" -ClientName "my-client" -Force
+powershell -File scripts/install-mori-antigravity.ps1 -MoriUrl "http://10.0.0.5:8968" -ApiKey "secret" -ClientName "my-client" -Force
 ```
 
 ### Bash Options:
 ```bash
-./scripts/install-antigravity.sh --url "http://10.0.0.5:8968" --api-key "secret" --client "my-client" --force
+./scripts/install-mori-antigravity.sh --url "http://10.0.0.5:8968" --api-key "secret" --client "my-client" --force
 ```
 
 Use the `-Force` / `--force` switch to bypass interactive prompts if the server is offline during the setup.
