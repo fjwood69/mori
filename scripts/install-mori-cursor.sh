@@ -129,8 +129,8 @@ else
 fi
 mkdir -p "$(dirname "$MCP_CONFIG")"
 
-AUTH_HEADER=""
-[ -n "$API_KEY" ] && AUTH_HEADER="-H \"X-Api-Key: $API_KEY\" "
+auth_flag=""
+[ -n "$API_KEY" ] && auth_flag=" --api-key \"${API_KEY}\""
 
 generate_mcp_config() {
   cat <<EOF
@@ -173,6 +173,16 @@ CLAUDEDIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 mkdir -p "$CLAUDEDIR"
 HOOKS_FILE="$CLAUDEDIR/settings.json"
 
+# Deploy shipper script
+SHIPPER_SRC="${SCRIPT_DIR}/mori-ship-event.sh"
+SHIPPER_DST="${CLAUDEDIR}/mori-ship-event.sh"
+if [ -f "$SHIPPER_SRC" ]; then
+  cp "$SHIPPER_SRC" "$SHIPPER_DST" && chmod +x "$SHIPPER_DST"
+  echo "  Deployed mori-ship-event.sh to ${CLAUDEDIR}"
+else
+  echo "  Warning: mori-ship-event.sh not found alongside installer — hooks will not work correctly."
+fi
+
 generate_hooks_json() {
   cat <<EOF
 {
@@ -180,31 +190,31 @@ generate_hooks_json() {
     "PostToolUse": [
       {
         "type": "command",
-        "command": "curl -sf -X POST \"${MORI_URL}/api/events/raw?client=${CLIENT_NAME}\" ${AUTH_HEADER}-H \"Content-Type: application/json\" -d @- >/dev/null 2>&1; exit 0"
+        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
       }
     ],
     "PostToolUseFailure": [
       {
         "type": "command",
-        "command": "curl -sf -X POST \"${MORI_URL}/api/events/raw?client=${CLIENT_NAME}\" ${AUTH_HEADER}-H \"Content-Type: application/json\" -d @- >/dev/null 2>&1; exit 0"
+        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
       }
     ],
     "UserPromptSubmit": [
       {
         "type": "command",
-        "command": "curl -sf -X POST \"${MORI_URL}/api/events/raw?client=${CLIENT_NAME}\" ${AUTH_HEADER}-H \"Content-Type: application/json\" -d @- >/dev/null 2>&1; exit 0"
+        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "curl -sf -X POST \"${MORI_URL}/api/events/raw?client=${CLIENT_NAME}\" ${AUTH_HEADER}-H \"Content-Type: application/json\" -d @- >/dev/null 2>&1; exit 0"
+        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
       }
     ],
     "PreCompact": [
       {
         "type": "command",
-        "command": "curl -sf -X POST \"${MORI_URL}/api/precompact?client=${CLIENT_NAME}\" ${AUTH_HEADER}-H \"Content-Type: application/json\" -d @- >/dev/null 2>&1; exit 0"
+        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode precompact"
       }
     ]
   }
@@ -215,8 +225,8 @@ EOF
 if [ ! -f "$HOOKS_FILE" ]; then
   generate_hooks_json > "$HOOKS_FILE"
   echo "  Created $HOOKS_FILE with Mori event capture hooks"
-elif ! grep -q "mori" "$HOOKS_FILE" 2>/dev/null && ! grep -q "8968" "$HOOKS_FILE" 2>/dev/null; then
-  # File exists but no Mori hooks — merge them in
+elif ! grep -q "mori-ship-event.sh" "$HOOKS_FILE" 2>/dev/null; then
+  # File exists but no Mori shipper hooks — merge them in
   if command -v jq &>/dev/null; then
     TMP_FILE=$(mktemp)
     generate_hooks_json | jq -c '.' > "$TMP_FILE"
@@ -232,7 +242,7 @@ elif ! grep -q "mori" "$HOOKS_FILE" 2>/dev/null && ! grep -q "8968" "$HOOKS_FILE
     echo "  Please manually add hooks from examples/settings.json"
   fi
 else
-  echo "  Skipped — $HOOKS_FILE already has Mori hooks"
+  echo "  Skipped — $HOOKS_FILE already has Mori shipper hooks"
 fi
 
 # ---- Step 3: Deploy skills ----
@@ -306,3 +316,5 @@ echo "   - Run: curl $MORI_URL/health"
 echo ""
 echo "No Claude Code required — Mori creates ~/.claude/settings.json and"
 echo "~/.claude/skills/ for you if they don't already exist."
+echo ""
+echo "Hook failures are logged to: ${TMPDIR:-/tmp}/mori-hook.log"

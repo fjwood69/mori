@@ -78,7 +78,24 @@ Write-Host "`nSetting up Mori  -  Cline Bridge..." -ForegroundColor Green
 
 $MoriRepoRoot = Resolve-Path "$PSScriptRoot\.."
 $PluginPath = "$MoriRepoRoot\extensions\mori-cline-plugin"
-$AuthHeader = if ($ApiKey) { "-H `"X-Api-Key: $ApiKey`" " } else { "" }
+
+# Deploy shipper script to the CLI config dir (~/.claude)
+$ClaudeDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { "$env:USERPROFILE\.claude" }
+$ShipperSrc = "$PSScriptRoot\mori-ship-event.ps1"
+$ShipperDst = "$ClaudeDir\mori-ship-event.ps1"
+New-Item -ItemType Directory -Force -Path $ClaudeDir | Out-Null
+if (Test-Path $ShipperSrc) {
+    Copy-Item -Path $ShipperSrc -Destination $ShipperDst -Force
+    Write-Host "  Deployed mori-ship-event.ps1 to $ClaudeDir" -ForegroundColor Cyan
+} else {
+    Write-Host "  Warning: mori-ship-event.ps1 not found alongside installer - hooks will not work correctly." -ForegroundColor Yellow
+}
+
+# Write UTF-8 without BOM (required for JSON and MD files)
+function Write-Utf8File {
+    param([string]$Path, [string]$Content)
+    [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false))
+}
 
 # 1. Set persistent environment variables
 Write-Host "[1/4] Setting environment variables..." -ForegroundColor Yellow
@@ -136,34 +153,29 @@ $ClineSettingsPath = "$ClineConfigDir\settings.json"
 New-Item -ItemType Directory -Force -Path $ClineConfigDir | Out-Null
 
 function Get-ClineConfigJson {
-    $config = @"
-{
-  "cline.mcpServers": {
-    "mori": {
-      "type": "http",
-      "url": "${MoriUrl}/mcp"
+    $apiFlag = if ($ApiKey) { " -ApiKey `"$ApiKey`"" } else { "" }
+    $base = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ShipperDst`" -MoriUrl `"$MoriUrl`" -Client `"$ClientName`"${apiFlag}"
+    $rawCmd  = "$base -Mode raw"
+    $compCmd = "$base -Mode precompact"
+
+    $entry        = @([PSCustomObject]@{ type = "command"; command = $rawCmd })
+    $compactEntry = @([PSCustomObject]@{ type = "command"; command = $compCmd })
+
+    return [PSCustomObject]@{
+        "cline.mcpServers" = [PSCustomObject]@{
+            mori = [PSCustomObject]@{
+                type = "http"
+                url  = "$MoriUrl/mcp"
+            }
+        }
+        hooks = [PSCustomObject]@{
+            PostToolUse        = $entry
+            PostToolUseFailure = $entry
+            UserPromptSubmit   = $entry
+            Stop               = $entry
+            PreCompact         = $compactEntry
+        }
     }
-  },
-  "hooks": {
-    "PostToolUse": [
-      { "type": "command", "command": "curl -sf -X POST `"${MoriUrl}/api/events/raw?client=${ClientName}`" $($AuthHeader)-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0" }
-    ],
-    "PostToolUseFailure": [
-      { "type": "command", "command": "curl -sf -X POST `"${MoriUrl}/api/events/raw?client=${ClientName}`" $($AuthHeader)-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0" }
-    ],
-    "UserPromptSubmit": [
-      { "type": "command", "command": "curl -sf -X POST `"${MoriUrl}/api/events/raw?client=${ClientName}`" $($AuthHeader)-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0" }
-    ],
-    "Stop": [
-      { "type": "command", "command": "curl -sf -X POST `"${MoriUrl}/api/events/raw?client=${ClientName}`" $($AuthHeader)-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0" }
-    ],
-    "PreCompact": [
-      { "type": "command", "command": "curl -sf -X POST `"${MoriUrl}/api/precompact?client=${ClientName}`" $($AuthHeader)-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0" }
-    ]
-  }
-}
-"@
-    return $config | ConvertFrom-Json
 }
 
 $NewConfig = Get-ClineConfigJson
@@ -172,7 +184,7 @@ if (Test-Path $ClineSettingsPath) {
     try {
         $RawContent = Get-Content $ClineSettingsPath -Raw -Encoding UTF8
         if ([string]::IsNullOrWhiteSpace($RawContent)) {
-            $NewConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $ClineSettingsPath -Encoding UTF8
+            Write-Utf8File $ClineSettingsPath ($NewConfig | ConvertTo-Json -Depth 10)
             Write-Host "  Created $ClineSettingsPath (was empty)." -ForegroundColor Cyan
         } else {
             $Existing = $RawContent | ConvertFrom-Json
@@ -199,15 +211,15 @@ if (Test-Path $ClineSettingsPath) {
                 }
             }
 
-            $Existing | ConvertTo-Json -Depth 10 | Set-Content -Path $ClineSettingsPath -Encoding UTF8
+            Write-Utf8File $ClineSettingsPath ($Existing | ConvertTo-Json -Depth 10)
             Write-Host "  Updated $ClineSettingsPath" -ForegroundColor Cyan
         }
     } catch {
         Write-Host "  Warning: Failed to parse existing config. Overwriting..." -ForegroundColor Yellow
-        $NewConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $ClineSettingsPath -Encoding UTF8
+        Write-Utf8File $ClineSettingsPath ($NewConfig | ConvertTo-Json -Depth 10)
     }
 } else {
-    $NewConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $ClineSettingsPath -Encoding UTF8
+    Write-Utf8File $ClineSettingsPath ($NewConfig | ConvertTo-Json -Depth 10)
     Write-Host "  Created $ClineSettingsPath" -ForegroundColor Cyan
 }
 
@@ -250,7 +262,7 @@ description: "$EscapedDesc"
 
         $SkillFolder = "$SkillsDir\mori-$Name"
         New-Item -ItemType Directory -Force -Path $SkillFolder | Out-Null
-        Set-Content -Path "$SkillFolder\SKILL.md" -Value $SkillContent -Encoding UTF8
+        Write-Utf8File "$SkillFolder\SKILL.md" $SkillContent
         Write-Host "  Deployed skill: mori-$Name" -ForegroundColor Cyan
     }
 } else {
