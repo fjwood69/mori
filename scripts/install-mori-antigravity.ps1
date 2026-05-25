@@ -104,11 +104,26 @@ function Write-Utf8File {
 
 # 4. Deploy mcp_config.json
 $McpConfigPath = "$AppDataDir\mcp_config.json"
-$McpConfig = [PSCustomObject]@{
-    mcpServers = [PSCustomObject]@{
-        mori = [PSCustomObject]@{
-            type = "http"
-            url  = "$MoriUrl/mcp"
+
+if ($ApiKey) {
+    $McpConfig = [PSCustomObject]@{
+        mcpServers = [PSCustomObject]@{
+            mori = [PSCustomObject]@{
+                type = "http"
+                serverUrl = "$MoriUrl/mcp"
+                headers = [PSCustomObject]@{
+                    "X-Api-Key" = "$ApiKey"
+                }
+            }
+        }
+    }
+} else {
+    $McpConfig = [PSCustomObject]@{
+        mcpServers = [PSCustomObject]@{
+            mori = [PSCustomObject]@{
+                type = "http"
+                serverUrl = "$MoriUrl/mcp"
+            }
         }
     }
 }

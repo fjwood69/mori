@@ -37,13 +37,30 @@ Open your terminal and run:
 The setup script automatically generates and deploys all required files:
 
 ### 1. Connects the MCP Server
-Creates or updates `mcp_config.json` under your Antigravity IDE directory (`~/.gemini/antigravity-ide/mcp_config.json`):
+Creates or updates `mcp_config.json` under your Antigravity IDE directory (`~/.gemini/antigravity/mcp_config.json`):
+
+Without API key:
 ```json
 {
   "mcpServers": {
     "mori": {
       "type": "http",
-      "url": "http://<mori-url>/mcp"
+      "serverUrl": "http://<mori-url>/mcp"
+    }
+  }
+}
+```
+
+With API key authentication:
+```json
+{
+  "mcpServers": {
+    "mori": {
+      "type": "http",
+      "serverUrl": "http://<mori-url>/mcp",
+      "headers": {
+        "X-Api-Key": "your-api-key"
+      }
     }
   }
 }

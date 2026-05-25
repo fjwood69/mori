@@ -129,24 +129,48 @@ mkdir -p "$SKILLS_TARGET_DIR"
 
 # 4. Deploy mcp_config.json
 MCP_CONFIG_PATH="$APP_DATA_DIR/mcp_config.json"
-MCP_CONFIG_JSON=$(cat <<EOF
+
+# Build MCP server config with optional API key header
+if [ -n "$API_KEY" ]; then
+  MCP_CONFIG_JSON=$(cat <<EOF
 {
   "mcpServers": {
     "mori": {
       "type": "http",
-      "url": "${MORI_URL}/mcp"
+      "serverUrl": "${MORI_URL}/mcp",
+      "headers": {
+        "X-Api-Key": "${API_KEY}"
+      }
     }
   }
 }
 EOF
 )
+else
+  MCP_CONFIG_JSON=$(cat <<EOF
+{
+  "mcpServers": {
+    "mori": {
+      "type": "http",
+      "serverUrl": "${MORI_URL}/mcp"
+    }
+  }
+}
+EOF
+)
+fi
 
 if [ -f "$MCP_CONFIG_PATH" ] && [ -s "$MCP_CONFIG_PATH" ]; then
   # Merge configuration if jq is available, otherwise overwrite
   if command -v jq &> /dev/null; then
     TEMP_FILE=$(mktemp)
-    jq --argjson mori '{"type": "http", "url": "'"${MORI_URL}/mcp"'"}' \
-       '.mcpServers.mori = $mori' "$MCP_CONFIG_PATH" > "$TEMP_FILE"
+    if [ -n "$API_KEY" ]; then
+      jq --argjson mori '{"type": "http", "serverUrl": "'"${MORI_URL}/mcp"'", "headers": {"X-Api-Key": "'"${API_KEY}"'"}}' \
+         '.mcpServers.mori = $mori' "$MCP_CONFIG_PATH" > "$TEMP_FILE"
+    else
+      jq --argjson mori '{"type": "http", "serverUrl": "'"${MORI_URL}/mcp"'"}' \
+         '.mcpServers.mori = $mori' "$MCP_CONFIG_PATH" > "$TEMP_FILE"
+    fi
     mv "$TEMP_FILE" "$MCP_CONFIG_PATH"
     echo "Updated existing mcp_config.json using jq."
   else
