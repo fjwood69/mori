@@ -76,3 +76,21 @@ powershell -File scripts/install-mori-antigravity.ps1 -MoriUrl "http://10.0.0.5:
 ```
 
 Use the `-Force` / `--force` switch to bypass interactive prompts if the server is offline during the setup.
+
+---
+
+## Upgrading from an Earlier Version
+
+If you installed Mori before the shipper-script update, your hooks config will contain inline curl hook commands like:
+
+```
+"curl -sf -X POST \"http://...\" -d @- >/dev/null 2>&1; exit 0"
+```
+
+Re-running the installer upgrades them automatically — it replaces `hooks.json` with the new shipper-script pattern and deploys `mori-ship-event.sh` (Linux/macOS) or `mori-ship-event.ps1` (Windows) to `~/.claude/`.
+
+The shipper scripts provide:
+- Reliable stdin capture (no subprocess pipe issues)
+- Local failure logging (`%TEMP%\mori-hook.log` on Windows, `/tmp/mori-hook.log` on Linux/macOS)
+- Log rotation at 100 KB
+- Always exit 0 so a Mori outage never interrupts your Antigravity session

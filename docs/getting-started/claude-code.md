@@ -95,3 +95,21 @@ powershell -File scripts/install-mori-claude.ps1 -MoriUrl "http://10.0.0.5:8968"
 ```
 
 Use `--target cli`, `--target vscode`, or `--target both` to select the install target without the interactive prompt. Use `-Force` / `--force` to bypass health check warnings.
+
+---
+
+## Upgrading from an Earlier Version
+
+If you installed Mori before the shipper-script update, your `settings.json` will contain inline curl hook commands like:
+
+```
+"curl -sf -X POST \"http://...\" -d @- >/dev/null 2>&1; exit 0"
+```
+
+Re-running the installer upgrades them automatically. The installer now checks whether `mori-ship-event.sh` (Linux/macOS) or `mori-ship-event.ps1` (Windows) is already present in your hook commands. Since the old curl-based hooks do not match, the installer replaces them with the new shipper-script pattern and deploys the shipper to `~/.claude/`.
+
+The shipper scripts provide:
+- Reliable stdin capture (no subprocess pipe issues)
+- Local failure logging to `~/.claude/` area (`%TEMP%\mori-hook.log` on Windows, `/tmp/mori-hook.log` on Linux/macOS)
+- Log rotation at 100 KB
+- Always exit 0 so a Mori outage never interrupts your AI session

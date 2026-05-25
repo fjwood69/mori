@@ -5,9 +5,8 @@
     [ValidateSet("raw", "precompact")][string]$Mode = "raw"
 )
 
-$ErrorActionPreference = "SilentlyContinue"
-
 # Read event JSON from stdin
+$body = $null
 try {
     $body = [Console]::In.ReadToEnd()
 } catch {
@@ -24,12 +23,19 @@ $uri = "$($MoriUrl.TrimEnd('/'))/api/${endpoint}?client=$([Uri]::EscapeDataStrin
 $headers = @{ "Content-Type" = "application/json" }
 if ($ApiKey) { $headers["X-Api-Key"] = $ApiKey }
 
+# POST - suppress only the REST call errors
+$ErrorActionPreference = "Stop"
 try {
     $null = Invoke-RestMethod -Uri $uri -Method POST -Body $body -Headers $headers -TimeoutSec 10
 } catch {
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logPath = "$env:TEMP\mori-hook.log"
     try {
-        Add-Content -Path "$env:TEMP\mori-hook.log" -Value "$timestamp [mori-ship] $Mode $uri : $_"
+        # Rotate log if > 100 KB
+        if ((Test-Path $logPath) -and (Get-Item $logPath).Length -gt 102400) {
+            Move-Item $logPath "$logPath.old" -Force
+        }
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Add-Content -Path $logPath -Value "$timestamp [mori-ship] $Mode $uri : $_"
     } catch { }
 }
 

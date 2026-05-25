@@ -160,9 +160,20 @@ fi
 
 # 5. Deploy hooks.json
 HOOKS_PATH="$CONFIG_DIR/hooks.json"
-AUTH_HEADER=""
-if [ -n "$API_KEY" ]; then
-  AUTH_HEADER="-H \\\"X-Api-Key: $API_KEY\\\" "
+
+auth_flag=""
+[ -n "$API_KEY" ] && auth_flag=" --api-key \"${API_KEY}\""
+
+CLAUDEDIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+SHIPPER_SRC="${SCRIPT_DIR}/mori-ship-event.sh"
+SHIPPER_DST="${CLAUDEDIR}/mori-ship-event.sh"
+
+mkdir -p "$CLAUDEDIR"
+if [ -f "$SHIPPER_SRC" ]; then
+  cp "$SHIPPER_SRC" "$SHIPPER_DST" && chmod +x "$SHIPPER_DST"
+  echo "  Deployed mori-ship-event.sh to ${CLAUDEDIR}"
+else
+  echo "  Warning: mori-ship-event.sh not found alongside installer — hooks will not work correctly."
 fi
 
 HOOKS_JSON=$(cat <<EOF
@@ -171,31 +182,31 @@ HOOKS_JSON=$(cat <<EOF
     "PostToolUse": [
       {
         "type": "command",
-        "command": "curl -sf -X POST \\\"${MORI_URL}/api/events/raw?client=${CLIENT_NAME}\\\" ${AUTH_HEADER}-H \\\"Content-Type: application/json\\\" -d @- >/dev/null 2>&1; exit 0"
+        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
       }
     ],
     "PostToolUseFailure": [
       {
         "type": "command",
-        "command": "curl -sf -X POST \\\"${MORI_URL}/api/events/raw?client=${CLIENT_NAME}\\\" ${AUTH_HEADER}-H \\\"Content-Type: application/json\\\" -d @- >/dev/null 2>&1; exit 0"
+        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
       }
     ],
     "UserPromptSubmit": [
       {
         "type": "command",
-        "command": "curl -sf -X POST \\\"${MORI_URL}/api/events/raw?client=${CLIENT_NAME}\\\" ${AUTH_HEADER}-H \\\"Content-Type: application/json\\\" -d @- >/dev/null 2>&1; exit 0"
+        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "curl -sf -X POST \\\"${MORI_URL}/api/events/raw?client=${CLIENT_NAME}\\\" ${AUTH_HEADER}-H \\\"Content-Type: application/json\\\" -d @- >/dev/null 2>&1; exit 0"
+        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
       }
     ],
     "PreCompact": [
       {
         "type": "command",
-        "command": "curl -sf -X POST \\\"${MORI_URL}/api/precompact?client=${CLIENT_NAME}\\\" ${AUTH_HEADER}-H \\\"Content-Type: application/json\\\" -d @- >/dev/null 2>&1; exit 0"
+        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode precompact"
       }
     ]
   }
