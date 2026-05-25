@@ -10,7 +10,7 @@ Cursor 2.4+ natively loads Claude Code hooks from `~/.claude/settings.json` and 
 
 - **Cursor 2.4 or later** — earlier versions do not load hooks from `~/.claude/settings.json`.
 - **Access to a running Mori server** (e.g. at `http://localhost:8968` or via a Tailscale IP).
-- **Third-party skills enabled** in Cursor: Settings → Features → Third-party skills → **Enable**.
+- **Third-party skills enabled** in Cursor: Settings → Rules, Skills, Subagents → **Enable third-party skills**.
 - Optional: An API key if your Mori server has `MORI_ADVISOR_API_KEY` enabled.
 
 ---
@@ -132,7 +132,7 @@ Then manually add the event capture hooks to `~/.claude/settings.json` (see [exa
 ## Known Limitations
 
 - **PostToolUseFailure hook** — Cursor's support for this hook name has not been verified. If event capture fails silently on tool errors, Mori may miss some error events from Cursor sessions. PostToolUse, UserPromptSubmit, PreCompact, and Stop are confirmed working.
-- **If hooks or skills stop working**, verify that **Third-party skills** is still enabled in Cursor Settings → Features. Cursor updates can reset this setting.
+- **If hooks or skills stop working**, verify that **Third-party skills** is still enabled in Cursor Settings → Rules, Skills, Subagents. Cursor updates can reset this setting.
 
 ---
 
