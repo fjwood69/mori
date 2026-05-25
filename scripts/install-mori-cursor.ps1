@@ -55,10 +55,9 @@ if ($MoriUrl -notmatch "^https?://") {
     exit 1
 }
 
-# Check Cursor is installed (check for global config path)
-$CursorGlobalDir = "$env:APPDATA\Cursor\User\globalStorage\cursor.mcp"
-$CursorProjectDir = "$env:USERPROFILE\.cursor"
-$CursorInstalled = (Test-Path "$env:APPDATA\Cursor") -or (Test-Path $CursorProjectDir)
+# Check Cursor is installed
+$CursorDir = "$env:USERPROFILE\.cursor"
+$CursorInstalled = (Test-Path "$env:APPDATA\Cursor") -or (Test-Path $CursorDir)
 if (-not $CursorInstalled) {
     Write-Host "Warning: Cursor does not appear to be installed." -ForegroundColor Yellow
     if (-not $Force) {
@@ -72,10 +71,9 @@ if (-not $CursorInstalled) {
 
 # Health check
 Write-Host "`nValidating connection to Mori server at $MoriUrl..." -ForegroundColor Yellow
-$HealthUrl = "$MoriUrl/health"
 $Connected = $false
 try {
-    $Response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 5
+    $Response = Invoke-WebRequest -Uri "$MoriUrl/health" -UseBasicParsing -TimeoutSec 5
     if ($Response.StatusCode -eq 200) {
         Write-Host "Connection successful! Mori server health check: ok" -ForegroundColor Green
         $Connected = $true
@@ -95,94 +93,122 @@ if (-not $Connected -and -not $Force) {
 Write-Host "`nSetting up Mori — Cursor Bridge..." -ForegroundColor Green
 
 $MoriRepoRoot = Resolve-Path "$PSScriptRoot\.."
-$AuthHeader = if ($ApiKey) { "-H `"X-Api-Key: $ApiKey`" " } else { "" }
 
+# Write UTF-8 without BOM (safe for JSON consumers on both PS 5.1 and PS 7)
+function Write-Utf8File {
+    param([string]$Path, [string]$Content)
+    [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false))
+}
+
+# Build MCP config as a PSCustomObject (no JSON string parsing needed)
 function Get-MoriMcpConfig {
-    $config = @"
-{
-  "mcpServers": {
-    "mori": {
-      "type": "http",
-      "url": "${MoriUrl}/mcp"
+    return [PSCustomObject]@{
+        mcpServers = [PSCustomObject]@{
+            mori = [PSCustomObject]@{
+                type = "http"
+                url  = "$MoriUrl/mcp"
+            }
+        }
     }
-  }
-}
-"@
-    return $config | ConvertFrom-Json
 }
 
+# Build hooks config as PSCustomObjects.
+# Avoids the here-string + ConvertFrom-Json approach, which fails when the
+# command strings contain double-quote characters that aren't JSON-escaped.
 function Get-MoriHooksConfig {
-    $config = @"
-{
-  "hooks": {
-    "PostToolUse": [
-      { "type": "command", "command": "curl -sf -X POST `"${MoriUrl}/api/events/raw?client=${ClientName}`" $($AuthHeader)-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0" }
-    ],
-    "PostToolUseFailure": [
-      { "type": "command", "command": "curl -sf -X POST `"${MoriUrl}/api/events/raw?client=${ClientName}`" $($AuthHeader)-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0" }
-    ],
-    "UserPromptSubmit": [
-      { "type": "command", "command": "curl -sf -X POST `"${MoriUrl}/api/events/raw?client=${ClientName}`" $($AuthHeader)-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0" }
-    ],
-    "Stop": [
-      { "type": "command", "command": "curl -sf -X POST `"${MoriUrl}/api/events/raw?client=${ClientName}`" $($AuthHeader)-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0" }
-    ],
-    "PreCompact": [
-      { "type": "command", "command": "curl -sf -X POST `"${MoriUrl}/api/precompact?client=${ClientName}`" $($AuthHeader)-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0" }
-    ]
-  }
-}
-"@
-    return $config | ConvertFrom-Json
+    $authFlag = if ($ApiKey) { "-H `"X-Api-Key: $ApiKey`" " } else { "" }
+    $rawCmd = "curl -sf -X POST `"$MoriUrl/api/events/raw?client=$ClientName`" ${authFlag}-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0"
+    $compCmd = "curl -sf -X POST `"$MoriUrl/api/precompact?client=$ClientName`" ${authFlag}-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0"
+
+    $entry         = @([PSCustomObject]@{ type = "command"; command = $rawCmd })
+    $compactEntry  = @([PSCustomObject]@{ type = "command"; command = $compCmd })
+
+    return [PSCustomObject]@{
+        hooks = [PSCustomObject]@{
+            PostToolUse        = $entry
+            PostToolUseFailure = $entry
+            UserPromptSubmit   = $entry
+            Stop               = $entry
+            PreCompact         = $compactEntry
+        }
+    }
 }
 
-function Merge-JsonFile {
-    param([string]$Path, [PSCustomObject]$NewConfig)
+# Merge mcpServers.mori into a JSON file, creating the file if absent.
+function Merge-McpFile {
+    param([string]$Path, [PSCustomObject]$MoriServer)
 
     $dir = Split-Path $Path -Parent
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
     if (Test-Path $Path) {
         try {
-            $RawContent = Get-Content $Path -Raw -Encoding UTF8
-            if ([string]::IsNullOrWhiteSpace($RawContent)) {
-                $NewConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $Path -Encoding UTF8
+            $raw = Get-Content $Path -Raw -Encoding UTF8
+            if ([string]::IsNullOrWhiteSpace($raw)) {
+                $fresh = [PSCustomObject]@{ mcpServers = [PSCustomObject]@{ mori = $MoriServer } }
+                Write-Utf8File $Path ($fresh | ConvertTo-Json -Depth 10)
                 Write-Host "  Created $Path (was empty)." -ForegroundColor Cyan
             } else {
-                $Existing = $RawContent | ConvertFrom-Json
-                if ($null -eq $Existing) { $Existing = [PSCustomObject]@{} }
+                $existing = $raw | ConvertFrom-Json
+                if ($null -eq $existing) { $existing = [PSCustomObject]@{} }
 
-                # Merge mcpServers.mori
-                if ($null -eq $Existing.mcpServers) {
-                    $Existing | Add-Member -MemberType NoteProperty -Name "mcpServers" -Value $NewConfig.mcpServers
+                if ($null -eq $existing.mcpServers) {
+                    $existing | Add-Member -MemberType NoteProperty -Name "mcpServers" -Value ([PSCustomObject]@{ mori = $MoriServer })
+                } elseif ($existing.mcpServers -is [System.Management.Automation.PSCustomObject]) {
+                    $existing.mcpServers | Add-Member -MemberType NoteProperty -Name "mori" -Value $MoriServer -Force
                 } else {
-                    if ($Existing.mcpServers -is [System.Management.Automation.PSCustomObject]) {
-                        $Existing.mcpServers | Add-Member -MemberType NoteProperty -Name "mori" -Value $NewConfig.mcpServers.mori -Force
-                    } else {
-                        $Existing.mcpServers = $NewConfig.mcpServers
-                    }
+                    $existing.mcpServers = [PSCustomObject]@{ mori = $MoriServer }
                 }
 
-                # Merge hooks (if present in the new config)
-                if ($NewConfig.PSObject.Properties.Name -contains "hooks") {
-                    if ($null -eq $Existing.hooks) {
-                        $Existing | Add-Member -MemberType NoteProperty -Name "hooks" -Value $NewConfig.hooks
-                    } else {
-                        foreach ($hookEvent in $NewConfig.hooks.PSObject.Properties) {
-                            $Existing.hooks | Add-Member -MemberType NoteProperty -Name $hookEvent.Name -Value $hookEvent.Value -Force
-                        }
-                    }
-                }
-
-                $Existing | ConvertTo-Json -Depth 10 | Set-Content -Path $Path -Encoding UTF8
+                Write-Utf8File $Path ($existing | ConvertTo-Json -Depth 10)
                 Write-Host "  Updated $Path" -ForegroundColor Cyan
             }
         } catch {
             Write-Host "  Warning: Failed to parse existing $Path. Overwriting..." -ForegroundColor Yellow
-            $NewConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $Path -Encoding UTF8
+            $fresh = [PSCustomObject]@{ mcpServers = [PSCustomObject]@{ mori = $MoriServer } }
+            Write-Utf8File $Path ($fresh | ConvertTo-Json -Depth 10)
         }
     } else {
-        $NewConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $Path -Encoding UTF8
+        $fresh = [PSCustomObject]@{ mcpServers = [PSCustomObject]@{ mori = $MoriServer } }
+        Write-Utf8File $Path ($fresh | ConvertTo-Json -Depth 10)
+        Write-Host "  Created $Path" -ForegroundColor Cyan
+    }
+}
+
+# Merge hooks into settings.json, creating the file if absent.
+function Merge-HooksFile {
+    param([string]$Path, [PSCustomObject]$HooksConfig)
+
+    $dir = Split-Path $Path -Parent
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+
+    if (Test-Path $Path) {
+        try {
+            $raw = Get-Content $Path -Raw -Encoding UTF8
+            if ([string]::IsNullOrWhiteSpace($raw)) {
+                Write-Utf8File $Path ($HooksConfig | ConvertTo-Json -Depth 10)
+                Write-Host "  Created $Path (was empty)." -ForegroundColor Cyan
+            } else {
+                $existing = $raw | ConvertFrom-Json
+                if ($null -eq $existing) { $existing = [PSCustomObject]@{} }
+
+                if ($null -eq $existing.hooks) {
+                    $existing | Add-Member -MemberType NoteProperty -Name "hooks" -Value $HooksConfig.hooks
+                } else {
+                    foreach ($hookEvent in $HooksConfig.hooks.PSObject.Properties) {
+                        $existing.hooks | Add-Member -MemberType NoteProperty -Name $hookEvent.Name -Value $hookEvent.Value -Force
+                    }
+                }
+
+                Write-Utf8File $Path ($existing | ConvertTo-Json -Depth 10)
+                Write-Host "  Updated $Path" -ForegroundColor Cyan
+            }
+        } catch {
+            Write-Host "  Warning: Failed to parse existing $Path. Overwriting..." -ForegroundColor Yellow
+            Write-Utf8File $Path ($HooksConfig | ConvertTo-Json -Depth 10)
+        }
+    } else {
+        Write-Utf8File $Path ($HooksConfig | ConvertTo-Json -Depth 10)
         Write-Host "  Created $Path" -ForegroundColor Cyan
     }
 }
@@ -196,7 +222,6 @@ function Deploy-Skills {
         return
     }
 
-    # Check if skills already exist
     if (Test-Path $SkillsDir) {
         $existingItems = Get-ChildItem -Path $SkillsDir
         if ($existingItems.Count -gt 0) {
@@ -218,7 +243,7 @@ function Deploy-Skills {
             } elseif ($Line -match "^-\s+description:\s*(.*)$") {
                 $Desc = $Matches[1].Trim()
             } elseif ($Line -match "^\s*$" -and $Name -eq "" -and $Desc -eq "") {
-                # skip
+                # skip blank lines before metadata
             } else {
                 $RestOfLines += $Line
             }
@@ -227,56 +252,43 @@ function Deploy-Skills {
         if ($Name -eq "") { $Name = $File.BaseName.Replace(".skill", "") }
 
         $EscapedDesc = $Desc.Replace('"', '\"')
-        $SkillContent = @"
----
-name: mori-$Name
-description: "$EscapedDesc"
----
-
-"@
-        $SkillContent += ($RestOfLines -join "`r`n").Trim()
+        $SkillContent = "---`nname: mori-$Name`ndescription: `"$EscapedDesc`"`n---`n`n"
+        $SkillContent += ($RestOfLines -join "`n").Trim()
 
         $SkillFolder = "$SkillsDir\mori-$Name"
         New-Item -ItemType Directory -Force -Path $SkillFolder | Out-Null
-        Set-Content -Path "$SkillFolder\SKILL.md" -Value $SkillContent -Encoding UTF8
+        Write-Utf8File "$SkillFolder\SKILL.md" $SkillContent
         Write-Host "  Deployed skill: mori-$Name" -ForegroundColor Cyan
     }
 }
 
 # ---- Step 1: MCP config for Cursor ----
 Write-Host "[1/3] Configuring MCP server..." -ForegroundColor Yellow
-
-# Prefer global config, fall back to project-level
-$CursorMcpPath = "$CursorGlobalDir\mcp.json"
-if (-not (Test-Path $CursorGlobalDir)) {
-    $CursorMcpPath = "$CursorProjectDir\mcp.json"
-}
+$CursorMcpPath = "$CursorDir\mcp.json"
 $McpConfig = Get-MoriMcpConfig
-Merge-JsonFile -Path $CursorMcpPath -NewConfig $McpConfig
+Merge-McpFile -Path $CursorMcpPath -MoriServer $McpConfig.mcpServers.mori
 
 # ---- Step 2: Event capture hooks ----
 Write-Host "[2/3] Setting up event capture hooks..." -ForegroundColor Yellow
-
 $ClaudeDir = "$env:USERPROFILE\.claude"
 $HooksFile = "$ClaudeDir\settings.json"
 $HooksConfig = Get-MoriHooksConfig
 
 if (-not (Test-Path $HooksFile)) {
-    $HooksConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $HooksFile -Encoding UTF8
+    New-Item -ItemType Directory -Force -Path $ClaudeDir | Out-Null
+    Write-Utf8File $HooksFile ($HooksConfig | ConvertTo-Json -Depth 10)
     Write-Host "  Created $HooksFile with Mori event capture hooks" -ForegroundColor Cyan
 } else {
     $rawContent = Get-Content $HooksFile -Raw -Encoding UTF8
     if ($rawContent -like "*mori*" -or $rawContent -like "*8968*") {
         Write-Host "  Skipped — $HooksFile already has Mori hooks" -ForegroundColor Cyan
     } else {
-        # File exists but no Mori hooks — merge
-        Merge-JsonFile -Path $HooksFile -NewConfig $HooksConfig
+        Merge-HooksFile -Path $HooksFile -HooksConfig $HooksConfig
     }
 }
 
 # ---- Step 3: Deploy skills ----
 Write-Host "[3/3] Deploying skills..." -ForegroundColor Yellow
-
 $SkillsDir = "$ClaudeDir\skills"
 Deploy-Skills -SkillsDir $SkillsDir
 
