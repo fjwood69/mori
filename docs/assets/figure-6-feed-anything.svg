@@ -1,0 +1,122 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="430" viewBox="0 0 900 430" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace">
+  
+  <defs><pattern id="g6" width="20" height="20" patternUnits="userSpaceOnUse">
+    <line x1="20" y1="0" x2="20" y2="20" stroke="rgba(0,0,0,0.04)" stroke-width="1"></line>
+    <line x1="0" y1="20" x2="20" y2="20" stroke="rgba(0,0,0,0.04)" stroke-width="1"></line>
+  </pattern></defs>
+  <rect width="900" height="430" fill="#e8eae1"></rect>
+  <rect width="900" height="430" fill="url(#g6)"></rect>
+  <g stroke="#d6d2c5" stroke-width="1" fill="none">
+  <path d="M12 22 L12 12 L22 12"></path><path d="M878 12 L888 12 L888 22"></path>
+  <path d="M12 408 L12 418 L22 418 M878 418 L888 418 L888 408"></path>
+</g>
+
+  
+  <text x="40" y="72" font-size="28" font-weight="500" letter-spacing="-0.04em" fill="#112418">Feed anything. Remember everything.</text>
+  <text x="860" y="56" text-anchor="end" font-size="10" letter-spacing="0.08em" fill="#5a5f5b">SOURCES → INGEST → MEMORY</text>
+
+  
+  <text x="40" y="138" font-size="10" letter-spacing="0.14em" fill="#2a2f2c">SOURCES</text>
+  <text x="480" y="138" text-anchor="middle" font-size="10" letter-spacing="0.14em" fill="#8a6420">/ INGEST · DISTIL</text>
+  <text x="860" y="138" text-anchor="end" font-size="10" letter-spacing="0.14em" fill="#2a2f2c">MEMORY STORE</text>
+
+  
+  <line x1="270" y1="152" x2="270" y2="380" stroke="#5a5f5b" stroke-width="0.7" stroke-dasharray="2 4" opacity="0.6"></line>
+  <line x1="632" y1="152" x2="632" y2="380" stroke="#5a5f5b" stroke-width="0.7" stroke-dasharray="2 4" opacity="0.6"></line>
+
+  
+  <g transform="translate(40 152)">
+      <rect width="200" height="32" fill="rgba(255,255,255,0.55)" stroke="#5a5f5b" stroke-width="1"></rect>
+      <g transform="translate(8 7)"><g stroke="#112418" stroke-width="1.4" fill="none" stroke-linejoin="round">
+    <path d="M2 2 L12 2 L16 6 L16 16 L2 16 Z"></path>
+    <path d="M12 2 L12 6 L16 6"></path>
+    <line x1="5" y1="10" x2="13" y2="10" stroke-width="1"></line>
+    <line x1="5" y1="13" x2="11" y2="13" stroke-width="1"></line>
+  </g></g>
+      <text x="36" y="20" font-size="11" fill="#112418" letter-spacing="0.01em">PDF documents</text>
+    </g><g transform="translate(40 188)">
+      <rect width="200" height="32" fill="rgba(255,255,255,0.55)" stroke="#5a5f5b" stroke-width="1"></rect>
+      <g transform="translate(8 7)"><g stroke="#112418" stroke-width="1.4" fill="none" stroke-linejoin="round">
+    <rect x="1" y="5" width="16" height="11" rx="1"></rect>
+    <path d="M6 5 L7.5 3 L10.5 3 L12 5"></path>
+    <circle cx="9" cy="10.5" r="3"></circle>
+    <circle cx="14" cy="8" r="0.7" fill="#112418"></circle>
+  </g></g>
+      <text x="36" y="20" font-size="11" fill="#112418" letter-spacing="0.01em">images · whiteboards</text>
+    </g><g transform="translate(40 224)">
+      <rect width="200" height="32" fill="rgba(255,255,255,0.55)" stroke="#5a5f5b" stroke-width="1"></rect>
+      <g transform="translate(8 7)"><g stroke="#112418" stroke-width="1.4" fill="none" stroke-linejoin="round">
+    <path d="M2 3 L16 3 L16 12 L9 12 L6 15 L6 12 L2 12 Z"></path>
+    <line x1="5" y1="6.5" x2="13" y2="6.5" stroke-width="1"></line>
+    <line x1="5" y1="9" x2="11" y2="9" stroke-width="1"></line>
+  </g></g>
+      <text x="36" y="20" font-size="11" fill="#112418" letter-spacing="0.01em">CC transcripts · .jsonl</text>
+    </g><g transform="translate(40 260)">
+      <rect width="200" height="32" fill="rgba(255,255,255,0.55)" stroke="#5a5f5b" stroke-width="1"></rect>
+      <g transform="translate(8 7)"><g stroke="#112418" stroke-width="1.4" fill="none">
+    <circle cx="4" cy="3" r="1.6"></circle>
+    <circle cx="4" cy="9" r="1.6"></circle>
+    <circle cx="4" cy="15" r="1.6"></circle>
+    <circle cx="13" cy="9" r="1.6"></circle>
+    <line x1="4" y1="4.6" x2="4" y2="7.4"></line>
+    <line x1="4" y1="10.6" x2="4" y2="13.4"></line>
+    <path d="M5.5 9 L11.4 9"></path>
+  </g></g>
+      <text x="36" y="20" font-size="11" fill="#112418" letter-spacing="0.01em">git history</text>
+    </g><g transform="translate(40 296)">
+      <rect width="200" height="32" fill="rgba(255,255,255,0.55)" stroke="#5a5f5b" stroke-width="1"></rect>
+      <g transform="translate(8 7)"><g stroke="#112418" stroke-width="1.4" fill="none" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M6 4 L2 9 L6 14"></path>
+    <path d="M12 4 L16 9 L12 14"></path>
+    <line x1="11" y1="3" x2="7" y2="15"></line>
+  </g></g>
+      <text x="36" y="20" font-size="11" fill="#112418" letter-spacing="0.01em">text · code</text>
+    </g>
+
+  
+  <path d="M242 168 C 341 168, 371 270, 444 270" stroke="#5a5f5b" stroke-width="1.1" fill="none" opacity="0.75"></path><path d="M242 204 C 341 204, 371 270, 444 270" stroke="#5a5f5b" stroke-width="1.1" fill="none" opacity="0.75"></path><path d="M242 240 C 341 240, 371 270, 444 270" stroke="#5a5f5b" stroke-width="1.1" fill="none" opacity="0.75"></path><path d="M242 276 C 341 276, 371 270, 444 270" stroke="#5a5f5b" stroke-width="1.1" fill="none" opacity="0.75"></path><path d="M242 312 C 341 312, 371 270, 444 270" stroke="#5a5f5b" stroke-width="1.1" fill="none" opacity="0.75"></path>
+
+  
+  <circle cx="480" cy="270" r="36" fill="#e6c882" opacity="0.32"></circle>
+  <circle cx="480" cy="270" r="22" fill="none" stroke="#8a6420" stroke-width="1.2" stroke-dasharray="2 4" opacity="0.9"></circle>
+  <circle cx="480" cy="270" r="6" fill="#c89a3a"></circle>
+  <text x="480" y="322" text-anchor="middle" font-size="11" font-weight="500" letter-spacing="0.18em" fill="#8a6420">/ INGEST</text>
+  <text x="480" y="336" text-anchor="middle" font-size="11" letter-spacing="0.02em" fill="#2a2f2c">distil</text>
+
+  
+  
+    <line x1="516" y1="270" x2="658" y2="207" stroke="#112418" stroke-width="1.4" opacity="0.85"></line>
+  
+    <line x1="516" y1="270" x2="658" y2="241" stroke="#112418" stroke-width="1.4" opacity="0.85"></line>
+  
+    <line x1="516" y1="270" x2="658" y2="279" stroke="#112418" stroke-width="1.4" opacity="0.85"></line>
+  
+
+  
+  
+    <rect x="660" y="192" width="200" height="30" fill="rgba(255,255,255,0.4)" stroke="#5a5f5b" stroke-width="1.2" stroke-dasharray="2 2"></rect>
+    
+    <text x="670" y="211" font-size="11" font-weight="500" letter-spacing="0.04em" fill="#1a1f1c">ephemeral</text>
+    <text x="850" y="211" text-anchor="end" font-size="9" fill="#5a5f5b">preview · dry-run</text>
+  
+    <rect x="660" y="226" width="200" height="30" fill="#ebe7dc" stroke="#1a3a2a" stroke-width="1.2"></rect>
+    
+    <text x="670" y="245" font-size="11" font-weight="500" letter-spacing="0.04em" fill="#112418">working</text>
+    <text x="850" y="245" text-anchor="end" font-size="9" fill="#1a3a2a">reviewed</text>
+  
+    <rect x="660" y="264" width="200" height="30" fill="#112418"></rect>
+    <rect x="857" y="264" width="3" height="30" fill="#c89a3a"></rect>
+    <text x="670" y="283" font-size="11" font-weight="500" letter-spacing="0.04em" fill="#f3f0e8">canonical</text>
+    <text x="850" y="283" text-anchor="end" font-size="9" fill="#e6c882">earned</text>
+  
+
+  
+  <line x1="40" y1="396" x2="860" y2="396" stroke="#5a5f5b" stroke-width="1" opacity="0.5"></line>
+  <text x="48" y="416" font-size="11" fill="#c89a3a">·</text>
+  <text x="62" y="416" font-size="11" fill="#2a2f2c">preview free</text>
+  <text x="240" y="416" font-size="11" fill="#c89a3a">·</text>
+  <text x="254" y="416" font-size="11" fill="#2a2f2c">dry-run before committing</text>
+  <text x="540" y="416" font-size="11" fill="#c89a3a">·</text>
+  <text x="554" y="416" font-size="11" fill="#2a2f2c">SHA256 dedup</text>
+</svg>
