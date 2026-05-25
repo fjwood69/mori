@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-ARG PYTHON_VERSION=3.12.8
+ARG PYTHON_VERSION=3.14.5
 
 # =============================================================================
 # Stage 1: Builder — Install dependencies into virtual env
