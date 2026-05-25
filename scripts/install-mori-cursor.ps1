@@ -19,7 +19,7 @@ Write-Host "--- Mori — Cursor Bridge Setup Wizard ---" -ForegroundColor Cyan
 
 # URL
 if (-not $PSBoundParameters.ContainsKey('MoriUrl')) {
-    $PromptUrl = Read-Host "Enter Mori Server URL [http://localhost:8968] (e.g. http://192.168.0.100:8968)"
+    $PromptUrl = Read-Host -Prompt "Enter Mori Server URL e.g. http://192.168.0.100:8968"
     if ([string]::IsNullOrWhiteSpace($PromptUrl)) {
         $MoriUrl = "http://localhost:8968"
     } else {
@@ -36,7 +36,7 @@ if (-not $PSBoundParameters.ContainsKey('ApiKey')) {
 # Client name
 if (-not $PSBoundParameters.ContainsKey('ClientName')) {
     $DefaultClient = $env:COMPUTERNAME
-    $PromptClient = Read-Host "Enter Client Name [$DefaultClient]"
+    $PromptClient = Read-Host -Prompt "Enter Client Name [$DefaultClient]"
     if ([string]::IsNullOrWhiteSpace($PromptClient)) {
         $ClientName = $DefaultClient
     } else {
@@ -62,7 +62,7 @@ $CursorInstalled = (Test-Path "$env:APPDATA\Cursor") -or (Test-Path $CursorProje
 if (-not $CursorInstalled) {
     Write-Host "Warning: Cursor does not appear to be installed." -ForegroundColor Yellow
     if (-not $Force) {
-        $Choice = Read-Host "Proceed anyway? (Y/N)"
+        $Choice = Read-Host -Prompt "Proceed anyway? (Y/N)"
         if ($Choice -notmatch "^[yY]") {
             Write-Host "Installation aborted." -ForegroundColor Red
             exit
@@ -85,7 +85,7 @@ try {
 }
 
 if (-not $Connected -and -not $Force) {
-    $Choice = Read-Host "Health check failed. Proceed anyway? (Y/N)"
+    $Choice = Read-Host -Prompt "Health check failed. Proceed anyway? (Y/N)"
     if ($Choice -notmatch "^[yY]") {
         Write-Host "Installation aborted." -ForegroundColor Red
         exit
