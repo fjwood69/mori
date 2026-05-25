@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mori": {
+      "type": "http",
+      "url": "http://YOUR_MORI_HOST:8968/mcp"
+    }
+  }
+}

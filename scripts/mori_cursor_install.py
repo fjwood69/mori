@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""Helpers for install-mori-cursor.sh — MCP merge, settings merge, skills, doctor."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+HOOK_EVENTS = (
+    "PostToolUse",
+    "PostToolUseFailure",
+    "UserPromptSubmit",
+    "Stop",
+    "PreCompact",
+)
+
+MORI_MCP_ALLOW = [
+    "mcp__mori__brief",
+    "mcp__mori__memory_list",
+    "mcp__mori__memory_read",
+    "mcp__mori__memory_search",
+    "mcp__mori__memory_write",
+    "mcp__mori__memory_req",
+    "mcp__mori__dream_run",
+    "mcp__mori__dream_status",
+    "mcp__mori__consult_advisor",
+    "mcp__mori__nats_pub",
+    "mcp__mori__nats_sub",
+    "mcp__mori__nats_ping",
+    "mcp__mori__update",
+]
+
+
+def _is_mori_command(cmd: str) -> bool:
+    return (
+        "mori-ship-event" in cmd
+        or "/api/events/raw" in cmd
+        or "/api/precompact" in cmd
+    )
+
+
+def _hook_command(shipper: str, url: str, client: str, api_key: str, mode: str) -> str:
+    if shipper.lower().endswith(".ps1"):
+        api_flag = f' -ApiKey "{api_key}"' if api_key else ""
+        return (
+            f'powershell -NoProfile -ExecutionPolicy Bypass -File "{shipper}" '
+            f'-MoriUrl "{url}" -Client "{client}"{api_flag} -Mode {mode}'
+        )
+    parts = [f'"{shipper}"', f'--url "{url}"', f'--client "{client}"']
+    if api_key:
+        parts.append(f'--api-key "{api_key}"')
+    parts.append(f"--mode {mode}")
+    return " ".join(parts)
+
+
+def _update_entry_command(entry: dict[str, Any], new_cmd: str) -> bool:
+    if "hooks" in entry and isinstance(entry["hooks"], list):
+        for h in entry["hooks"]:
+            if h.get("type") == "command" and _is_mori_command(h.get("command", "")):
+                h["command"] = new_cmd
+                return True
+        entry["hooks"].insert(0, {"type": "command", "command": new_cmd})
+        return True
+    if entry.get("type") == "command" and _is_mori_command(entry.get("command", "")):
+        entry["command"] = new_cmd
+        return True
+    return False
+
+
+def _merge_hook_list(existing: list[Any], new_cmd: str) -> list[Any]:
+    if not isinstance(existing, list):
+        existing = []
+
+    updated = False
+    for entry in existing:
+        if isinstance(entry, dict):
+            if _update_entry_command(entry, new_cmd):
+                updated = True
+
+    if not updated:
+        existing.insert(0, {"type": "command", "command": new_cmd})
+    return existing
+
+
+def merge_settings(
+    settings_path: Path,
+    shipper: str,
+    mori_url: str,
+    client: str,
+    api_key: str,
+) -> None:
+    """Merge Mori shipper hooks and MCP permissions into settings.json."""
+    raw_cmd = _hook_command(shipper, mori_url, client, api_key, "raw")
+    precompact_cmd = _hook_command(shipper, mori_url, client, api_key, "precompact")
+
+    if settings_path.is_file():
+        with settings_path.open(encoding="utf-8") as f:
+            settings: dict[str, Any] = json.load(f)
+    else:
+        settings = {}
+
+    hooks = settings.setdefault("hooks", {})
+    for event in HOOK_EVENTS:
+        cmd = precompact_cmd if event == "PreCompact" else raw_cmd
+        hooks[event] = _merge_hook_list(hooks.get(event, []), cmd)
+
+    perms = settings.setdefault("permissions", {})
+    allow = perms.setdefault("allow", [])
+    if not isinstance(allow, list):
+        allow = []
+        perms["allow"] = allow
+    for tool in MORI_MCP_ALLOW:
+        if tool not in allow:
+            allow.append(tool)
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    with settings_path.open("w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+
+
+def merge_mcp(mcp_path: Path, mori_url: str) -> None:
+    mori_server = {"type": "http", "url": f"{mori_url.rstrip('/')}/mcp"}
+    if mcp_path.is_file() and mcp_path.stat().st_size > 0:
+        with mcp_path.open(encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = {}
+    servers = data.setdefault("mcpServers", {})
+    servers["mori"] = mori_server
+    mcp_path.parent.mkdir(parents=True, exist_ok=True)
+    with mcp_path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def _parse_skill_md(path: Path) -> tuple[str, str, str]:
+    name = ""
+    desc = ""
+    body_lines: list[str] = []
+    in_body = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if re.match(r"^-\s+name:\s*", line):
+            name = re.sub(r"^-\s+name:\s*", "", line).strip()
+        elif re.match(r"^-\s+description:\s*", line):
+            desc = re.sub(r"^-\s+description:\s*", "", line).strip()
+        elif not in_body and not name and not desc and not line.strip():
+            continue
+        else:
+            in_body = True
+            body_lines.append(line)
+    if not name:
+        name = path.stem.replace(".skill", "")
+    return name, desc, body_lines
+
+
+def deploy_skills(source_dir: Path, dest_dir: Path, upgrade: bool) -> int:
+    if not source_dir.is_dir():
+        print(f"  Warning: skills source not found: {source_dir}", file=sys.stderr)
+        return 0
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for path in sorted(source_dir.glob("*.skill.md")):
+        name, desc, body_lines = _parse_skill_md(path)
+        folder = dest_dir / f"mori-{name}"
+        skill_file = folder / "SKILL.md"
+        if skill_file.exists() and not upgrade:
+            continue
+        folder.mkdir(parents=True, exist_ok=True)
+        escaped = desc.replace('"', '\\"')
+        content = "\n".join(body_lines).rstrip() + "\n"
+        skill_file.write_text(
+            f'---\nname: mori-{name}\ndescription: "{escaped}"\n---\n\n{content}',
+            encoding="utf-8",
+        )
+        print(f"  Deployed skill: mori-{name}")
+        count += 1
+    return count
+
+
+def _mcp_paths() -> tuple[Path, Path]:
+    home = Path.home()
+    if sys.platform == "darwin":
+        mcp = home / "Library/Application Support/Cursor/mcp.json"
+    elif sys.platform == "win32":
+        mcp = home / ".cursor" / "mcp.json"
+    else:
+        mcp = home / ".cursor/mcp.json"
+    settings = home / ".claude" / "settings.json"
+    return mcp, settings
+
+
+def _read_mori_url(mcp_path: Path) -> str | None:
+    if not mcp_path.is_file():
+        return None
+    try:
+        data = json.loads(mcp_path.read_text(encoding="utf-8"))
+        url = data.get("mcpServers", {}).get("mori", {}).get("url", "")
+        return url.removesuffix("/mcp") if url else None
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
+def _http_get(url: str, timeout: int = 5) -> tuple[int, str]:
+    req = urllib.request.Request(url)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", errors="replace")[:500]
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", errors="replace")[:500]
+    except OSError as e:
+        return 0, str(e)
+
+
+def doctor(mori_url: str | None, client: str) -> int:
+    mcp_path, settings_path = _mcp_paths()
+    skills_dir = Path.home() / ".claude" / "skills"
+    errors = 0
+
+    print("--- Mori Cursor doctor ---\n")
+
+    if mcp_path.is_file():
+        print(f"OK  MCP config: {mcp_path}")
+        url = _read_mori_url(mcp_path)
+        if url:
+            print(f"    mori URL: {url}")
+            mori_url = mori_url or url
+        else:
+            print("FAIL  mcp.json missing mcpServers.mori.url")
+            errors += 1
+    else:
+        print(f"FAIL  MCP config missing: {mcp_path}")
+        print("      Run: ./scripts/install-mori-cursor.sh --url <server>")
+        errors += 1
+
+    if mori_url:
+        code, body = _http_get(f"{mori_url.rstrip('/')}/health")
+        if code == 200 and "ok" in body:
+            print(f"OK  Server health: {mori_url}/health")
+        else:
+            print(f"FAIL  Server health ({code}): {mori_url}/health — {body[:120]}")
+            errors += 1
+
+        code, body = _http_get(f"{mori_url.rstrip('/')}/api/events/health")
+        if code == 200:
+            print(f"OK  Events endpoint: {body.strip()[:80]}")
+        else:
+            print(f"WARN  Events health ({code})")
+    else:
+        print("SKIP  Server checks (no URL)")
+        errors += 1
+
+    if settings_path.is_file():
+        text = settings_path.read_text(encoding="utf-8")
+        if "mori-ship-event" in text or "/api/events/raw" in text:
+            print(f"OK  Event hooks present in {settings_path}")
+        else:
+            print(f"WARN  No Mori hooks in {settings_path}")
+            errors += 1
+        if any(t in text for t in MORI_MCP_ALLOW[:3]):
+            print("OK  MCP tool permissions seeded")
+        else:
+            print("WARN  permissions.allow may be missing Mori MCP tools")
+    else:
+        print(f"FAIL  settings.json missing: {settings_path}")
+        errors += 1
+
+    mori_skills = list(skills_dir.glob("mori-*/SKILL.md")) if skills_dir.is_dir() else []
+    brief_skill = skills_dir / "brief" / "SKILL.md"
+    if mori_skills or brief_skill.is_file():
+        print(f"OK  Skills: {len(mori_skills)} mori-* + {'brief' if brief_skill.is_file() else 'no brief'}")
+    else:
+        print(f"WARN  No mori skills under {skills_dir}")
+
+    print(f"\nClient tag for events: {client}")
+    print("\nReminder: shared memory lives on the Mori server (GCE/homelab), not on this machine.")
+    if errors:
+        print(f"\nDoctor: {errors} check(s) failed.")
+        return 1
+    print("\nDoctor: all critical checks passed. Reload Cursor window if MCP was just installed.")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Mori Cursor install helpers")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_mcp = sub.add_parser("merge-mcp")
+    p_mcp.add_argument("--mcp-path", required=True)
+    p_mcp.add_argument("--url", required=True)
+
+    p_set = sub.add_parser("merge-settings")
+    p_set.add_argument("--settings-path", required=True)
+    p_set.add_argument("--shipper", required=True)
+    p_set.add_argument("--url", required=True)
+    p_set.add_argument("--client", required=True)
+    p_set.add_argument("--api-key", default="")
+
+    p_sk = sub.add_parser("deploy-skills")
+    p_sk.add_argument("--source", required=True)
+    p_sk.add_argument("--dest", required=True)
+    p_sk.add_argument("--upgrade", action="store_true")
+
+    p_doc = sub.add_parser("doctor")
+    p_doc.add_argument("--url", default="")
+    p_doc.add_argument("--client", default="cursor")
+
+    args = parser.parse_args()
+
+    if args.cmd == "merge-mcp":
+        merge_mcp(Path(args.mcp_path), args.url)
+        return 0
+    if args.cmd == "merge-settings":
+        merge_settings(
+            Path(args.settings_path),
+            args.shipper,
+            args.url,
+            args.client,
+            args.api_key,
+        )
+        return 0
+    if args.cmd == "deploy-skills":
+        n = deploy_skills(Path(args.source), Path(args.dest), args.upgrade)
+        if n == 0:
+            print("  No skills deployed (already present; use --upgrade-skills to refresh)")
+        return 0
+    if args.cmd == "doctor":
+        url = args.url or None
+        return doctor(url, args.client)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

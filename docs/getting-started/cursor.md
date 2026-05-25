@@ -49,6 +49,37 @@ Open your terminal and run:
 powershell -File scripts/install-mori-cursor.ps1 -MoriUrl "http://10.0.0.5:8968" -ApiKey "secret" -ClientName "my-host" -Force
 ```
 
+### Doctor and skill upgrades
+
+```bash
+# Verify MCP config, server health, hooks, and skills (no changes)
+./scripts/install-mori-cursor.sh --doctor --url "http://10.0.0.5:8968"
+
+# Refresh mori-* slash skills after a repo pull
+./scripts/install-mori-cursor.sh --upgrade-skills --url "http://10.0.0.5:8968"
+```
+
+```powershell
+powershell -File scripts/install-mori-cursor.ps1 -Doctor -MoriUrl "http://10.0.0.5:8968"
+powershell -File scripts/install-mori-cursor.ps1 -UpgradeSkills -MoriUrl "http://10.0.0.5:8968" -Force
+```
+
+Pure PowerShell on Windows — no Python required.
+
+---
+
+## Where shared memory lives
+
+**Not on your laptop.** Cursor reads and writes via the remote Mori server (`mori-advisor` on GCE, homelab, etc.). The installer only creates:
+
+| Local file | Purpose |
+|------------|---------|
+| `~/.cursor/mcp.json` | Points Agent MCP at `http://<server>:8968/mcp` |
+| `~/.claude/settings.json` | Hooks that **ship** session events to the server |
+| `~/.claude/skills/` | Slash-command workflows (`/brief`, `/wrap`, …) |
+
+Do not look for `memories.db` under `~/ai-stack` or the mori git clone — that is not the live store for Cursor users.
+
 ---
 
 ## What the Script Does
@@ -98,18 +129,7 @@ Translates all skills from the `skills/` folder into `SKILL.md` format and deplo
 
 ## MCP Server Config (Manual)
 
-If you prefer to configure manually rather than using the installer, create or edit `~/.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "mori": {
-      "type": "http",
-      "url": "http://localhost:8968/mcp"
-    }
-  }
-}
-```
+If you prefer to configure manually rather than using the installer, copy [.cursor/mcp.json.example](../../.cursor/mcp.json.example) to `~/.cursor/mcp.json` and set your server URL.
 
 Then manually add the event capture hooks to `~/.claude/settings.json` (see [examples/settings.json](../examples/settings.json)) and copy the skills from `skills/` to `~/.claude/skills/`.
 
@@ -117,15 +137,35 @@ Then manually add the event capture hooks to `~/.claude/settings.json` (see [exa
 
 ## Verify It's Working
 
-1. **Restart Cursor** after installation.
-2. Open the Cursor Agent panel.
-3. Type `/brief` — Mori should load shared memories into the conversation context.
-4. Check events are flowing:
+1. **Reload Cursor window** after installation (Command Palette → *Developer: Reload Window*).
+2. Run the doctor:
    ```bash
-   curl http://localhost:8968/api/events/health
+   ./scripts/install-mori-cursor.sh --doctor --url "http://<your-server>:8968"
    ```
-   This should show an event count that increments as you use Cursor.
-5. Type `/dream --status` — the dream pipeline state should be shown.
+   ```powershell
+   powershell -File scripts/install-mori-cursor.ps1 -Doctor -MoriUrl "http://<your-server>:8968"
+   ```
+3. Open the Cursor Agent panel → confirm **mori** is connected under MCP settings.
+4. Type `/brief` — should return memory counts and dream state from the server via MCP; follow with `/pensieve` or `memory_read` for detail as needed.
+5. Check events are flowing:
+   ```bash
+   curl http://<your-server>:8968/api/events/health
+   ```
+   Event count should increase as you use Cursor.
+6. Type `/dream --status` — dream pipeline state from the server.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|----------------|-----|
+| `/brief` works on Windows but not Linux | `~/.cursor/mcp.json` missing | Run `install-mori-cursor.sh`; reload window |
+| Agent guesses local `memories.db` paths | MCP not connected | Doctor + reload; memory is on the server only |
+| Hooks ship events but MCP tools missing | Half-install (hooks only) | Re-run installer; check `mcp.json` |
+| `jq parse error` during install (older script) | Nested Cursor hook JSON | Use current installer (`mori_cursor_install.py` merge) |
+| Slash commands not listed | Third-party skills off | Settings → Features → Third-party skills |
+| Stale `/brief` skill text | Skills not upgraded | `--upgrade-skills` |
 
 ---
 
