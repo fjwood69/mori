@@ -1,4 +1,4 @@
-# Windows installer script for Mori — Cline bridge
+﻿# Windows installer script for Mori  -  Cline bridge
 # Run from the root of the mori repository.
 #
 # Installs env vars, plugin registration, MCP config, and skills
@@ -13,7 +13,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "--- Mori — Cline Bridge Setup Wizard ---" -ForegroundColor Cyan
+Write-Host "--- Mori  -  Cline Bridge Setup Wizard ---" -ForegroundColor Cyan
 
 # URL
 if (-not $PSBoundParameters.ContainsKey('MoriUrl')) {
@@ -74,7 +74,7 @@ if (-not $Connected -and -not $Force) {
     }
 }
 
-Write-Host "`nSetting up Mori — Cline Bridge..." -ForegroundColor Green
+Write-Host "`nSetting up Mori  -  Cline Bridge..." -ForegroundColor Green
 
 $MoriRepoRoot = Resolve-Path "$PSScriptRoot\.."
 $PluginPath = "$MoriRepoRoot\extensions\mori-cline-plugin"
@@ -117,7 +117,7 @@ if (Get-Command "cline" -ErrorAction SilentlyContinue) {
             cline plugin install "$PluginPath"
             Write-Host "  Plugin registered via Cline CLI." -ForegroundColor Cyan
         } catch {
-            Write-Host "  Warning: cline plugin install failed — you may need to register manually." -ForegroundColor Yellow
+            Write-Host "  Warning: cline plugin install failed  -  you may need to register manually." -ForegroundColor Yellow
         }
     } else {
         Write-Host "  Warning: Plugin directory not found at $PluginPath" -ForegroundColor Yellow
@@ -254,8 +254,8 @@ description: "$EscapedDesc"
         Write-Host "  Deployed skill: mori-$Name" -ForegroundColor Cyan
     }
 } else {
-    Write-Host "  Warning: Source skills folder not found at $SourceSkillsDir — skipping." -ForegroundColor Yellow
+    Write-Host "  Warning: Source skills folder not found at $SourceSkillsDir  -  skipping." -ForegroundColor Yellow
 }
 
-Write-Host "`nMori — Cline Bridge installation complete!" -ForegroundColor Green
+Write-Host "`nMori  -  Cline Bridge installation complete!" -ForegroundColor Green
 Write-Host "Restart Cline / VS Code for the changes to take effect." -ForegroundColor Yellow
