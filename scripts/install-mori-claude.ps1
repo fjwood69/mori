@@ -1,4 +1,4 @@
-# Windows installer script for Mori — Claude Code bridge
+﻿# Windows installer script for Mori  -  Claude Code bridge
 # Run from the root of the mori repository.
 #
 # Installs MCP config + hooks + skills for Claude Code CLI
@@ -14,7 +14,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "--- Mori — Claude Code Bridge Setup Wizard ---" -ForegroundColor Cyan
+Write-Host "--- Mori  -  Claude Code Bridge Setup Wizard ---" -ForegroundColor Cyan
 
 # URL
 if (-not $PSBoundParameters.ContainsKey('MoriUrl')) {
@@ -89,7 +89,7 @@ if (-not $Connected -and -not $Force) {
     }
 }
 
-Write-Host "`nSetting up Mori — Claude Code Bridge..." -ForegroundColor Green
+Write-Host "`nSetting up Mori  -  Claude Code Bridge..." -ForegroundColor Green
 
 $MoriRepoRoot = Resolve-Path "$PSScriptRoot\.."
 $AuthHeader = if ($ApiKey) { "-H `"X-Api-Key: $ApiKey`" " } else { "" }
@@ -179,7 +179,7 @@ function Deploy-Skills {
 
     $SourceSkillsDir = "$MoriRepoRoot\skills"
     if (-not (Test-Path $SourceSkillsDir)) {
-        Write-Host "  Warning: Source skills folder not found at $SourceSkillsDir — skipping." -ForegroundColor Yellow
+        Write-Host "  Warning: Source skills folder not found at $SourceSkillsDir  -  skipping." -ForegroundColor Yellow
         return
     }
 
@@ -216,7 +216,7 @@ description: "$EscapedDesc"
         $SkillFolder = "$SkillsDir\mori-$Name"
         New-Item -ItemType Directory -Force -Path $SkillFolder | Out-Null
         Set-Content -Path "$SkillFolder\SKILL.md" -Value $SkillContent -Encoding UTF8
-        Write-Host "  Deployed skill: mori-$Name → $SkillFolder" -ForegroundColor Cyan
+        Write-Host "  Deployed skill: mori-$Name -> $SkillFolder" -ForegroundColor Cyan
     }
 }
 
@@ -290,4 +290,4 @@ switch ($Target.ToLower()) {
     default { Install-ForCli }
 }
 
-Write-Host "`nMori — Claude Code Bridge installation complete!" -ForegroundColor Green
+Write-Host "`nMori  -  Claude Code Bridge installation complete!" -ForegroundColor Green
