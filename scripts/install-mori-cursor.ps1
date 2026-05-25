@@ -29,7 +29,7 @@ if (-not $PSBoundParameters.ContainsKey('MoriUrl')) {
 
 # API key
 if (-not $PSBoundParameters.ContainsKey('ApiKey')) {
-    $PromptKey = Read-Host "Enter Mori API Key (optional, press Enter to skip)"
+    $PromptKey = Read-Host -Prompt "Enter Mori API Key (optional, press Enter to skip)"
     $ApiKey = $PromptKey
 }
 
@@ -294,4 +294,4 @@ Write-Host "   - Open Cursor Agent, type /brief -- shared memories should load"
 Write-Host "   - Run: curl $MoriUrl/health"
 Write-Host ""
 Write-Host "No Claude Code required - Mori creates ~/.claude/settings.json and"
-Write-Host "~/.claude/skills/ for you if they don't already exist."
+Write-Host "~/.claude/skills/ for you if they do not already exist."
