@@ -11,7 +11,8 @@ dist/
 # Local proposals
 examples/standards/VS Code Event Shipper — Proposal.md
 
-# Terraform
+# MCP config (device-specific)
+.mcp.json
 deploy/gcp/terraform.tfvars
 deploy/gcp/.terraform/
 deploy/gcp/*.tfstate
