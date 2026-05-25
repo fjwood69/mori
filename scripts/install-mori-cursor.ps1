@@ -1,9 +1,9 @@
-# Windows installer script for Mori — Cursor bridge
+﻿# Windows installer script for Mori  -  Cursor bridge
 # Run from the root of the mori repository.
 #
 # Installs MCP config for Cursor 2.4+, event capture hooks, and
 # Mori slash commands. Works whether or not Claude Code is installed
-# — Cursor loads hooks from ~/.claude/settings.json and skills from
+#  -  Cursor loads hooks from ~/.claude/settings.json and skills from
 # ~/.claude/skills/ natively.
 
 param(
@@ -15,7 +15,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "--- Mori — Cursor Bridge Setup Wizard ---" -ForegroundColor Cyan
+Write-Host "--- Mori  -  Cursor Bridge Setup Wizard ---" -ForegroundColor Cyan
 
 # URL
 if (-not $PSBoundParameters.ContainsKey('MoriUrl')) {
@@ -90,7 +90,7 @@ if (-not $Connected -and -not $Force) {
     }
 }
 
-Write-Host "`nSetting up Mori — Cursor Bridge..." -ForegroundColor Green
+Write-Host "`nSetting up Mori  -  Cursor Bridge..." -ForegroundColor Green
 
 $MoriRepoRoot = Resolve-Path "$PSScriptRoot\.."
 
@@ -218,14 +218,14 @@ function Deploy-Skills {
 
     $SourceSkillsDir = "$MoriRepoRoot\skills"
     if (-not (Test-Path $SourceSkillsDir)) {
-        Write-Host "  Warning: Source skills folder not found at $SourceSkillsDir — skipping." -ForegroundColor Yellow
+        Write-Host "  Warning: Source skills folder not found at $SourceSkillsDir  -  skipping." -ForegroundColor Yellow
         return
     }
 
     if (Test-Path $SkillsDir) {
         $existingItems = Get-ChildItem -Path $SkillsDir
         if ($existingItems.Count -gt 0) {
-            Write-Host "  Skipped — $SkillsDir already has skills" -ForegroundColor Cyan
+            Write-Host "  Skipped  -  $SkillsDir already has skills" -ForegroundColor Cyan
             return
         }
     }
@@ -281,7 +281,7 @@ if (-not (Test-Path $HooksFile)) {
 } else {
     $rawContent = Get-Content $HooksFile -Raw -Encoding UTF8
     if ($rawContent -like "*mori*" -or $rawContent -like "*8968*") {
-        Write-Host "  Skipped — $HooksFile already has Mori hooks" -ForegroundColor Cyan
+        Write-Host "  Skipped  -  $HooksFile already has Mori hooks" -ForegroundColor Cyan
     } else {
         Merge-HooksFile -Path $HooksFile -HooksConfig $HooksConfig
     }
@@ -292,7 +292,7 @@ Write-Host "[3/3] Deploying skills..." -ForegroundColor Yellow
 $SkillsDir = "$ClaudeDir\skills"
 Deploy-Skills -SkillsDir $SkillsDir
 
-Write-Host "`nMori — Cursor Bridge installation complete!" -ForegroundColor Green
+Write-Host "`nMori  -  Cursor Bridge installation complete!" -ForegroundColor Green
 Write-Host ""
 Write-Host "--- Post-Install Steps ---"
 Write-Host ""
