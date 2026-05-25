@@ -90,8 +90,7 @@ powershell -File scripts/install-mori-cursor.ps1
 | **NATS messaging** | Real-time cross-device awareness | `/nats` |
 | **Skill deployment** | Push slash commands to all devices in one step | `/update` |
 
-Full reference: [docs/reference/slash-commands.md](docs/reference/slash-commands.md) ·
-MCP tools: [docs/reference/mcp-tools.md](docs/reference/mcp-tools.md)
+Full reference: [docs/reference/slash-commands.md](docs/reference/slash-commands.md)
 
 ---
 
