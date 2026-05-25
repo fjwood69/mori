@@ -259,11 +259,18 @@ install_for_cli() {
 }
 
 install_for_vscode() {
-  local config_path="$HOME/.config/Code/User/settings.json"
-  local skills_dir="$HOME/.config/Code/User/skills"
+  local vscode_base
+  if [[ "$(uname)" == "Darwin" ]]; then
+    vscode_base="$HOME/Library/Application Support/Code/User"
+  else
+    vscode_base="$HOME/.config/Code/User"
+  fi
+
+  local config_path="$vscode_base/settings.json"
+  local skills_dir="$vscode_base/skills"
 
   # Check for VS Code profiles
-  local profiles_dir="$HOME/.config/Code/User/profiles"
+  local profiles_dir="$vscode_base/profiles"
   if [ -d "$profiles_dir" ]; then
     local profiles=()
     for p in "$profiles_dir"/*/; do
