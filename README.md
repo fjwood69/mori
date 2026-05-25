@@ -325,13 +325,13 @@ This means pushing an updated skill to every Claude Code instance is a single
 
 ### 7. Universal Ingestion (`/ingest`)
 
-![Feed Anything, Remember Everything](https://raw.githubusercontent.com/fjwood69/mori/4f7e3a984527d91bcc23db431bfae8089ce20006/docs/assets/figure-6-feed-anything.svg)
-
 New team members start cold. Long-lived projects have months of architecture
 decisions locked in PDFs, screenshots, git history, and old session transcripts.
 `/ingest` feeds any source material through the same distillation pipeline
 that powers the dream phase — extracting durable memories, deduplicating,
 and contradiction-scanning — so the store boots up informed rather than empty.
+
+![Feed Anything, Remember Everything](https://raw.githubusercontent.com/fjwood69/mori/4f7e3a984527d91bcc23db431bfae8089ce20006/docs/assets/figure-6-feed-anything.svg)
 
 ```
 # Preview what's in a repo (zero cost, no LLM):
