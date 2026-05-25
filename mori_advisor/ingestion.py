@@ -221,14 +221,21 @@ class IngestionPipeline:
     # ── Expand sources ──────────────────────────────────────────────────────
 
     def _expand_sources(self, sources: list[str]) -> list[Path]:
-        """Expand source strings into Paths, expanding directories."""
+        """Expand source strings into Paths, expanding directories into files."""
         paths: list[Path] = []
         for s in sources:
             p = Path(s).expanduser().resolve()
             if not p.exists():
                 logger.warning("Source not found: %s", p)
                 continue
-            paths.append(p)
+            if p.is_dir():
+                for file_path in sorted(p.rglob("*")):
+                    if file_path.is_file() and not any(
+                        part.startswith(".") for part in file_path.parts if part != "."
+                    ):
+                        paths.append(file_path)
+            else:
+                paths.append(p)
         return paths
 
     # ── Cost estimation ────────────────────────────────────────────────────
@@ -289,6 +296,16 @@ class IngestionPipeline:
 
     def _hash_file(self, path: Path) -> str:
         """Compute SHA256 hash of a file's contents."""
+        if path.is_dir():
+            # Hash directory contents collectively
+            sha = hashlib.sha256()
+            for fp in sorted(path.rglob("*")):
+                if fp.is_file():
+                    sha.update(str(fp.relative_to(path)).encode())
+                    with open(fp, "rb") as f:
+                        for chunk in iter(lambda: f.read(65536), b""):
+                            sha.update(chunk)
+            return sha.hexdigest()
         sha = hashlib.sha256()
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(65536), b""):
