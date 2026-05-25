@@ -1,4 +1,4 @@
-# Windows installer script for Mori Antigravity Bridge
+﻿# Windows installer script for Mori Antigravity Bridge
 # Run from the root of the mori repository.
 
 param(
