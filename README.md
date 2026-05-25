@@ -58,8 +58,12 @@ curl http://localhost:8968/health
 # Claude Code — automated installer:
 ./scripts/install-mori-claude.sh
 
+# Cursor — automated installer:
+./scripts/install-mori-cursor.sh
+
 # Windows:
 powershell -File scripts/install-mori-claude.ps1
+powershell -File scripts/install-mori-cursor.ps1
 ```
 
 ### Platform guides
@@ -67,6 +71,7 @@ powershell -File scripts/install-mori-claude.ps1
 | Platform | Installer | Full guide |
 |----------|-----------|------------|
 | Claude Code | `./scripts/install-mori-claude.sh` | [docs/getting-started/claude-code.md](docs/getting-started/claude-code.md) |
+| Cursor | `./scripts/install-mori-cursor.sh` | [docs/getting-started/cursor.md](docs/getting-started/cursor.md) |
 | Google Antigravity IDE | `./scripts/install-mori-antigravity.sh` | [docs/getting-started/antigravity.md](docs/getting-started/antigravity.md) |
 | Cline | `./scripts/install-mori-cline.sh` | [docs/getting-started/cline.md](docs/getting-started/cline.md) |
 
