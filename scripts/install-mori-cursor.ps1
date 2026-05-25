@@ -112,16 +112,17 @@ function Get-MoriMcpConfig {
     }
 }
 
-# Build hooks config as PSCustomObjects.
-# Avoids the here-string + ConvertFrom-Json approach, which fails when the
-# command strings contain double-quote characters that aren't JSON-escaped.
+# Build hooks config using the installed mori-ship-event.ps1 shipper.
+# This avoids curl, -d @-, /dev/null and other Unix-isms in hook commands.
 function Get-MoriHooksConfig {
-    $authFlag = if ($ApiKey) { "-H `"X-Api-Key: $ApiKey`" " } else { "" }
-    $rawCmd = "curl -sf -X POST `"$MoriUrl/api/events/raw?client=$ClientName`" ${authFlag}-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0"
-    $compCmd = "curl -sf -X POST `"$MoriUrl/api/precompact?client=$ClientName`" ${authFlag}-H `"Content-Type: application/json`" -d @- >nul 2>&1; exit 0"
+    $shipperPath = "$env:USERPROFILE\.claude\mori-ship-event.ps1"
+    $apiFlag = if ($ApiKey) { " -ApiKey `"$ApiKey`"" } else { "" }
+    $base = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$shipperPath`" -MoriUrl `"$MoriUrl`" -Client `"$ClientName`"${apiFlag}"
+    $rawCmd  = "$base -Mode raw"
+    $compCmd = "$base -Mode precompact"
 
-    $entry         = @([PSCustomObject]@{ type = "command"; command = $rawCmd })
-    $compactEntry  = @([PSCustomObject]@{ type = "command"; command = $compCmd })
+    $entry        = @([PSCustomObject]@{ type = "command"; command = $rawCmd })
+    $compactEntry = @([PSCustomObject]@{ type = "command"; command = $compCmd })
 
     return [PSCustomObject]@{
         hooks = [PSCustomObject]@{
@@ -272,18 +273,30 @@ Merge-McpFile -Path $CursorMcpPath -MoriServer $McpConfig.mcpServers.mori
 Write-Host "[2/3] Setting up event capture hooks..." -ForegroundColor Yellow
 $ClaudeDir = "$env:USERPROFILE\.claude"
 $HooksFile = "$ClaudeDir\settings.json"
+
+# Deploy the shipper script
+$ShipperSrc = "$PSScriptRoot\mori-ship-event.ps1"
+$ShipperDst = "$ClaudeDir\mori-ship-event.ps1"
+New-Item -ItemType Directory -Force -Path $ClaudeDir | Out-Null
+if (Test-Path $ShipperSrc) {
+    Copy-Item -Path $ShipperSrc -Destination $ShipperDst -Force
+    Write-Host "  Deployed mori-ship-event.ps1 to $ClaudeDir" -ForegroundColor Cyan
+} else {
+    Write-Host "  Warning: mori-ship-event.ps1 not found alongside installer - hooks will not work correctly." -ForegroundColor Yellow
+}
+
 $HooksConfig = Get-MoriHooksConfig
 
 if (-not (Test-Path $HooksFile)) {
-    New-Item -ItemType Directory -Force -Path $ClaudeDir | Out-Null
     Write-Utf8File $HooksFile ($HooksConfig | ConvertTo-Json -Depth 10)
     Write-Host "  Created $HooksFile with Mori event capture hooks" -ForegroundColor Cyan
 } else {
     $rawContent = Get-Content $HooksFile -Raw -Encoding UTF8
-    if ($rawContent -like "*mori*" -or $rawContent -like "*8968*") {
-        Write-Host "  Skipped  -  $HooksFile already has Mori hooks" -ForegroundColor Cyan
+    if ($rawContent -like "*mori-ship-event.ps1*") {
+        Write-Host "  Skipped  -  $HooksFile already has Mori shipper hooks" -ForegroundColor Cyan
     } else {
         Merge-HooksFile -Path $HooksFile -HooksConfig $HooksConfig
+        Write-Host "  Updated $HooksFile (replaced legacy or missing Mori hooks)" -ForegroundColor Cyan
     }
 }
 
@@ -307,3 +320,5 @@ Write-Host "   - Run: curl $MoriUrl/health"
 Write-Host ""
 Write-Host "No Claude Code required - Mori creates ~/.claude/settings.json and"
 Write-Host "~/.claude/skills/ for you if they do not already exist."
+Write-Host ""
+Write-Host "Hook failures are logged to: $env:TEMP\mori-hook.log"
