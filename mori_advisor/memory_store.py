@@ -1372,6 +1372,7 @@ class MemoryStore:
                 response = llm_consult(
                     system=prompt,
                     user=m["name"],
+                    vk="fast",
                     max_tokens=10,
                     temperature=0.0,
                 )
