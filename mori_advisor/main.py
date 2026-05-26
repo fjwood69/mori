@@ -1628,7 +1628,8 @@ async def log_event(request: Request) -> JSONResponse:
         return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
 
     try:
-        body = await request.json()
+        raw = await request.body()
+        body = json.loads(raw.decode("utf-8", errors="replace"))
         if not body:
             return JSONResponse({"status": "error", "error": "empty body"}, status_code=400)
 
@@ -1675,7 +1676,8 @@ async def log_event_raw(request: Request) -> JSONResponse:
         return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
 
     try:
-        body = await request.json()
+        raw = await request.body()
+        body = json.loads(raw.decode("utf-8", errors="replace"))
         if not body:
             return JSONResponse({"status": "skipped", "reason": "empty body"}, status_code=200)
 
