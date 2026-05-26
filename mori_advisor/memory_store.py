@@ -15,6 +15,7 @@ import difflib
 import json
 import logging
 import re
+import sqlite3
 import time
 from pathlib import Path
 
@@ -147,8 +148,12 @@ class MemoryStore:
             "  created_at TEXT NOT NULL DEFAULT (datetime('now'))"
             ")"
         )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_versions_name ON memory_versions(memory_name)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_versions_time ON memory_versions(created_at)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mem_versions_name ON memory_versions(memory_name)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mem_versions_time ON memory_versions(created_at)"
+        )
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS pending_writes ("
@@ -284,6 +289,7 @@ class MemoryStore:
     def count(self) -> int:
         """Total memory count."""
         import sqlite3
+
         try:
             conn = self._get_conn()
             try:
@@ -297,12 +303,11 @@ class MemoryStore:
     def pending_count(self) -> int:
         """Number of pending writes awaiting approval."""
         import sqlite3
+
         try:
             conn = self._get_conn()
             try:
-                cur = conn.execute(
-                    "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending'"
-                )
+                cur = conn.execute("SELECT COUNT(*) FROM pending_writes WHERE status = 'pending'")
                 return cur.fetchone()[0]
             finally:
                 conn.close()
@@ -312,12 +317,11 @@ class MemoryStore:
     def eviction_count(self) -> int:
         """Number of unresolved eviction queue entries."""
         import sqlite3
+
         try:
             conn = self._get_conn()
             try:
-                cur = conn.execute(
-                    "SELECT COUNT(*) FROM eviction_queue WHERE resolved = 0"
-                )
+                cur = conn.execute("SELECT COUNT(*) FROM eviction_queue WHERE resolved = 0")
                 return cur.fetchone()[0]
             finally:
                 conn.close()
@@ -367,9 +371,7 @@ class MemoryStore:
         try:
             conn = self._get_conn()
             try:
-                cur = conn.execute(
-                    "SELECT value FROM dreamer_config WHERE key = ?", (key,)
-                )
+                cur = conn.execute("SELECT value FROM dreamer_config WHERE key = ?", (key,))
                 row = cur.fetchone()
                 return row[0] if row else default
             finally:
@@ -419,7 +421,9 @@ class MemoryStore:
                     return True
         return False
 
-    def _snapshot_to_versions(self, name: str, version_note: str = "", *, _conn: sqlite3.Connection):
+    def _snapshot_to_versions(
+        self, name: str, version_note: str = "", *, _conn: sqlite3.Connection
+    ):
         """Snapshot current memory state into memory_versions before upsert.
 
         Requires a connection (caller always provides one from write()).
@@ -471,9 +475,7 @@ class MemoryStore:
 
         conn = self._get_conn()
         try:
-            cur = conn.execute(
-                "SELECT 1 FROM memory_versions WHERE version_id = ?", (version_id,)
-            )
+            cur = conn.execute("SELECT 1 FROM memory_versions WHERE version_id = ?", (version_id,))
             return cur.fetchone() is not None
         except sqlite3.Error:
             return False
@@ -632,10 +634,18 @@ class MemoryStore:
                         updated_at          = datetime('now')
                     """,
                     (
-                        effective_name, title, description, effective_type, existing_tier, body,
-                        tags_json, origin_session_id,
-                        merged_ids, merged_clients,
-                        protected_val, protected_domains_val,
+                        effective_name,
+                        title,
+                        description,
+                        effective_type,
+                        existing_tier,
+                        body,
+                        tags_json,
+                        origin_session_id,
+                        merged_ids,
+                        merged_clients,
+                        protected_val,
+                        protected_domains_val,
                     ),
                 )
                 if close_conn:
@@ -653,9 +663,7 @@ class MemoryStore:
 
         conn = self._get_conn()
         try:
-            cur = conn.execute(
-                "SELECT * FROM memories WHERE name = ?", (name,)
-            )
+            cur = conn.execute("SELECT * FROM memories WHERE name = ?", (name,))
             row = cur.fetchone()
         except sqlite3.Error as e:
             return f"Database error: {e}"
@@ -751,7 +759,7 @@ class MemoryStore:
         Supports additional filtering by type, tag, client, and time frame.
         """
         import sqlite3
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
 
         sql = """
             SELECT name, title, type, tags, updated_at, description, body
@@ -809,7 +817,9 @@ class MemoryStore:
         for row in rows:
             self._bump_retrieval(row[0])
 
-        lines = ["| Memory | Category | Updated | Preview |\n|--------|----------|---------|---------|\n"]
+        lines = [
+            "| Memory | Category | Updated | Preview |\n|--------|----------|---------|---------|\n"
+        ]
         for row in rows:
             _name, _title, _type, tags_raw, _updated, _desc, _body = row
             tags = self._parse_tags(tags_raw)
@@ -818,12 +828,19 @@ class MemoryStore:
             # "dream-phase", "project", "create", "merge", "delete" are noise — skip them
             category = _type
             for t in tags:
-                if t not in ("dream-phase", "project", "create", "merge", "delete", "internal", "create"):
+                if t not in (
+                    "dream-phase",
+                    "project",
+                    "create",
+                    "merge",
+                    "delete",
+                    "internal",
+                    "create",
+                ):
                     category = t
                     break
 
             body_preview = (_body or _desc or "").strip().split("\n")[0][:80].replace("|", "\\|")
-            title_clean = _title[:50].replace("|", "\\|")
             lines.append(f"| **{_name}** | {category} | {_updated[:10]} | {body_preview} |")
 
         lines.append(f"\n*{len(rows)} results*")
@@ -835,9 +852,7 @@ class MemoryStore:
 
         conn = self._get_conn()
         try:
-            cur = conn.execute(
-                "DELETE FROM memories WHERE name = ?", (name,)
-            )
+            cur = conn.execute("DELETE FROM memories WHERE name = ?", (name,))
             conn.commit()
             if cur.rowcount == 0:
                 return self._memory_not_found(name)
@@ -856,9 +871,7 @@ class MemoryStore:
 
         conn = self._get_conn()
         try:
-            cur = conn.execute(
-                "SELECT * FROM memories WHERE name = ?", (name,)
-            )
+            cur = conn.execute("SELECT * FROM memories WHERE name = ?", (name,))
             row = cur.fetchone()
         except sqlite3.Error as e:
             return f"Database error: {e}"
@@ -901,11 +914,7 @@ class MemoryStore:
             frontmatter += f"tags: {tags_yaml}\n"
         if m.get("origin_session_id"):
             frontmatter += f"originSessionId: {m['origin_session_id']}\n"
-        frontmatter += (
-            f"created_at: {m['created_at']}\n"
-            f"updated_at: {m['updated_at']}\n"
-            "---\n\n"
-        )
+        frontmatter += f"created_at: {m['created_at']}\nupdated_at: {m['updated_at']}\n---\n\n"
         return frontmatter + (m["body"] or "")
 
     # ── Versioning ─────────────────────────────────────────────────────
@@ -1007,8 +1016,14 @@ class MemoryStore:
                 WHERE name = ?
                 """,
                 (
-                    version_row[0], version_row[1], version_row[2], version_row[3],
-                    version_row[4], version_row[5], version_row[6], name,
+                    version_row[0],
+                    version_row[1],
+                    version_row[2],
+                    version_row[3],
+                    version_row[4],
+                    version_row[5],
+                    version_row[6],
+                    name,
                 ),
             )
             conn2.commit()

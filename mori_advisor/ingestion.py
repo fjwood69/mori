@@ -18,14 +18,12 @@ from pathlib import Path
 
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.memory_store import MemoryStore
-from mori_advisor.parsers import Chunk, get_parser, list_parsers
-from mori_advisor.parsers.text_parser import parse_directory as parse_text_directory
-from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
+from mori_advisor.parsers import Chunk, get_parser
 from mori_advisor.parsers.exceptions import (
     ParserDependencyError,
-    ParserNotFoundError,
-    IngestionSkipError,
 )
+from mori_advisor.parsers.text_parser import parse_directory as parse_text_directory
+from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +142,9 @@ class IngestionPipeline:
                     continue
 
                 # Parse
-                parser = get_parser(path, explicit_type=source_type if source_type != "auto" else None)
+                parser = get_parser(
+                    path, explicit_type=source_type if source_type != "auto" else None
+                )
                 if parser is None:
                     # Fallback: try as a directory of text files
                     if path.is_dir():
@@ -178,16 +178,16 @@ class IngestionPipeline:
                     )
 
                 # Distill each chunk batch
-                batch_memories = self._distill_batch(
-                    chunks, focus_guidance, tier, all_tags
-                )
+                batch_memories = self._distill_batch(chunks, focus_guidance, tier, all_tags)
                 total_written += len(batch_memories)
                 all_memories.extend(batch_memories)
 
                 # Write memories (unless dry run)
                 if not dry_run and batch_memories:
                     self._write_memories(batch_memories, tier, all_tags)
-                    self._record_ingestion(path, len(batch_memories), focus, tier, all_tags, dry_run=False)
+                    self._record_ingestion(
+                        path, len(batch_memories), focus, tier, all_tags, dry_run=False
+                    )
 
                 # Contradiction scan (unless dry run)
                 if not dry_run and batch_memories:
@@ -284,8 +284,7 @@ class IngestionPipeline:
         conn = self.memory_store._get_conn()
         try:
             cur = conn.execute(
-                "SELECT COUNT(*) FROM ingestion_log "
-                "WHERE source_hash = ? AND dry_run = 0",
+                "SELECT COUNT(*) FROM ingestion_log WHERE source_hash = ? AND dry_run = 0",
                 (file_hash,),
             )
             return cur.fetchone()[0] > 0
@@ -323,7 +322,7 @@ class IngestionPipeline:
             system += "\n\n" + focus_guidance
 
         if tier != "working":
-            system += f"\n\nSet tier to \"{tier}\" for all memories."
+            system += f'\n\nSet tier to "{tier}" for all memories.'
         if tags:
             system += f"\n\nAdd these tags to every memory: {', '.join(tags)}"
 
@@ -337,7 +336,11 @@ class IngestionPipeline:
                 header = self._chunk_header(chunk, i + 1, len(chunks))
                 text_parts.append(header + "\n" + chunk.content)
 
-        user_text = "\n\n".join(text_parts) if text_parts else "Analyse the attached image(s) and extract durable memories."
+        user_text = (
+            "\n\n".join(text_parts)
+            if text_parts
+            else "Analyse the attached image(s) and extract durable memories."
+        )
 
         # Route to vision or text path
         try:
@@ -394,9 +397,7 @@ class IngestionPipeline:
 
     # ── Memory writing ─────────────────────────────────────────────────────
 
-    def _write_memories(
-        self, memories: list[dict], tier: str, tags: list[str]
-    ) -> None:
+    def _write_memories(self, memories: list[dict], tier: str, tags: list[str]) -> None:
         """Write memory candidates to the store."""
         for mem in memories:
             if not isinstance(mem, dict):
@@ -430,6 +431,7 @@ class IngestionPipeline:
         title = mem.get("title", "")
         if not title:
             import time
+
             return f"ingested-memory-{int(time.time())}"
         return title.lower().replace(" ", "-").replace("_", "-")
 
@@ -498,10 +500,14 @@ class IngestionPipeline:
 
         Delegates to the shared run_contradiction_scan utility.
         """
+
         def consult_fn(system, user, vk, max_tokens, temperature):
             return self.client.consult(
-                system=system, user=user, vk=vk,
-                max_tokens=max_tokens, temperature=temperature,
+                system=system,
+                user=user,
+                vk=vk,
+                max_tokens=max_tokens,
+                temperature=temperature,
             )
 
         return run_contradiction_scan(
@@ -509,6 +515,7 @@ class IngestionPipeline:
             db_path=self.db_path,
             consult_fn=consult_fn,
         )
+
     # ── Status / Preview ───────────────────────────────────────────────────
 
     @staticmethod
@@ -542,8 +549,7 @@ class IngestionPipeline:
             status = "dry-run" if dry_run else ("errors" if errors else "committed")
             src_short = Path(source_path).name[:40]
             lines.append(
-                f"| {src_short} | {dt[:16]} | {count} | {model} "
-                f"| {focus} | {tier} | {status} |"
+                f"| {src_short} | {dt[:16]} | {count} | {model} | {focus} | {tier} | {status} |"
             )
 
         return "\n".join(lines)
@@ -573,7 +579,9 @@ class IngestionPipeline:
                 continue
 
             try:
-                parser = get_parser(path, explicit_type=source_type if source_type != "auto" else None)
+                parser = get_parser(
+                    path, explicit_type=source_type if source_type != "auto" else None
+                )
                 if parser is None:
                     if path.is_dir():
                         chunks = _parse_dir(path)
@@ -595,12 +603,11 @@ class IngestionPipeline:
 
             image_chunks = sum(1 for c in chunks if c.is_image)
             text_chunks = len(chunks) - image_chunks
-            tokens = sum(
-                255 if c.is_image else len(c.content) // CHARS_PER_TOKEN
-                for c in chunks
-            )
+            tokens = sum(255 if c.is_image else len(c.content) // CHARS_PER_TOKEN for c in chunks)
             cost = (tokens / 1000) * DEFAULT_INPUT_PRICE_PER_1K
-            cost += ESTIMATED_OUTPUT_TOKENS_PER_CHUNK * len(chunks) / 1000 * DEFAULT_OUTPUT_PRICE_PER_1K
+            cost += (
+                ESTIMATED_OUTPUT_TOKENS_PER_CHUNK * len(chunks) / 1000 * DEFAULT_OUTPUT_PRICE_PER_1K
+            )
 
             total_chunks += len(chunks)
             total_tokens += tokens
@@ -626,8 +633,12 @@ class IngestionPipeline:
                 f"est. ${cost:.4f}, typically {est_low}–{est_high} memories"
             )
 
-        parts.append(f"\n**Total**: {total_chunks} chunks, ~{total_tokens:,} tokens, est. ${total_cost:.4f}")
+        parts.append(
+            f"\n**Total**: {total_chunks} chunks, ~{total_tokens:,} tokens, est. ${total_cost:.4f}"
+        )
         if total_cost > 0.50:
-            parts.append("\n**Note**: Cost estimates are approximate — image-heavy sources may vary 2–3×.")
+            parts.append(
+                "\n**Note**: Cost estimates are approximate — image-heavy sources may vary 2–3×."
+            )
 
         return "\n".join(parts)

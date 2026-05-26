@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mori_advisor.bifrost_client import BifrostClient
-from mori_advisor.session_log import SessionLog
 from mori_advisor.memory_store import MemoryStore
+from mori_advisor.session_log import SessionLog
 from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
 
 logger = logging.getLogger(__name__)
@@ -150,12 +150,10 @@ class DreamPipeline:
         if dry_run:
             return memories
 
-        batch_session_ids = list(dict.fromkeys(
-            e.get("session_id") for e in events if e.get("session_id")
-        ))
-        batch_clients = list(dict.fromkeys(
-            e.get("client") for e in events if e.get("client")
-        ))
+        batch_session_ids = list(
+            dict.fromkeys(e.get("session_id") for e in events if e.get("session_id"))
+        )
+        batch_clients = list(dict.fromkeys(e.get("client") for e in events if e.get("client")))
 
         # Begin IMMEDIATE transaction — if we crash between writing memories
         # and advancing the watermark, the transaction rolls back and the
@@ -180,7 +178,9 @@ class DreamPipeline:
 
                 name = self._path_to_name(path)
                 try:
-                    self._write_memory(mem, name, action, batch_session_ids, batch_clients, _conn=txn_conn)
+                    self._write_memory(
+                        mem, name, action, batch_session_ids, batch_clients, _conn=txn_conn
+                    )
                     logger.info("  ✓ %s %s", action, name)
                     written += 1
                 except Exception as e:
@@ -190,8 +190,12 @@ class DreamPipeline:
             max_id = max(e["id"] for e in events)
             self._set_watermark(max_id, _conn=txn_conn)
 
-            pruned = self.session_log.prune_events(max(0, max_id - self.retention_buffer), _conn=txn_conn)
-            logger.info("Pruned %s events older than id %s", pruned, max(0, max_id - self.retention_buffer))
+            pruned = self.session_log.prune_events(
+                max(0, max_id - self.retention_buffer), _conn=txn_conn
+            )
+            logger.info(
+                "Pruned %s events older than id %s", pruned, max(0, max_id - self.retention_buffer)
+            )
 
             txn_conn.commit()
         except Exception:
@@ -342,8 +346,8 @@ class DreamPipeline:
 
         Fire-and-forget — errors are logged, never propagated.
         """
-        import json
         import socket
+
         import nats
 
         hostname = socket.gethostname()
@@ -351,15 +355,18 @@ class DreamPipeline:
             f"Dream pipeline superseded {superseded_count} memory(ies) on {hostname}. "
             f"Run `/pensieve --eviction-queue` or `memory_review` to review."
         )
-        payload = json.dumps({
-            "from": hostname,
-            "text": message,
-            "ts": __import__("time").time(),
-            "type": "eviction-notice",
-        })
+        payload = json.dumps(
+            {
+                "from": hostname,
+                "text": message,
+                "ts": __import__("time").time(),
+                "type": "eviction-notice",
+            }
+        )
 
         try:
             import asyncio
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             nc = loop.run_until_complete(nats.connect(self.nats_url))
@@ -377,11 +384,15 @@ class DreamPipeline:
 
         Delegates to the shared run_contradiction_scan utility.
         """
+
         # Consult wrapper matching the expected callable signature
         def consult_fn(system, user, vk, max_tokens, temperature):
             return self.client.consult(
-                system=system, user=user, vk=vk,
-                max_tokens=max_tokens, temperature=temperature,
+                system=system,
+                user=user,
+                vk=vk,
+                max_tokens=max_tokens,
+                temperature=temperature,
             )
 
         return run_contradiction_scan(

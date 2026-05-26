@@ -59,9 +59,7 @@ def init_metrics() -> None:
                 OTLPMetricExporter,
             )
 
-            interval_ms = int(
-                os.environ.get("OTEL_METRIC_EXPORT_INTERVAL", "60")
-            ) * 1000
+            interval_ms = int(os.environ.get("OTEL_METRIC_EXPORT_INTERVAL", "60")) * 1000
             exporter = OTLPMetricExporter(endpoint=otlp_endpoint)
             reader = PeriodicExportingMetricReader(exporter, export_interval_millis=interval_ms)
             logger.info("OTLP exporter configured for %s", otlp_endpoint)

@@ -81,8 +81,7 @@ class BifrostClient:
 
         if self.mode == "direct" and not self.direct_api_key:
             logger.warning(
-                "MORI_PROVIDER_MODE=direct but MORI_API_KEY is not set. "
-                "API calls will likely fail."
+                "MORI_PROVIDER_MODE=direct but MORI_API_KEY is not set. API calls will likely fail."
             )
 
     def _client_for(self, vk: str = "advisor") -> OpenAI:
@@ -191,10 +190,12 @@ class BifrostClient:
             {"type": "text", "text": user_text},
         ]
         for img_uri in images:
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": img_uri},
-            })
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": img_uri},
+                }
+            )
 
         try:
             response = client.chat.completions.create(
