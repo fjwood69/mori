@@ -8,20 +8,27 @@ MORI_URL="http://localhost:8968"
 API_KEY=""
 CLIENT_NAME=$(hostname 2>/dev/null || echo "antigravity-ide")
 FORCE=false
+DOCTOR=false
+UPGRADE_SKILLS=false
 
-URL_SPECIFIED=false
-KEY_SPECIFIED=false
-CLIENT_SPECIFIED=false
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MORI_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+INSTALL_PY="${SCRIPT_DIR}/mori_antigravity_install.py"
 
-# Help function
 show_help() {
   echo "Usage: install-mori-antigravity.sh [options]"
+  echo ""
   echo "Options:"
-  echo "  --url <url>      Mori server base URL (default: http://localhost:8968)"
-  echo "  --api-key <key>  Optional API key for event logging auth"
-  echo "  --client <name>  Client name to report in logs (default: hostname)"
-  echo "  -f, --force      Proceed even if health check connection fails"
-  echo "  -h, --help       Show this help message"
+  echo "  --url <url>           Mori server base URL (default: http://localhost:8968)"
+  echo "  --api-key <key>       Optional API key for event ingestion auth"
+  echo "  --client <name>       Client name to report in logs (default: hostname)"
+  echo "  -f, --force           Proceed even if health check connection fails"
+  echo "  --doctor              Run connectivity/config checks only (no changes)"
+  echo "  --upgrade-skills      Refresh mori-* skills from repo skills/*.skill.md"
+  echo "  -h, --help            Show this help message"
+  echo ""
+  echo "Post-install: Restart/reload your IDE if MCP config was just written."
+  echo "Shared memory is on the Mori server — never local."
 }
 
 # Parse options
@@ -29,21 +36,26 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --url)
       MORI_URL="$2"
-      URL_SPECIFIED=true
       shift 2
       ;;
     --api-key)
       API_KEY="$2"
-      KEY_SPECIFIED=true
       shift 2
       ;;
     --client)
       CLIENT_NAME="$2"
-      CLIENT_SPECIFIED=true
       shift 2
       ;;
     -f|--force)
       FORCE=true
+      shift
+      ;;
+    --doctor)
+      DOCTOR=true
+      shift
+      ;;
+    --upgrade-skills)
+      UPGRADE_SKILLS=true
       shift
       ;;
     -h|--help)
@@ -58,22 +70,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [ "$DOCTOR" = true ]; then
+  exec python3 "$INSTALL_PY" doctor --url "${MORI_URL}" --client "${CLIENT_NAME}"
+fi
+
 echo "--- Mori Antigravity Bridge Setup Wizard ---"
 
-# Step-by-step interactive inputs
-if [ "$URL_SPECIFIED" = "false" ]; then
+# Step-by-step interactive inputs if not specified in arguments
+# Check if options were passed to decide on wizard mode
+HEADLESS=false
+if [[ "$*" == *"--url"* ]] || [[ "$*" == *"--client"* ]]; then
+  HEADLESS=true
+fi
+
+if [ "$HEADLESS" = "false" ]; then
   read -p "Enter Mori Server URL [http://localhost:8968] (e.g. http://192.168.0.100:8968): " input_url
   if [ -n "$input_url" ]; then
     MORI_URL="$input_url"
   fi
-fi
 
-if [ "$KEY_SPECIFIED" = "false" ]; then
   read -p "Enter Mori API Key (optional, press Enter to skip): " input_key
   API_KEY="$input_key"
-fi
 
-if [ "$CLIENT_SPECIFIED" = "false" ]; then
   DEFAULT_CLIENT=$(hostname 2>/dev/null || echo "antigravity-ide")
   read -p "Enter Client Name [$DEFAULT_CLIENT]: " input_client
   if [ -n "$input_client" ]; then
@@ -84,13 +102,13 @@ fi
 # Strip trailing slash from MORI_URL
 MORI_URL="${MORI_URL%/}"
 
-# 2. Validate URL format
+# Validate URL format
 if [[ ! "$MORI_URL" =~ ^https?:// ]]; then
   echo "Error: Invalid Mori URL. Must start with http:// or https://" >&2
   exit 1
 fi
 
-# 3. Check connection to Mori server
+# Check connection to Mori server
 echo ""
 echo "Validating connection to Mori server at $MORI_URL..."
 CONNECTED=false
@@ -112,10 +130,6 @@ fi
 echo ""
 echo "Setting up Mori Antigravity Bridge..."
 
-# Paths configuration
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MORI_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
 APP_DATA_DIR="$HOME/.gemini/antigravity-ide"
 CONFIG_DIR="$HOME/.gemini/config"
 PLUGINS_DIR="$CONFIG_DIR/plugins/mori-bridge"
@@ -127,133 +141,44 @@ mkdir -p "$CONFIG_DIR"
 mkdir -p "$PLUGINS_DIR"
 mkdir -p "$SKILLS_TARGET_DIR"
 
-# 4. Deploy mcp_config.json
+MCP_OK=0
+HOOKS_OK=0
+
+# ---- Step 1: MCP config (required) ----
+echo "[1/3] Configuring MCP server..."
 MCP_CONFIG_PATH="$APP_DATA_DIR/mcp_config.json"
-
-# Build MCP server config with optional API key header
-if [ -n "$API_KEY" ]; then
-  MCP_CONFIG_JSON=$(cat <<EOF
-{
-  "mcpServers": {
-    "mori": {
-      "type": "http",
-      "serverUrl": "${MORI_URL}/mcp",
-      "headers": {
-        "X-Api-Key": "${API_KEY}"
-      }
-    }
-  }
-}
-EOF
-)
+if python3 "$INSTALL_PY" merge-mcp --mcp-path "$MCP_CONFIG_PATH" --url "$MORI_URL"; then
+  MCP_OK=1
 else
-  MCP_CONFIG_JSON=$(cat <<EOF
-{
-  "mcpServers": {
-    "mori": {
-      "type": "http",
-      "serverUrl": "${MORI_URL}/mcp"
-    }
-  }
-}
-EOF
-)
+  echo "  Error: failed to write MCP config" >&2
 fi
 
-if [ -f "$MCP_CONFIG_PATH" ] && [ -s "$MCP_CONFIG_PATH" ]; then
-  # Merge configuration if jq is available, otherwise overwrite
-  if command -v jq &> /dev/null; then
-    TEMP_FILE=$(mktemp)
-    if [ -n "$API_KEY" ]; then
-      jq --argjson mori '{"type": "http", "serverUrl": "'"${MORI_URL}/mcp"'", "headers": {"X-Api-Key": "'"${API_KEY}"'"}}' \
-         '.mcpServers.mori = $mori' "$MCP_CONFIG_PATH" > "$TEMP_FILE"
-    else
-      jq --argjson mori '{"type": "http", "serverUrl": "'"${MORI_URL}/mcp"'"}' \
-         '.mcpServers.mori = $mori' "$MCP_CONFIG_PATH" > "$TEMP_FILE"
-    fi
-    mv "$TEMP_FILE" "$MCP_CONFIG_PATH"
-    echo "Updated existing mcp_config.json using jq."
-  else
-    echo "$MCP_CONFIG_JSON" > "$MCP_CONFIG_PATH"
-    echo "Warning: jq not found. Overwrote mcp_config.json."
-  fi
-else
-  echo "$MCP_CONFIG_JSON" > "$MCP_CONFIG_PATH"
-  echo "Created mcp_config.json."
-fi
-
-# 5. Deploy hooks.json
+# ---- Step 2: Event capture hooks ----
+echo "[2/3] Setting up event capture hooks..."
 HOOKS_PATH="$CONFIG_DIR/hooks.json"
-
-auth_flag=""
-[ -n "$API_KEY" ] && auth_flag=" --api-key \"${API_KEY}\""
-
-CLAUDEDIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SHIPPER_SRC="${SCRIPT_DIR}/mori-ship-event.sh"
-SHIPPER_DST="${CLAUDEDIR}/mori-ship-event.sh"
+SHIPPER_DST="${PLUGINS_DIR}/mori-ship-event.sh"
 
-mkdir -p "$CLAUDEDIR"
 if [ -f "$SHIPPER_SRC" ]; then
   cp "$SHIPPER_SRC" "$SHIPPER_DST" && chmod +x "$SHIPPER_DST"
-  echo "  Deployed mori-ship-event.sh to ${CLAUDEDIR}"
+  echo "  Deployed mori-ship-event.sh to ${PLUGINS_DIR}"
 else
-  echo "  Warning: mori-ship-event.sh not found alongside installer — hooks will not work correctly."
+  echo "  Warning: mori-ship-event.sh not found alongside installer — hooks will not work correctly." >&2
 fi
 
-HOOKS_JSON=$(cat <<EOF
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "type": "command",
-        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "type": "command",
-        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "type": "command",
-        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
-      }
-    ],
-    "Stop": [
-      {
-        "type": "command",
-        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
-      }
-    ],
-    "PreCompact": [
-      {
-        "type": "command",
-        "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode precompact"
-      }
-    ]
-  }
-}
-EOF
-)
-
-if [ -f "$HOOKS_PATH" ] && [ -s "$HOOKS_PATH" ]; then
-  if command -v jq &> /dev/null; then
-    TEMP_FILE=$(mktemp)
-    jq --argjson hooks "$HOOKS_JSON" '.hooks += $hooks.hooks' "$HOOKS_PATH" > "$TEMP_FILE"
-    mv "$TEMP_FILE" "$HOOKS_PATH"
-    echo "Updated existing hooks.json using jq."
-  else
-    echo "$HOOKS_JSON" > "$HOOKS_PATH"
-    echo "Warning: jq not found. Overwrote hooks.json."
-  fi
+if python3 "$INSTALL_PY" merge-hooks \
+  --hooks-path "$HOOKS_PATH" \
+  --shipper "$SHIPPER_DST" \
+  --url "$MORI_URL" \
+  --client "$CLIENT_NAME" \
+  --api-key "$API_KEY"; then
+  HOOKS_OK=1
 else
-  echo "$HOOKS_JSON" > "$HOOKS_PATH"
-  echo "Created hooks.json."
+  echo "  Error: failed to merge hooks config" >&2
 fi
 
-# 6. Deploy plugin.json
+# ---- Step 3: Deploy plugin.json and skills ----
+echo "[3/3] Deploying skills..."
 PLUGIN_JSON_PATH="$PLUGINS_DIR/plugin.json"
 cat << 'EOF' > "$PLUGIN_JSON_PATH"
 {
@@ -263,59 +188,34 @@ cat << 'EOF' > "$PLUGIN_JSON_PATH"
   "author": "fjwood69"
 }
 EOF
-echo "Created plugin.json."
+echo "  Created plugin.json"
 
-# 7. Translate and Deploy Skills
-SOURCE_SKILLS_DIR="$MORI_REPO_ROOT/skills"
-if [ ! -d "$SOURCE_SKILLS_DIR" ]; then
-  echo "Error: Source skills folder not found at $SOURCE_SKILLS_DIR" >&2
-  exit 1
+UPGRADE_FLAG=""
+[ "$UPGRADE_SKILLS" = true ] && UPGRADE_FLAG="--upgrade"
+
+python3 "$INSTALL_PY" deploy-skills \
+  --source "$MORI_REPO_ROOT/skills" \
+  --dest "$SKILLS_TARGET_DIR" \
+  $UPGRADE_FLAG
+
+echo ""
+if [ "$MCP_OK" -eq 1 ]; then
+  echo "Mori Antigravity Bridge installation complete!"
+else
+  echo "Mori Antigravity Bridge installation FAILED (MCP config not written)." >&2
 fi
 
-for file in "$SOURCE_SKILLS_DIR"/*.skill.md; do
-  [ -e "$file" ] || continue
-  filename=$(basename "$file")
-  base_skill="${filename%.skill.md}"
-  
-  name=""
-  desc=""
-  content=""
-  
-  # Read line by line to extract metadata
-  while IFS= read -r line || [ -n "$line" ]; do
-    if [[ "$line" =~ ^-[[:space:]]+name:[[:space:]]*(.*)$ ]]; then
-      name="${BASH_REMATCH[1]}"
-    elif [[ "$line" =~ ^-[[:space:]]+description:[[:space:]]*(.*)$ ]]; then
-      desc="${BASH_REMATCH[1]}"
-    elif [[ -z "$line" && -z "$name" && -z "$desc" ]]; then
-      # skip blank lines at top
-      :
-    else
-      content+="$line"$'\n'
-    fi
-  done < "$file"
-  
-  if [ -z "$name" ]; then
-    name="$base_skill"
-  fi
-  
-  # Clean name & desc from spaces
-  name=$(echo "$name" | xargs)
-  desc=$(echo "$desc" | xargs)
-  
-  # Build YAML format
-  skill_folder="$SKILLS_TARGET_DIR/mori-$name"
-  mkdir -p "$skill_folder"
-  
-  cat << EOF > "$skill_folder/SKILL.md"
----
-name: mori-$name
-description: "${desc//\"/\\\"}"
----
+echo ""
+echo "--- Post-Install Steps ---"
+echo ""
+echo "1. Confirm MCP: Check your IDE settings to ensure 'mori' is connected."
+echo "2. Verify: ./scripts/install-mori-antigravity.sh --doctor --url \"$MORI_URL\""
+echo "3. In Agent chat: /brief — loads shared memory from the server (not local disk)"
+echo ""
+echo "Hook failures are logged to: ${TMPDIR:-/tmp}/mori-hook.log"
+echo ""
 
-$(echo -n "$content" | sed -e 's/[[:space:]]*$//')
-EOF
-  echo "Translated and deployed skill: mori-$name"
-done
-
-echo "Mori Antigravity Bridge installation complete!"
+if [ "$MCP_OK" -ne 1 ]; then
+  exit 1
+fi
+exit 0
