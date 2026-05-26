@@ -5,7 +5,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from mori_advisor.parsers import BaseParser, Chunk, register_parser
+from mori_advisor.parsers import (
+    BaseParser,
+    Chunk,
+    CONTENT_SIZE_CEILING,
+    decode_bytes,
+    register_parser,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,11 +84,7 @@ class TextParser(BaseParser):
         return source.suffix.lower() in _TEXT_EXTENSIONS
 
     def parse(self, source: Path, **kwargs) -> list[Chunk]:
-        """Read a text file and produce chunks.
-
-        For a single file, produces one chunk unless the file exceeds
-        CHUNK_CHAR_LIMIT, in which case it splits at paragraph boundaries.
-        """
+        """Read a text file and produce chunks."""
         try:
             text = source.read_text(encoding="utf-8", errors="replace")
         except Exception as e:
@@ -92,23 +94,52 @@ class TextParser(BaseParser):
         if not text.strip():
             return []
 
-        chunks: list[Chunk] = []
         suffix = source.suffix.lower()
         lang = suffix.lstrip(".")
+        return self._chunk_text(text, str(source), lang)
+
+    def parse_content(self, name: str, content_bytes: bytes, mime_type: str) -> list[Chunk]:
+        """Parse text content from raw bytes.
+
+        Args:
+            name: Source name/identifier.
+            content_bytes: Raw UTF-8 text bytes.
+            mime_type: MIME type of the content.
+
+        Returns:
+            List of Chunks.
+        """
+        if len(content_bytes) > CONTENT_SIZE_CEILING:
+            logger.warning("Content too large (%d bytes), truncating", len(content_bytes))
+            content_bytes = content_bytes[:CONTENT_SIZE_CEILING]
+
+        text = decode_bytes(content_bytes)
+        if not text.strip():
+            return []
+
+        lang = mime_type.split("/")[-1] if "/" in mime_type else ""
+        return self._chunk_text(text, name, lang)
+
+    def _chunk_text(self, text: str, source_name: str, lang: str) -> list[Chunk]:
+        """Split text into token-sized chunks at paragraph boundaries.
+
+        For content under CHUNK_CHAR_LIMIT, produces one chunk.
+        For larger content, splits at paragraph boundaries.
+        """
+        chunks: list[Chunk] = []
 
         if len(text) <= CHUNK_CHAR_LIMIT:
             chunks.append(
                 Chunk(
                     content=text,
                     metadata={
-                        "source_path": str(source),
+                        "source_path": source_name,
                         "language": lang,
                         "file_size": len(text),
                     },
                 )
             )
         else:
-            # Split at paragraph boundaries
             paragraphs = text.split("\n\n")
             current = ""
             part = 1
@@ -118,7 +149,7 @@ class TextParser(BaseParser):
                         Chunk(
                             content=current,
                             metadata={
-                                "source_path": str(source),
+                                "source_path": source_name,
                                 "language": lang,
                                 "part": part,
                                 "file_size": len(text),
@@ -134,7 +165,7 @@ class TextParser(BaseParser):
                     Chunk(
                         content=current,
                         metadata={
-                            "source_path": str(source),
+                            "source_path": source_name,
                             "language": lang,
                             "part": part,
                             "file_size": len(text),
