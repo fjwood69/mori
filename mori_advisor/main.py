@@ -1077,7 +1077,7 @@ async def mori_ingest_content(
 
         error_details = result.get("error_details", [])
         if error_details:
-            parts.append(f"\n**Errors:**")
+            parts.append("\n**Errors:**")
             for err in error_details[:5]:
                 parts.append(f"  - {err}")
             if len(error_details) > 5:

@@ -37,6 +37,7 @@ def detect_charset(raw: bytes) -> str:
     """Detect charset from raw bytes. Falls back to utf-8 with replacement."""
     try:
         import chardet
+
         result = chardet.detect(raw)
         if result.get("encoding") and result.get("confidence", 0) > 0.5:
             return result["encoding"]
@@ -63,6 +64,7 @@ def is_binary(raw: bytes) -> bool:
     """Quick binary detection — check for null bytes in first 8KB."""
     try:
         import magic as _magic
+
         mime = _magic.from_buffer(raw[:8192], mime=True)
         if mime and not mime.startswith("text/"):
             return True
