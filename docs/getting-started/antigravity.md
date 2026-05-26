@@ -70,6 +70,7 @@ With API key authentication:
 Creates or updates `hooks.json` under your global config directory (`~/.gemini/config/hooks.json`):
 * Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, and `PreCompact`) to Mori's event logging endpoints (`/api/events/raw` and `/api/precompact`).
 * Overrides the event query with your configured client name and auth headers.
+* Adds `"_mori_managed": true` to each hook entry so re-runs can find and update Mori's hooks cleanly without matching command strings.
 
 ### 3. Registers Custom Skills
 Creates a custom Antigravity plugin under `~/.gemini/config/plugins/mori-bridge/`:
@@ -118,6 +119,7 @@ powershell -File scripts/install-mori-antigravity.ps1 -Doctor -MoriUrl "http://l
 Re-running the installer upgrades event capture hooks and skills automatically:
 * It merges event logging hooks into `hooks.json` cleanly, preserving other third-party hooks.
 * It deploys `mori-ship-event.sh` (Linux/macOS) or `mori-ship-event.ps1` (Windows) to `~/.gemini/config/plugins/mori-bridge/`.
+* It updates legacy hook entries (inline curl or shipper commands without the field) with the `"_mori_managed": true` flag on the first re-run.
 
 The shipper scripts provide:
 - Reliable stdin capture (no subprocess pipe issues)
