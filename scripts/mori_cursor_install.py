@@ -21,19 +21,43 @@ HOOK_EVENTS = (
 )
 
 MORI_MCP_ALLOW = [
+    # Core session tools
     "mcp__mori__brief",
+    "mcp__mori__pensieve",
+    "mcp__mori__consult_advisor",
+    "mcp__mori__update",
+    "mcp__mori__standards_reload",
+    # Memory CRUD
     "mcp__mori__memory_list",
     "mcp__mori__memory_read",
     "mcp__mori__memory_search",
     "mcp__mori__memory_write",
     "mcp__mori__memory_req",
+    "mcp__mori__memory_delete",
+    # Memory management
+    "mcp__mori__memory_export",
+    "mcp__mori__memory_export_all",
+    "mcp__mori__memory_import",
+    "mcp__mori__memory_history",
+    "mcp__mori__memory_diff",
+    "mcp__mori__memory_rollback",
+    "mcp__mori__memory_review",
+    "mcp__mori__memory_session_summary",
+    "mcp__mori__memory_pending_list",
+    "mcp__mori__memory_approve",
+    "mcp__mori__memory_reject",
+    "mcp__mori__memory_protect",
+    # Dream pipeline
     "mcp__mori__dream_run",
     "mcp__mori__dream_status",
-    "mcp__mori__consult_advisor",
+    # Ingest
+    "mcp__mori__mori_ingest",
+    "mcp__mori__mori_ingest_status",
+    "mcp__mori__mori_ingest_preview",
+    # NATS
     "mcp__mori__nats_pub",
     "mcp__mori__nats_sub",
     "mcp__mori__nats_ping",
-    "mcp__mori__update",
 ]
 
 
