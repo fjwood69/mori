@@ -23,6 +23,7 @@ _HAS_PDF_SUPPORT = False
 
 try:
     import fitz as _pymupdf
+
     _HAS_PDF_SUPPORT = True
 except ImportError:
     pass
@@ -30,6 +31,7 @@ except ImportError:
 if not _HAS_PDF_SUPPORT:
     try:
         import pypdf as _pypdf2
+
         _HAS_PDF_SUPPORT = True
     except ImportError:
         pass
@@ -98,7 +100,9 @@ class PdfParser(BaseParser):
 
         for pn, text in pages:
             if len(current_text) + len(text) > CHUNK_CHAR_LIMIT and current_text:
-                chunks.append(self._make_chunk(current_text, current_pages, source, total_pages, part))
+                chunks.append(
+                    self._make_chunk(current_text, current_pages, source, total_pages, part)
+                )
                 part += 1
                 current_pages = []
                 current_text = ""

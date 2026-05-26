@@ -8,7 +8,6 @@ events are never modified once written.
 from __future__ import annotations
 
 import datetime
-import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -110,9 +109,19 @@ class SessionLog:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    session_id, event_name, client, now,
-                    tool_name, tool_input, tool_response, tool_error,
-                    model, cwd, transcript_path, prompt, stop_reason,
+                    session_id,
+                    event_name,
+                    client,
+                    now,
+                    tool_name,
+                    tool_input,
+                    tool_response,
+                    tool_error,
+                    model,
+                    cwd,
+                    transcript_path,
+                    prompt,
+                    stop_reason,
                 ),
             )
             conn.commit()
@@ -252,9 +261,7 @@ class SessionLog:
 
         # Flatten, newest session first
         result: list[dict] = []
-        for sid in sorted(sessions, key=lambda s: max(
-            e["id"] for e in sessions[s]
-        ), reverse=True):
+        for sid in sorted(sessions, key=lambda s: max(e["id"] for e in sessions[s]), reverse=True):
             result.extend(sessions[sid])
 
         return result
@@ -265,15 +272,15 @@ class SessionLog:
         """Read a value from the dream_state table."""
         conn = self._get_conn()
         try:
-            cur = conn.execute(
-                "SELECT value FROM dream_state WHERE key = ?", (key,)
-            )
+            cur = conn.execute("SELECT value FROM dream_state WHERE key = ?", (key,))
             row = cur.fetchone()
             return row["value"] if row else default
         finally:
             conn.close()
 
-    def set_dream_state(self, key: str, value: str, _conn: sqlite3.Connection | None = None) -> None:
+    def set_dream_state(
+        self, key: str, value: str, _conn: sqlite3.Connection | None = None
+    ) -> None:
         """Upsert a value into the dream_state table.
 
         Args:
@@ -302,6 +309,7 @@ class SessionLog:
     def count_events(self) -> int:
         """Total event count (for monitoring)."""
         import sqlite3
+
         conn = self._get_conn()
         try:
             cur = conn.execute("SELECT COUNT(*) FROM session_events")
@@ -320,16 +328,12 @@ class SessionLog:
         Returns number of rows deleted.
         """
         if _conn:
-            cur = _conn.execute(
-                "DELETE FROM session_events WHERE id <= ?", (before_event_id,)
-            )
+            cur = _conn.execute("DELETE FROM session_events WHERE id <= ?", (before_event_id,))
             return cur.rowcount
         else:
             conn = self._get_conn()
             try:
-                cur = conn.execute(
-                    "DELETE FROM session_events WHERE id <= ?", (before_event_id,)
-                )
+                cur = conn.execute("DELETE FROM session_events WHERE id <= ?", (before_event_id,))
                 conn.commit()
                 return cur.rowcount
             finally:
@@ -339,9 +343,7 @@ class SessionLog:
         """List all distinct session IDs that have events."""
         conn = self._get_conn()
         try:
-            cur = conn.execute(
-                "SELECT DISTINCT session_id FROM session_events ORDER BY session_id"
-            )
+            cur = conn.execute("SELECT DISTINCT session_id FROM session_events ORDER BY session_id")
             return [row["session_id"] for row in cur.fetchall()]
         finally:
             conn.close()

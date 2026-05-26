@@ -9,7 +9,6 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -18,13 +17,19 @@ from pathlib import Path
 from fastmcp import FastMCP
 from pydantic import BaseModel
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.dream import DreamPipeline
 from mori_advisor.ingestion import IngestionPipeline
 from mori_advisor.memory_store import MemoryStore
-from mori_advisor.metrics import init_metrics, shutdown_metrics
+from mori_advisor.metrics import (
+    events_counter,
+    eviction_queue_gauge,
+    init_metrics,
+    memories_gauge,
+    pending_writes_gauge,
+)
 from mori_advisor.session_log import SessionLog
 
 logger = logging.getLogger(__name__)
@@ -35,10 +40,14 @@ DATA_DIR = Path(os.environ.get("MORI_ADVISOR_DATA", "/data/mori-advisor"))
 MCP_SERVER_NAME = os.environ.get("MORI_MCP_SERVER_NAME", "mori")
 BIFROST_BASE_URL = os.environ.get("MORI_BASE_URL", "http://localhost:8787")
 BIFROST_TIMEOUT = int(os.environ.get("MORI_BIFROST_TIMEOUT", "300"))
-TRUSTED_DREAMERS = os.environ.get(
-    "MORI_TRUSTED_DREAMERS",
-    "",
-).split(",") if os.environ.get("MORI_TRUSTED_DREAMERS") else []
+TRUSTED_DREAMERS = (
+    os.environ.get(
+        "MORI_TRUSTED_DREAMERS",
+        "",
+    ).split(",")
+    if os.environ.get("MORI_TRUSTED_DREAMERS")
+    else []
+)
 
 # Event capture auth
 EVENTS_API_KEY = os.environ.get("MORI_ADVISOR_API_KEY", "")
@@ -49,10 +58,7 @@ STANDARDS_DIR = os.environ.get("MORI_STANDARDS_DIR", "")
 # Skills directory (for /update tool to read skill content server-side)
 SKILLS_DIR = os.environ.get("MORI_SKILLS_DIR", "")
 
-NATS_URL = os.environ.get(
-    "MORI_NATS_URL",
-    "nats://cc:MHRqnbvNew52VpDFTa8IM1PR@localhost:4222"
-)
+NATS_URL = os.environ.get("MORI_NATS_URL", "nats://cc:MHRqnbvNew52VpDFTa8IM1PR@localhost:4222")
 
 # ── System prompts ──────────────────────────────────────────────────────
 
@@ -101,13 +107,49 @@ DEPTH_PROMPTS = {
 }
 
 BINARY_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg",
-    ".mp3", ".mp4", ".wav", ".ogg", ".webm", ".avi", ".mov",
-    ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar", ".wasm",
-    ".bin", ".exe", ".dll", ".so", ".dylib",
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-    ".ttf", ".otf", ".woff", ".woff2", ".eot",
-    ".pyc", ".class", ".o", ".obj",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".ico",
+    ".webp",
+    ".svg",
+    ".mp3",
+    ".mp4",
+    ".wav",
+    ".ogg",
+    ".webm",
+    ".avi",
+    ".mov",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".7z",
+    ".rar",
+    ".wasm",
+    ".bin",
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".ttf",
+    ".otf",
+    ".woff",
+    ".woff2",
+    ".eot",
+    ".pyc",
+    ".class",
+    ".o",
+    ".obj",
 }
 
 MAX_FILE_SIZE = 50 * 1024  # 50KB per file
@@ -151,19 +193,41 @@ def _read_files(file_paths: list[str]) -> tuple[list[str], list[str]]:
     total_bytes = 0
 
     ext_to_lang = {
-        ".py": "python", ".ts": "typescript", ".js": "javascript",
-        ".tsx": "typescriptreact", ".jsx": "javascriptreact",
-        ".go": "go", ".rs": "rust", ".rb": "ruby",
-        ".java": "java", ".kt": "kotlin", ".scala": "scala",
-        ".c": "c", ".h": "c", ".cpp": "cpp", ".hpp": "cpp",
-        ".cs": "csharp", ".swift": "swift",
-        ".sh": "bash", ".bash": "bash", ".zsh": "bash",
-        ".ps1": "powershell", ".psm1": "powershell",
-        ".sql": "sql", ".r": "r",
-        ".md": "markdown", ".json": "json", ".yaml": "yaml", ".yml": "yaml",
-        ".toml": "toml", ".xml": "xml", ".html": "html", ".css": "css",
+        ".py": "python",
+        ".ts": "typescript",
+        ".js": "javascript",
+        ".tsx": "typescriptreact",
+        ".jsx": "javascriptreact",
+        ".go": "go",
+        ".rs": "rust",
+        ".rb": "ruby",
+        ".java": "java",
+        ".kt": "kotlin",
+        ".scala": "scala",
+        ".c": "c",
+        ".h": "c",
+        ".cpp": "cpp",
+        ".hpp": "cpp",
+        ".cs": "csharp",
+        ".swift": "swift",
+        ".sh": "bash",
+        ".bash": "bash",
+        ".zsh": "bash",
+        ".ps1": "powershell",
+        ".psm1": "powershell",
+        ".sql": "sql",
+        ".r": "r",
+        ".md": "markdown",
+        ".json": "json",
+        ".yaml": "yaml",
+        ".yml": "yaml",
+        ".toml": "toml",
+        ".xml": "xml",
+        ".html": "html",
+        ".css": "css",
         ".dockerfile": "dockerfile",
-        ".tf": "terraform", ".hcl": "terraform",
+        ".tf": "terraform",
+        ".hcl": "terraform",
     }
 
     for path_str in file_paths:
@@ -261,7 +325,9 @@ async def brief() -> str:
     try:
         fc = memory_store.check_freshness(bifrost.consult, limit=20)
         if fc["checked"] > 0:
-            parts.append(f"**Freshness check:** {fc['fresh']} fresh, {fc['stale']} stale, {fc['no']} invalid ({fc['checked']} checked)")
+            parts.append(
+                f"**Freshness check:** {fc['fresh']} fresh, {fc['stale']} stale, {fc['no']} invalid ({fc['checked']} checked)"
+            )
             if fc.get("errors"):
                 parts.append(f"  ({fc['errors']} errors)")
     except Exception as e:
@@ -270,11 +336,10 @@ async def brief() -> str:
     # Eviction queue warning
     try:
         import sqlite3 as _sql
+
         _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=10)
         _c.execute("PRAGMA journal_mode=WAL")
-        cur = _c.execute(
-            "SELECT COUNT(*) FROM eviction_queue WHERE resolved = 0"
-        )
+        cur = _c.execute("SELECT COUNT(*) FROM eviction_queue WHERE resolved = 0")
         unresolved = cur.fetchone()[0]
         _c.close()
         if unresolved > 0:
@@ -304,13 +369,16 @@ async def brief() -> str:
                                 categories[tag] = categories.get(tag, 0) + 1
         parts.append(f"**Team standards:** {std_count} loaded")
         if categories:
-            parts.append("  Categories: " + ", ".join(f"{k}={v}" for k, v in sorted(categories.items())))
+            parts.append(
+                "  Categories: " + ", ".join(f"{k}={v}" for k, v in sorted(categories.items()))
+            )
     except Exception as e:
         parts.append(f"**Team standards:** error loading ({e})")
 
     # Goals summary — show unresolved requirements per project
     try:
         import sqlite3 as _sql
+
         _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=10)
         _c.execute("PRAGMA journal_mode=WAL")
         cur = _c.execute(
@@ -331,10 +399,10 @@ async def brief() -> str:
                 proj = "general"
                 for t in tags:
                     if t.startswith("project-"):
-                        proj = t[len("project-"):]
+                        proj = t[len("project-") :]
                         break
                 projects.setdefault(proj, []).append(f"{name}: {title}")
-            parts.append(f"\n**Unresolved goals:**")
+            parts.append("\n**Unresolved goals:**")
             for proj, items in sorted(projects.items()):
                 parts.append(f"  {proj}: {len(items)} unresolved")
     except Exception:
@@ -343,6 +411,7 @@ async def brief() -> str:
     # State-of-play
     try:
         from mori_advisor.dream import DreamPipeline
+
         dp = DreamPipeline(db_path=DATA_DIR / "memories.db", bifrost_client=bifrost)
         status = dp.get_status()
         parts.append(f"**Dream state:** {status}")
@@ -385,9 +454,7 @@ async def consult_advisor(
     # Inject relevant standards when a specific focus is given
     if focus != "general":
         try:
-            standards = memory_store.search(
-                query=None, tag=focus, type_filter="standard", limit=10
-            )
+            standards = memory_store.search(query=None, tag=focus, type_filter="standard", limit=10)
             if standards and "No memories" not in standards:
                 user_prompt += f"\n\n## Relevant {focus} standards\n{standards}"
         except Exception:
@@ -656,10 +723,10 @@ async def update(device: str, content: str = "", skill: str = "") -> str:
         return "Could not determine skill name. Provide it as the 'skill' argument."
 
     import re
+
     if not re.match(r"^[a-zA-Z0-9_-]+$", inferred):
         return f"Invalid skill name '{inferred}'. Skill names must match ^[a-zA-Z0-9_-]+$."
 
-    commands: list[str] = []
     profiles = cfg["profiles"]
 
     import base64
@@ -669,7 +736,7 @@ async def update(device: str, content: str = "", skill: str = "") -> str:
         encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
         profile_lines = "\n    ".join(
             f'$d = Split-Path "$env:USERPROFILE\\{p}\\skills\\{inferred}\\SKILL.md" -Parent; '
-            f'if (-not (Test-Path $d)) {{ New-Item -ItemType Directory -Path $d -Force | Out-Null }}; '
+            f"if (-not (Test-Path $d)) {{ New-Item -ItemType Directory -Path $d -Force | Out-Null }}; "
             f'Set-Content -Path "$env:USERPROFILE\\{p}\\skills\\{inferred}\\SKILL.md" -Value $c -Encoding UTF8'
             for p in profiles
         )
@@ -684,9 +751,9 @@ async def update(device: str, content: str = "", skill: str = "") -> str:
         # Linux: write once to /tmp, copy to all profiles
         temp = f"/tmp/_{inferred}_skill.md"
         cat_cmd = f"cat > {temp} << 'SKILLEOF'\n{content}\nSKILLEOF"
-        copies = [f'cp {temp} ~/{p}/skills/{inferred}/SKILL.md' for p in profiles]
-        mkdirs = [f'mkdir -p ~/${{p}}/skills/{inferred}' for p in set(profiles)]
-        clean = f'rm -f {temp}'
+        copies = [f"cp {temp} ~/{p}/skills/{inferred}/SKILL.md" for p in profiles]
+        mkdirs = [f"mkdir -p ~/${{p}}/skills/{inferred}" for p in set(profiles)]
+        clean = f"rm -f {temp}"
         joined = " && ".join(mkdirs + [cat_cmd] + copies + [clean])
         return (
             f"**{device} — bash ({len(profiles)} profiles)**\n\n"
@@ -710,11 +777,16 @@ async def nats_pub(message: str, subject: str = "") -> str:
         subject: NATS subject (e.g. cc.uk-smr-nuc15pro). Auto-derived if empty.
     """
     try:
-        import socket, json
+        import json
+        import socket
+
         import nats
+
         hostname = socket.gethostname()
         subj = subject or f"cc.{hostname}"
-        payload = json.dumps({"from": hostname, "text": message, "ts": __import__("time").time(), "type": "msg"})
+        payload = json.dumps(
+            {"from": hostname, "text": message, "ts": __import__("time").time(), "type": "msg"}
+        )
 
         nc = await nats.connect(NATS_URL)
         await nc.publish(subj, payload.encode())
@@ -737,7 +809,9 @@ async def nats_sub(replay: bool = False, wait: int = 2) -> str:
         wait: Seconds to wait for new messages (default 2, max 10).
     """
     try:
-        import json, asyncio
+        import asyncio
+        import json
+
         import nats
 
         nc = await nats.connect(NATS_URL)
@@ -746,22 +820,21 @@ async def nats_sub(replay: bool = False, wait: int = 2) -> str:
             # JetStream pull subscription for historical messages
             js = nc.jetstream()
             try:
-                from nats.js.api import ConsumerConfig, DeliverPolicy, AckPolicy
+                from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
+
                 config = ConsumerConfig(
                     deliver_policy=DeliverPolicy.ALL,
                     ack_policy=AckPolicy.NONE,
                     max_deliver=1,
                 )
-                psub = await js.pull_subscribe(
-                    "cc.>", stream="cc", config=config
-                )
+                psub = await js.pull_subscribe("cc.>", stream="cc", config=config)
                 msgs: list[str] = []
                 try:
                     batch = await psub.fetch(50, timeout=min(wait, 10))
                     for msg in batch:
                         try:
                             data = json.loads(msg.data.decode())
-                            msgs.append(f"[{data.get('from','?')}] {data.get('text','')}")
+                            msgs.append(f"[{data.get('from', '?')}] {data.get('text', '')}")
                         except (json.JSONDecodeError, UnicodeDecodeError):
                             msgs.append(f"[raw] {msg.data[:200]}")
                         await msg.ack()
@@ -773,7 +846,7 @@ async def nats_sub(replay: bool = False, wait: int = 2) -> str:
                     if len(msgs) > 50:
                         output = "\n".join(msgs[:50]) + f"\n... ({len(msgs) - 50} more lines)"
                     return output
-            except Exception as je:
+            except Exception:
                 pass
 
         # Core NATS live subscription (no-replay or replay fallback)
@@ -787,7 +860,7 @@ async def nats_sub(replay: bool = False, wait: int = 2) -> str:
                 msg = await sub.next_msg(timeout=0.5)
                 try:
                     data = json.loads(msg.data.decode())
-                    msgs.append(f"[{data.get('from','?')}] {data.get('text','')}")
+                    msgs.append(f"[{data.get('from', '?')}] {data.get('text', '')}")
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     msgs.append(f"[raw] {msg.data[:200]}")
         except asyncio.TimeoutError:
@@ -813,6 +886,7 @@ async def nats_ping() -> str:
     """
     try:
         import nats
+
         nc = await nats.connect(NATS_URL)
         info = str(nc.connected_url or NATS_URL.split("@")[-1])
         await nc.drain()
@@ -954,13 +1028,10 @@ async def dream_run(dry_run: bool = False) -> str:
         if dry_run:
             if not memories:
                 return "No memories would be produced from the current events."
-            return (
-                f"**Dry run: {len(memories)} memories would be written**\n\n"
-                + "\n".join(
-                    f"- `{m.get('path', '?')}` [{m.get('action', '?')}] "
-                    f"({m.get('confidence', '?')}) — {m.get('reason', '')}"
-                    for m in memories
-                )
+            return f"**Dry run: {len(memories)} memories would be written**\n\n" + "\n".join(
+                f"- `{m.get('path', '?')}` [{m.get('action', '?')}] "
+                f"({m.get('confidence', '?')}) — {m.get('reason', '')}"
+                for m in memories
             )
         if not memories:
             return "No new events to dream. Nothing done."
@@ -1056,8 +1127,11 @@ async def memory_list(
         limit: Maximum entries to return (default 50).
     """
     return memory_store.list(
-        type_filter=type_filter, tag=tag, session=session,
-        client=client, limit=limit,
+        type_filter=type_filter,
+        tag=tag,
+        session=session,
+        client=client,
+        limit=limit,
     )
 
 
@@ -1110,7 +1184,9 @@ async def memory_req(
     if not rows:
         return "No requirements found."
 
-    lines = ["| Requirement | Title | Status | Project | Pri | FR/NFR | Preview |\n|---|---|---|---|---|---|---|\n"]
+    lines = [
+        "| Requirement | Title | Status | Project | Pri | FR/NFR | Preview |\n|---|---|---|---|---|---|---|\n"
+    ]
     status_counts: dict[str, int] = {}
     for name, title, tags_raw, desc, body in rows:
         tags = memory_store._parse_tags(tags_raw)
@@ -1168,8 +1244,12 @@ async def memory_search(
         limit: Max results (default 10, max 50).
     """
     return memory_store.search(
-        query=query, type_filter=type_filter, tag=tag,
-        client=client, since=since, limit=min(limit, 50),
+        query=query,
+        type_filter=type_filter,
+        tag=tag,
+        client=client,
+        since=since,
+        limit=min(limit, 50),
     )
 
 
@@ -1251,7 +1331,6 @@ async def memory_review(
         orphan_days: Days since last retrieval to flag as orphan (default 30).
         dry_run: If True, show what would be flagged without writing to eviction_queue.
     """
-    import sqlite3 as _sqlite3
 
     parts = ["# Memory Review Dashboard\n"]
 
@@ -1292,7 +1371,9 @@ async def memory_review(
         _conn.close()
         if rows:
             for name, title, superseded_by, updated_at in rows:
-                parts.append(f"- **{name}**: {title} → superseded by {superseded_by} ({updated_at})")
+                parts.append(
+                    f"- **{name}**: {title} → superseded by {superseded_by} ({updated_at})"
+                )
         else:
             parts.append("No superseded memories.")
     except Exception as e:
@@ -1438,10 +1519,6 @@ def _map_hook_payload(raw: dict, client_override: str = "") -> EventLogEntry:
     session_id = raw.get("session_id", "")
 
     client = client_override or raw.get("client", "")
-    if not client:
-        cwd = raw.get("cwd", "")
-        # CWD-based client detection — customize for your environment
-        pass
 
     tool_input = raw.get("tool_input")
     if tool_input is not None and not isinstance(tool_input, str):
@@ -1478,7 +1555,9 @@ async def log_event(request: Request) -> JSONResponse:
 
         if "event_name" in body:
             body_client = body.get("client", "")
-            entry = EventLogEntry(**{k: v for k, v in body.items() if k != "client"}, client=client or body_client)
+            entry = EventLogEntry(
+                **{k: v for k, v in body.items() if k != "client"}, client=client or body_client
+            )
         else:
             entry = _map_hook_payload(body, client_override=client)
 
@@ -1499,7 +1578,9 @@ async def log_event(request: Request) -> JSONResponse:
             prompt=entry.prompt,
             stop_reason=entry.stop_reason,
         )
-        logger.info("Logged event %s for session %s (id=%s)", entry.event_name, entry.session_id, row_id)
+        logger.info(
+            "Logged event %s for session %s (id=%s)", entry.event_name, entry.session_id, row_id
+        )
         return JSONResponse({"status": "accepted", "event_id": row_id}, status_code=202)
     except Exception as e:
         logger.error("Failed to log event: %s", e)
@@ -1537,7 +1618,9 @@ async def log_event_raw(request: Request) -> JSONResponse:
             prompt=event.prompt,
             stop_reason=event.stop_reason,
         )
-        logger.info("Raw event %s for session %s (id=%s)", event.event_name, event.session_id, row_id)
+        logger.info(
+            "Raw event %s for session %s (id=%s)", event.event_name, event.session_id, row_id
+        )
         return JSONResponse({"status": "accepted", "event_id": row_id}, status_code=202)
     except Exception as e:
         logger.error("Failed to log raw event: %s", e)
@@ -1547,10 +1630,12 @@ async def log_event_raw(request: Request) -> JSONResponse:
 @mcp.custom_route("/api/events/health", methods=["GET"])
 async def events_health(request: Request) -> JSONResponse:
     """Simple health check for the event logging endpoint."""
-    return JSONResponse({
-        "status": "ok",
-        "total_events": session_log.count_events(),
-    })
+    return JSONResponse(
+        {
+            "status": "ok",
+            "total_events": session_log.count_events(),
+        }
+    )
 
 
 @mcp.custom_route("/api/precompact", methods=["POST"])
@@ -1601,14 +1686,19 @@ async def precompact(request: Request) -> JSONResponse:
         memories_count = len(result) if result else 0
         logger.info(
             "PreCompact: dreamed session %s (event_id=%s, memories=%s)",
-            event.session_id, row_id, memories_count,
+            event.session_id,
+            row_id,
+            memories_count,
         )
-        return JSONResponse({
-            "status": "dreamed",
-            "session_id": event.session_id,
-            "event_id": row_id,
-            "memories": memories_count,
-        }, status_code=200)
+        return JSONResponse(
+            {
+                "status": "dreamed",
+                "session_id": event.session_id,
+                "event_id": row_id,
+                "memories": memories_count,
+            },
+            status_code=200,
+        )
     except Exception as e:
         logger.error("PreCompact failed: %s", e)
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
@@ -1644,6 +1734,7 @@ async def health(request: Request) -> JSONResponse:
 async def readiness(request: Request) -> JSONResponse:
     """Readiness probe. Returns 200 if the database is accessible."""
     import sqlite3 as _sql
+
     try:
         _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=5)
         _c.execute("PRAGMA journal_mode=WAL")
@@ -1662,10 +1753,9 @@ async def metrics(request: Request) -> PlainTextResponse:
     updated with current DB values on each scrape so the output is always
     consistent with the store state.
     """
-    from starlette.responses import PlainTextResponse
-
     try:
-        from prometheus_client import generate_latest, REGISTRY as prom_registry
+        from prometheus_client import REGISTRY as prom_registry
+        from prometheus_client import generate_latest
 
         # Push current DB values onto the global OTel instruments
         memories_gauge.set(memory_store.count())

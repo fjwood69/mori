@@ -23,11 +23,13 @@ class _GCPJsonFormatter(logging.Formatter):
     """Structured JSON log formatter for GCP Cloud Logging."""
 
     def format(self, record):
-        return json.dumps({
-            "severity": record.levelname,
-            "message": record.getMessage(),
-            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S.%fZ"),
-        })
+        return json.dumps(
+            {
+                "severity": record.levelname,
+                "message": record.getMessage(),
+                "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S.%fZ"),
+            }
+        )
 
 
 DATA_DIR = Path(os.environ.get("MORI_ADVISOR_DATA", "/data/mori-advisor"))
@@ -53,7 +55,8 @@ def main():
         bifrost_client=bifrost,
         trusted_dreamers=(
             os.environ.get("MORI_TRUSTED_DREAMERS", "").split(",")
-            if os.environ.get("MORI_TRUSTED_DREAMERS") else []
+            if os.environ.get("MORI_TRUSTED_DREAMERS")
+            else []
         ),
         nats_url=os.environ.get("MORI_NATS_URL") or None,
     )

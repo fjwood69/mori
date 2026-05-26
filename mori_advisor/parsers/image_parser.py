@@ -20,6 +20,7 @@ _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 _HAS_IMAGE_SUPPORT = False
 try:
     from PIL import Image as PILImage
+
     _HAS_IMAGE_SUPPORT = True
 except ImportError:
     pass
@@ -68,6 +69,7 @@ class ImageParser(BaseParser):
 
             # Encode to base64 data URI
             import io
+
             buffer = io.BytesIO()
             save_fmt = "JPEG" if fmt == "JPEG" else "PNG"
             if img.mode in ("RGBA", "LA", "P"):

@@ -78,9 +78,7 @@ def register_parser(source_type: str):
     return decorator
 
 
-def get_parser(
-    source: Path, explicit_type: str | None = None
-) -> BaseParser | None:
+def get_parser(source: Path, explicit_type: str | None = None) -> BaseParser | None:
     """Resolve a parser for the given source path.
 
     If `explicit_type` is provided, returns that parser directly.
@@ -115,8 +113,10 @@ def list_parsers() -> list[str]:
 
 # ── Import parser modules to trigger @register_parser decorators ────────────
 
-from mori_advisor.parsers import text_parser  # noqa: E402, F401
-from mori_advisor.parsers import pdf_parser  # noqa: E402, F401
-from mori_advisor.parsers import image_parser  # noqa: E402, F401
-from mori_advisor.parsers import transcript_parser  # noqa: E402, F401
-from mori_advisor.parsers import git_parser  # noqa: E402, F401
+from mori_advisor.parsers import (  # noqa: E402
+    git_parser,  # noqa: F401
+    image_parser,  # noqa: F401
+    pdf_parser,  # noqa: F401
+    text_parser,  # noqa: F401
+    transcript_parser,  # noqa: F401
+)

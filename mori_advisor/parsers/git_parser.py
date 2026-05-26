@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 
 from mori_advisor.parsers import BaseParser, Chunk, register_parser
@@ -38,7 +37,9 @@ class GitParser(BaseParser):
         try:
             result = subprocess.run(
                 ["git", "-C", str(source), "rev-parse", "--git-dir"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -49,7 +50,9 @@ class GitParser(BaseParser):
         try:
             result = subprocess.run(
                 ["git", "-C", str(source), "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode != 0:
                 logger.warning("Not a git repository: %s", source)
@@ -74,8 +77,10 @@ class GitParser(BaseParser):
 
         for commit in commits:
             text = self._format_commit(repo_root, commit)
-            if (len(batch_text) + len(text) > CHUNK_CHAR_LIMIT
-                    or len(batch) >= MAX_COMMITS_PER_CHUNK):
+            if (
+                len(batch_text) + len(text) > CHUNK_CHAR_LIMIT
+                or len(batch) >= MAX_COMMITS_PER_CHUNK
+            ):
                 if batch_text.strip():
                     chunks.append(self._make_chunk(batch_text, batch, repo_root, part))
                     part += 1
@@ -116,7 +121,10 @@ class GitParser(BaseParser):
     def _get_commits(self, repo_root: Path, since: str) -> list[dict]:
         """Get commit log as a list of dicts."""
         args = [
-            "git", "-C", str(repo_root), "log",
+            "git",
+            "-C",
+            str(repo_root),
+            "log",
             "--format=%H|%ai|%an|%s",
             "--no-merges",
         ]
@@ -125,7 +133,10 @@ class GitParser(BaseParser):
 
         try:
             result = subprocess.run(
-                args, capture_output=True, text=True, timeout=30,
+                args,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if result.returncode != 0:
                 logger.warning("git log failed: %s", result.stderr)
@@ -140,12 +151,14 @@ class GitParser(BaseParser):
                 continue
             parts = line.split("|", 3)
             if len(parts) >= 4:
-                commits.append({
-                    "hash": parts[0],
-                    "date": parts[1],
-                    "author": parts[2],
-                    "message": parts[3],
-                })
+                commits.append(
+                    {
+                        "hash": parts[0],
+                        "date": parts[1],
+                        "author": parts[2],
+                        "message": parts[3],
+                    }
+                )
         return commits
 
     def _format_commit(self, repo_root: Path, commit: dict) -> str:
@@ -161,7 +174,9 @@ class GitParser(BaseParser):
         try:
             stat = subprocess.run(
                 ["git", "-C", str(repo_root), "show", "--stat", "--format=", commit["hash"]],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if stat.stdout.strip():
                 lines.append(f"Changed files:\n{stat.stdout.strip()}")
@@ -170,9 +185,19 @@ class GitParser(BaseParser):
 
         try:
             diff = subprocess.run(
-                ["git", "-C", str(repo_root), "diff",
-                 f"{commit['hash']}^!", "--", ":(exclude)*.lock", ":(exclude)*.json"],
-                capture_output=True, text=True, timeout=10,
+                [
+                    "git",
+                    "-C",
+                    str(repo_root),
+                    "diff",
+                    f"{commit['hash']}^!",
+                    "--",
+                    ":(exclude)*.lock",
+                    ":(exclude)*.json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if diff.stdout.strip():
                 # Truncate huge diffs
@@ -185,9 +210,7 @@ class GitParser(BaseParser):
 
         return "\n".join(lines)
 
-    def _make_chunk(
-        self, text: str, commits: list[dict], repo_root: Path, part: int
-    ) -> Chunk:
+    def _make_chunk(self, text: str, commits: list[dict], repo_root: Path, part: int) -> Chunk:
         dates = [c["date"][:10] for c in commits if c.get("date")]
         date_range = f"{dates[0]}–{dates[-1]}" if dates else "?"
         return Chunk(

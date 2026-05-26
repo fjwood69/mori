@@ -108,9 +108,7 @@ class TranscriptParser(BaseParser):
 
         # Collect JSONL files
         if source.is_dir():
-            jsonl_files = sorted(
-                [f for f in source.rglob("*.jsonl") if f.is_file()]
-            )
+            jsonl_files = sorted([f for f in source.rglob("*.jsonl") if f.is_file()])
         else:
             jsonl_files = [source]
 
@@ -118,9 +116,7 @@ class TranscriptParser(BaseParser):
         for jsonl_path in jsonl_files:
             # Fast pre-filter by mtime for directories
             if cutoff_dt and source.is_dir():
-                mtime = datetime.fromtimestamp(
-                    os.path.getmtime(jsonl_path), tz=timezone.utc
-                )
+                mtime = datetime.fromtimestamp(os.path.getmtime(jsonl_path), tz=timezone.utc)
                 if mtime < cutoff_dt:
                     continue
 
