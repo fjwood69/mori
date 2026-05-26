@@ -159,6 +159,10 @@ powers the dream phase.
 **Supported:** PDF, images/whiteboards (Kimi K2.6 vision), CC transcripts
 (`.jsonl`), git history (`--since 30d`), text and code.
 
+**Works with remote servers:** `/ingest` reads files on the client device and
+sends content over the wire — no shared filesystem needed. Works whether
+mori-advisor is running locally or on GCE.
+
 **Cost guard:** `--max-cost` (default $5.00) aborts before spending. Preview
 is always free. SHA256 dedup prevents re-ingesting the same content.
 
