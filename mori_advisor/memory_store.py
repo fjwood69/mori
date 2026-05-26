@@ -210,11 +210,20 @@ class MemoryStore:
             "  tier TEXT NOT NULL DEFAULT 'working',"
             "  tags TEXT NOT NULL DEFAULT '[]',"
             "  dry_run INTEGER NOT NULL DEFAULT 0,"
-            "  error_count INTEGER NOT NULL DEFAULT 0"
+            "  error_count INTEGER NOT NULL DEFAULT 0,"
+            "  status TEXT NOT NULL DEFAULT 'committed'"
             ")"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ingestion_hash ON ingestion_log(source_hash)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ingestion_path ON ingestion_log(source_path)")
+
+        # Migrate: add status column if it doesn't exist (v0.1.3 -> v0.1.4)
+        try:
+            conn.execute(
+                "ALTER TABLE ingestion_log ADD COLUMN status TEXT NOT NULL DEFAULT 'committed'"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
         conn.commit()
         conn.close()

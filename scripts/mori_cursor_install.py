@@ -54,6 +54,7 @@ MORI_MCP_ALLOW = [
     "mcp__mori__mori_ingest",
     "mcp__mori__mori_ingest_status",
     "mcp__mori__mori_ingest_preview",
+    "mcp__mori__mori_ingest_content",
     # NATS
     "mcp__mori__nats_pub",
     "mcp__mori__nats_sub",

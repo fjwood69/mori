@@ -6,19 +6,34 @@ Three tiers of execution:
   1. Preview  (preview=True):  parse-only, zero-cost. Chunk stats only.
   2. Dry run  (dry_run=True):  full pipeline with LLM calls, but no DB writes.
   3. Ingest   (both False):   full pipeline, commits everything.
+
+Content-based ingestion (v0.1.4):
+  `ingest_content()` accepts base64-encoded file bytes sent over the wire,
+  for remote clients where the server can't access the filesystem.
+  Both `ingest()` and `ingest_content()` build IngestionJob lists and
+  pass them to the shared `_run_pipeline()` execution engine.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import sqlite3
+from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.memory_store import MemoryStore
-from mori_advisor.parsers import Chunk, get_parser
+from mori_advisor.parsers import (
+    Chunk,
+    CONTENT_SIZE_CEILING,
+    get_parser,
+    is_binary,
+    list_parsers,
+)
 from mori_advisor.parsers.exceptions import (
     ParserDependencyError,
 )
@@ -65,8 +80,41 @@ FOCUS_GUIDANCE: dict[str, str] = {
 }
 
 
+# ---- Tiered MIME routing table ----
+# Maps MIME types to parser source_type names registered with @register_parser.
+# Order matters: more specific types listed first.
+MIME_ROUTING_TABLE: list[tuple[str, str]] = [
+    ("application/pdf", "pdf"),
+    ("image/png", "image"),
+    ("image/jpeg", "image"),
+    ("image/jpg", "image"),
+    ("image/webp", "image"),
+    ("image/gif", "image"),
+    ("text/x-git-log", "git"),
+]
+
+# text/* fallback types for explicit routing
+TEXT_FALLBACK_PREFIXES = ["text/"]
+
+
 class CostExceededError(Exception):
     """Estimated cost exceeds the configured maximum."""
+
+
+@dataclass
+class IngestionJob:
+    """A unit of work for the shared ingestion pipeline.
+
+    Both filesystem ingest() and wire ingest_content() build lists of
+    these and pass them to _run_pipeline().
+    """
+
+    decoded_bytes: bytes
+    source_uri: str          # "content:<name>" or filesystem path
+    mime_hint: str | None    # From caller, None = auto-detect
+    provenance: str          # "filesystem" | "content"
+    file_hash: str           # SHA256 of decoded_bytes
+    size_bytes: int          # Raw size
 
 
 class IngestionPipeline:
@@ -136,7 +184,7 @@ class IngestionPipeline:
         for path in source_paths:
             try:
                 # Dedup check
-                if not force and self._is_ingested(path):
+                if not force and self._is_ingested_by_hash(self._hash_file(path), status_filter="committed"):
                     logger.info("Skipping already-ingested source: %s", path)
                     total_skipped += 1
                     continue
@@ -146,7 +194,6 @@ class IngestionPipeline:
                     path, explicit_type=source_type if source_type != "auto" else None
                 )
                 if parser is None:
-                    # Fallback: try as a directory of text files
                     if path.is_dir():
                         chunks = parse_text_directory(path)
                     else:
@@ -185,9 +232,8 @@ class IngestionPipeline:
                 # Write memories (unless dry run)
                 if not dry_run and batch_memories:
                     self._write_memories(batch_memories, tier, all_tags)
-                    self._record_ingestion(
-                        path, len(batch_memories), focus, tier, all_tags, dry_run=False
-                    )
+                    self._record_ingestion(path, len(batch_memories), focus, tier, all_tags,
+                                           dry_run=False, status="committed")
 
                 # Contradiction scan (unless dry run)
                 if not dry_run and batch_memories:
@@ -217,6 +263,291 @@ class IngestionPipeline:
             "dry_run": dry_run,
             "preview": preview,
         }
+
+    def ingest_content(
+        self,
+        files: list[dict],
+        focus: str = "all",
+        tier: str = "working",
+        tags: list[str] | None = None,
+        dry_run: bool = False,
+        preview: bool = False,
+        force: bool = False,
+    ) -> dict:
+        """Ingest source material from base64-encoded file bytes.
+
+        For remote clients where the server can't access the filesystem.
+        Files are decoded, parsed into chunks, then run through the shared
+        _run_pipeline() execution engine.
+
+        Args:
+            files: List of dicts with keys: name, content_b64, mime_type.
+            focus: What to extract — "all", "decisions", "architecture",
+                   "conventions", "gotchas".
+            tier: Memory tier — "working", "canonical", "ephemeral".
+            tags: Extra tags to apply to produced memories.
+            dry_run: If True, calls the LLM but does not write memories.
+            preview: If True, parse-only — no LLM calls, no writes.
+            force: If True, re-ingest even if previously ingested.
+
+        Returns:
+            Summary dict matching ingest() output format.
+        """
+        all_tags = tags or []
+
+        # Decode and validate files
+        jobs: list[IngestionJob] = []
+        errors: list[str] = []
+
+        for f in files:
+            name = f.get("name", "unknown")
+            content_b64 = f.get("content_b64", "")
+            mime_type = f.get("mime_type", "")
+
+            if not content_b64:
+                errors.append(f"Empty content_b64 for {name}")
+                continue
+
+            # Pre-decode size check to prevent OOM from malicious payloads
+            # Base64 expands input by ~1.37x, so raw length * 3/4 ≈ decoded bytes
+            raw_len = len(content_b64)
+            estimated_decoded = (raw_len * 3) // 4
+            if estimated_decoded > CONTENT_SIZE_CEILING:
+                errors.append(
+                    f"Content too large for {name}: ~{estimated_decoded} bytes estimated "
+                    f"(max {CONTENT_SIZE_CEILING})"
+                )
+                continue
+
+            try:
+                decoded = base64.b64decode(content_b64)
+            except Exception as e:
+                errors.append(f"Base64 decode failed for {name}: {e}")
+                continue
+
+            size = len(decoded)
+            if size > CONTENT_SIZE_CEILING:
+                errors.append(f"Content too large for {name}: {size} bytes (max {CONTENT_SIZE_CEILING})")
+                continue
+
+            file_hash = self._hash_bytes(decoded)
+            uri = f"content:{name}"
+
+            # Dedup check (committed entries only — preview/failed don't block)
+            if not force and self._is_ingested_by_hash(file_hash, status_filter="committed"):
+                logger.info("Skipping already-ingested content: %s", name)
+                continue
+
+            jobs.append(IngestionJob(
+                decoded_bytes=decoded,
+                source_uri=uri,
+                mime_hint=mime_type or None,
+                provenance="content",
+                file_hash=file_hash,
+                size_bytes=size,
+            ))
+
+        if not jobs:
+            result = {
+                "sources": 0,
+                "chunks": 0,
+                "memories_written": 0,
+                "memories_candidates": 0,
+                "skipped": 0,
+                "errors": len(errors),
+                "cost_estimate": 0.0,
+                "dry_run": dry_run,
+                "preview": preview,
+            }
+            if errors:
+                result["error_details"] = errors
+            return result
+
+        # Run through shared pipeline
+        all_tags = tags or []
+        focus_guidance = FOCUS_GUIDANCE.get(focus, "")
+        result = self._run_pipeline(jobs, focus_guidance, tier, all_tags, dry_run, preview, force)
+
+        if errors:
+            result["error_details"] = (result.get("error_details") or []) + errors
+            result["errors"] = result.get("errors", 0) + len(errors)
+
+        return result
+
+    # ── Shared pipeline execution engine ─────────────────────────────────────
+
+    def _run_pipeline(
+        self,
+        jobs: list[IngestionJob],
+        focus_guidance: str,
+        tier: str,
+        tags: list[str],
+        dry_run: bool,
+        preview: bool,
+        force: bool,
+    ) -> dict:
+        """Execute the ingestion pipeline on a list of IngestionJobs.
+
+        Shared by ingest() (filesystem) and ingest_content() (wire).
+        Handles: parse → cost check → distill → write → contradiction scan → record.
+        """
+        total_chunks = 0
+        total_written = 0
+        total_skipped = 0
+        total_errors = 0
+        total_cost = 0.0
+        all_memories: list[dict] = []
+        error_details: list[str] = []
+
+        for job in jobs:
+            try:
+                # Dedup check
+                if not force and self._is_ingested_by_hash(job.file_hash, status_filter="committed"):
+                    logger.info("Skipping already-ingested: %s", job.source_uri)
+                    total_skipped += 1
+                    continue
+
+                # Parse
+                parser = self._parser_for_mime(job.mime_hint, job.decoded_bytes)
+                if parser is None:
+                    error_details.append(f"No parser for {job.source_uri} (mime: {job.mime_hint})")
+                    total_errors += 1
+                    continue
+
+                chunks = parser.parse_content(
+                    job.source_uri,
+                    job.decoded_bytes,
+                    job.mime_hint or "application/octet-stream",
+                )
+                if not chunks:
+                    logger.info("No content extracted from: %s", job.source_uri)
+                    continue
+
+                total_chunks += len(chunks)
+
+                # Preview mode: stop here, just report stats
+                if preview:
+                    cost = self._estimate_cost(chunks)
+                    total_cost += cost
+                    continue
+
+                # Cost check
+                cost = self._estimate_cost(chunks)
+                total_cost += cost
+                if cost > self.max_cost:
+                    raise CostExceededError(
+                        f"Estimated cost ${cost:.2f} exceeds max ${self.max_cost:.2f}. "
+                        f"Use --max-cost to raise the limit."
+                    )
+
+                # Distill
+                batch_memories = self._distill_batch(chunks, focus_guidance, tier, tags)
+                total_written += len(batch_memories)
+                all_memories.extend(batch_memories)
+
+                # Write (unless dry run)
+                if not dry_run and batch_memories:
+                    self._write_memories(batch_memories, tier, tags)
+                    self._record_ingestion_by_fields(
+                        source_path=job.source_uri,
+                        source_hash=job.file_hash,
+                        memories_written=len(batch_memories),
+                        focus=focus_guidance[:20] if focus_guidance else "all",
+                        tier=tier,
+                        tags=tags,
+                        dry_run=False,
+                        status="committed",
+                    )
+
+                # Contradiction scan (unless dry run)
+                if not dry_run and batch_memories:
+                    try:
+                        self._contradiction_scan(batch_memories)
+                    except Exception as e:
+                        logger.warning("Contradiction scan failed: %s", e)
+
+            except CostExceededError as e:
+                logger.warning("Cost exceeded for %s: %s", job.source_uri, e)
+                error_details.append(str(e))
+                total_errors += 1
+            except ParserDependencyError as e:
+                logger.warning("Dependency missing for %s: %s", job.source_uri, e)
+                error_details.append(str(e))
+                total_errors += 1
+            except Exception as e:
+                logger.error("Failed to ingest %s: %s", job.source_uri, e)
+                error_details.append(str(e))
+                total_errors += 1
+
+        result = {
+            "sources": len(jobs),
+            "chunks": total_chunks,
+            "memories_written": total_written if not dry_run and not preview else 0,
+            "memories_candidates": len(all_memories) if dry_run else 0,
+            "skipped": total_skipped,
+            "errors": total_errors,
+            "cost_estimate": round(total_cost, 4),
+            "dry_run": dry_run,
+            "preview": preview,
+        }
+        if error_details:
+            result["error_details"] = error_details
+        return result
+
+    # ── Tiered MIME routing ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _parser_for_mime(mime_hint: str | None, raw_bytes: bytes) -> object | None:
+        """Resolve a parser for the given MIME type and raw bytes.
+
+        Tiered strategy:
+        1. Explicit allowlist (MIME_ROUTING_TABLE)
+        2. text/x-* fallback → TextParser
+        3. text/plain with byte-sniffing → TextParser
+        4. Unknown binary → skip with warning
+        """
+        from mori_advisor.parsers.text_parser import TextParser
+        from mori_advisor.parsers.pdf_parser import PdfParser
+        from mori_advisor.parsers.image_parser import ImageParser
+        from mori_advisor.parsers.transcript_parser import TranscriptParser
+        from mori_advisor.parsers.git_parser import GitParser
+
+        # Map parser type names to classes for lookup
+        PARSER_CLASSES = {
+            "text": TextParser,
+            "pdf": PdfParser,
+            "image": ImageParser,
+            "transcripts": TranscriptParser,
+            "git": GitParser,
+        }
+
+        if mime_hint:
+            mime_lower = mime_hint.lower().strip()
+
+            # Tier 1: explicit allowlist
+            for pattern, parser_type in MIME_ROUTING_TABLE:
+                if mime_lower.startswith(pattern):
+                    cls = PARSER_CLASSES.get(parser_type)
+                    if cls:
+                        return cls()
+
+            # Tier 2: text/x-* fallback
+            if mime_lower.startswith("text/") and mime_lower != "text/plain":
+                return TextParser()
+
+            # Tier 3: text/plain or octet-stream — check with byte-sniffing
+            if mime_lower in ("text/plain", "application/octet-stream"):
+                if not is_binary(raw_bytes):
+                    return TextParser()
+                logger.warning("Binary content detected for mime %s — skipping", mime_hint)
+                return None
+
+        # Tier 4: no MIME hint — try to detect
+        if not is_binary(raw_bytes):
+            return TextParser()
+
+        logger.warning("No MIME hint and binary content detected — skipping")
+        return None
 
     # ── Expand sources ──────────────────────────────────────────────────────
 
@@ -252,13 +583,11 @@ class IngestionPipeline:
         for chunk in chunks:
             if chunk.is_image:
                 image_count += 1
-                # Image tokens depend on resolution; use a rough estimate
                 input_tokens += 255  # ~85 tokens * 3 for typical 3-tile image
             else:
                 input_tokens += len(chunk.content) / CHARS_PER_TOKEN
 
-        # System prompt overhead (~500 tokens per batch)
-        input_tokens += 500
+        input_tokens += 500  # System prompt overhead
 
         input_cost = (input_tokens / 1000) * DEFAULT_INPUT_PRICE_PER_1K
         output_tokens = ESTIMATED_OUTPUT_TOKENS_PER_CHUNK * max(len(chunks), 1)
@@ -278,25 +607,42 @@ class IngestionPipeline:
 
     # ── Dedup ──────────────────────────────────────────────────────────────
 
-    def _is_ingested(self, path: Path) -> bool:
-        """Check whether a source file has already been ingested."""
-        file_hash = self._hash_file(path)
+    def _is_ingested_by_hash(self, file_hash: str, status_filter: str | None = None) -> bool:
+        """Check whether a source hash has already been ingested.
+
+        Args:
+            file_hash: SHA256 hash to check.
+            status_filter: If "committed", only checks committed entries
+                          (preview/dry-run/failed don't block re-ingestion).
+        """
         conn = self.memory_store._get_conn()
         try:
-            cur = conn.execute(
-                "SELECT COUNT(*) FROM ingestion_log WHERE source_hash = ? AND dry_run = 0",
-                (file_hash,),
-            )
+            if status_filter == "committed":
+                cur = conn.execute(
+                    "SELECT COUNT(*) FROM ingestion_log "
+                    "WHERE source_hash = ? AND dry_run = 0 AND "
+                    "(status IS NULL OR status = 'committed')",
+                    (file_hash,),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT COUNT(*) FROM ingestion_log "
+                    "WHERE source_hash = ? AND dry_run = 0",
+                    (file_hash,),
+                )
             return cur.fetchone()[0] > 0
         except sqlite3.Error:
             return False
         finally:
             conn.close()
 
+    def _hash_bytes(self, data: bytes) -> str:
+        """Compute SHA256 hash of raw bytes."""
+        return hashlib.sha256(data).hexdigest()
+
     def _hash_file(self, path: Path) -> str:
         """Compute SHA256 hash of a file's contents."""
         if path.is_dir():
-            # Hash directory contents collectively
             sha = hashlib.sha256()
             for fp in sorted(path.rglob("*")):
                 if fp.is_file():
@@ -342,10 +688,8 @@ class IngestionPipeline:
             else "Analyse the attached image(s) and extract durable memories."
         )
 
-        # Route to vision or text path
         try:
             if image_uris:
-                # For now, handle pure-image or mixed batches via vision path
                 response = self.client.consult_vision(
                     system=system,
                     user_text=user_text,
@@ -389,10 +733,6 @@ class IngestionPipeline:
         return "\n".join(parts)
 
     def _parse_response(self, text: str) -> list[dict]:
-        """Parse model response into a list of memory dicts.
-
-        Delegates to the shared parse_model_json_response utility.
-        """
         return parse_model_json_response(text)
 
     # ── Memory writing ─────────────────────────────────────────────────────
@@ -406,7 +746,6 @@ class IngestionPipeline:
             name = mem.get("name") or self._derive_name(mem)
             confidence = mem.get("confidence", 1.0)
 
-            # Skip low-confidence extractions
             if confidence < 0.5:
                 logger.debug("Skipping low-confidence memory: %s (%.2f)", name, confidence)
                 continue
@@ -427,7 +766,6 @@ class IngestionPipeline:
             )
 
     def _derive_name(self, mem: dict) -> str:
-        """Derive a kebab-case name from memory dict."""
         title = mem.get("title", "")
         if not title:
             import time
@@ -436,7 +774,6 @@ class IngestionPipeline:
         return title.lower().replace(" ", "-").replace("_", "-")
 
     def _infer_type(self, name: str, mem: dict) -> str:
-        """Infer memory type from tags or name pattern."""
         tags = mem.get("tags", [])
         tag_set = {t.lower() for t in tags}
 
@@ -466,25 +803,50 @@ class IngestionPipeline:
         tier: str,
         tags: list[str],
         dry_run: bool,
+        status: str = "committed",
     ) -> None:
         """Record an ingestion run in the log."""
         file_hash = self._hash_file(source_path)
+        self._record_ingestion_by_fields(
+            source_path=str(source_path),
+            source_hash=file_hash,
+            memories_written=memories_written,
+            focus=focus,
+            tier=tier,
+            tags=tags,
+            dry_run=dry_run,
+            status=status,
+        )
+
+    def _record_ingestion_by_fields(
+        self,
+        source_path: str,
+        source_hash: str,
+        memories_written: int,
+        focus: str,
+        tier: str,
+        tags: list[str],
+        dry_run: bool,
+        status: str = "committed",
+    ) -> None:
+        """Record ingestion — shared by filesystem and content modes."""
         tags_json = json.dumps(tags or [])
         conn = self.memory_store._get_conn()
         try:
             conn.execute(
                 "INSERT INTO ingestion_log "
-                "(source_path, source_hash, memories_written, model, focus, tier, tags, dry_run) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(source_path, source_hash, memories_written, model, focus, tier, tags, dry_run, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    str(source_path),
-                    file_hash,
+                    source_path,
+                    source_hash,
                     memories_written,
                     "kimi-k2.6",
                     focus,
                     tier,
                     tags_json,
                     1 if dry_run else 0,
+                    status,
                 ),
             )
             conn.commit()
@@ -496,11 +858,6 @@ class IngestionPipeline:
     # ── Contradiction scan ─────────────────────────────────────────────────
 
     def _contradiction_scan(self, new_memories: list[dict]) -> int:
-        """Check new memories against existing canonical ones for contradictions.
-
-        Delegates to the shared run_contradiction_scan utility.
-        """
-
         def consult_fn(system, user, vk, max_tokens, temperature):
             return self.client.consult(
                 system=system,
@@ -528,7 +885,8 @@ class IngestionPipeline:
         try:
             cur = conn.execute(
                 "SELECT source_path, ingested_at, memories_written, model, focus, "
-                "tier, dry_run, error_count FROM ingestion_log "
+                "tier, dry_run, error_count, status "
+                "FROM ingestion_log "
                 "ORDER BY ingested_at DESC LIMIT ?",
                 (min(limit, 100),),
             )
@@ -545,11 +903,12 @@ class IngestionPipeline:
             "| Source | Date | Memories | Model | Focus | Tier | Status |\n"
             "|---|---|---|---|---|---|---|"
         ]
-        for source_path, dt, count, model, focus, tier, dry_run, errors in rows:
-            status = "dry-run" if dry_run else ("errors" if errors else "committed")
+        for source_path, dt, count, model, focus, tier, dry_run, errors, status in rows:
+            status_str = status or ("dry-run" if dry_run else ("errors" if errors else "committed"))
             src_short = Path(source_path).name[:40]
             lines.append(
-                f"| {src_short} | {dt[:16]} | {count} | {model} | {focus} | {tier} | {status} |"
+                f"| {src_short} | {dt[:16]} | {count} | {model} "
+                f"| {focus} | {tier} | {status_str} |"
             )
 
         return "\n".join(lines)
@@ -613,24 +972,9 @@ class IngestionPipeline:
             total_tokens += tokens
             total_cost += cost
 
-            desc = f"{len(chunks)} chunks"
-            if text_chunks:
-                desc += f" ({text_chunks} text"
-            if image_chunks:
-                desc += f" + {image_chunks} image"
-            if text_chunks and image_chunks:
-                desc += ")"
-            elif not text_chunks and not image_chunks:
-                pass
-            else:
-                desc += ")"
-
-            # Expected memory range (rough: 0.5–1.2 per chunk based on density)
-            est_low = max(0, len(chunks) // 2)
-            est_high = max(1, int(len(chunks) * 1.2))
             parts.append(
-                f"- **{path.name}**: ~{tokens:,} tokens, {desc} — "
-                f"est. ${cost:.4f}, typically {est_low}–{est_high} memories"
+                f"- **{path.name}**: ~{tokens:,} tokens, {len(chunks)} chunks — "
+                f"est. ${cost:.4f}"
             )
 
         parts.append(

@@ -157,6 +157,44 @@ class TranscriptParser(BaseParser):
             logger.warning("Error reading %s: %s", file_path, e)
             return []
 
+        return self._parse_events(sessions, str(file_path))
+
+    def parse_content(self, name: str, content_bytes: bytes, mime_type: str) -> list[Chunk]:
+        """Parse transcript content from raw JSONL bytes.
+
+        Note: --since filtering is not available in content mode because
+        file mtime is not available from raw bytes. Clients should pre-filter
+        JSONL files by mtime before sending.
+
+        Args:
+            name: Source name/identifier.
+            content_bytes: Raw JSONL transcript bytes.
+            mime_type: MIME type (should be application/json).
+
+        Returns:
+            List of Chunks grouped by session_id.
+        """
+        text = content_bytes.decode("utf-8", errors="replace")
+        sessions: dict[str, list[dict]] = {}
+
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+                sid = event.get("sessionId") or event.get("session_id") or "unknown"
+                sessions.setdefault(sid, []).append(event)
+            except json.JSONDecodeError:
+                continue
+
+        return self._parse_events(sessions, name)
+
+    def _parse_events(self, sessions: dict[str, list[dict]], source_name: str) -> list[Chunk]:
+        """Parse grouped session events into formatted chunks.
+
+        Shared by parse() and parse_content().
+        """
         chunks: list[Chunk] = []
         for sid, events in sessions.items():
             formatted = self._format_session(sid, events)
@@ -172,7 +210,7 @@ class TranscriptParser(BaseParser):
                         Chunk(
                             content=batch_text,
                             metadata={
-                                "source_path": str(file_path),
+                                "source_path": source_name,
                                 "session_id": sid,
                                 "part": i + 1,
                                 "event_count": len(batch),
@@ -184,7 +222,7 @@ class TranscriptParser(BaseParser):
                     Chunk(
                         content=formatted,
                         metadata={
-                            "source_path": str(file_path),
+                            "source_path": source_name,
                             "session_id": sid,
                             "event_count": len(events),
                         },

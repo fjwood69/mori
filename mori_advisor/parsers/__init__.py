@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import base64
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,56 @@ from pathlib import Path
 from mori_advisor.parsers.exceptions import ParserNotFoundError
 
 logger = logging.getLogger(__name__)
+
+# Maximum raw byte size for content-mode ingestion (10MB)
+CONTENT_SIZE_CEILING = 10 * 1024 * 1024
+
+
+def normalize_encoding(text: str) -> str:
+    """Strip BOM and normalize newlines."""
+    if text.startswith("﻿"):
+        text = text[1:]
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text
+
+
+def detect_charset(raw: bytes) -> str:
+    """Detect charset from raw bytes. Falls back to utf-8 with replacement."""
+    try:
+        import chardet
+        result = chardet.detect(raw)
+        if result.get("encoding") and result.get("confidence", 0) > 0.5:
+            return result["encoding"]
+    except ImportError:
+        pass
+    return "utf-8"
+
+
+def decode_bytes(raw: bytes) -> str:
+    """Decode bytes to string with charset detection and normalization.
+
+    Tries chardet if available, falls back to utf-8 then latin-1.
+    Strips BOM and normalizes newlines.
+    """
+    charset = detect_charset(raw)
+    try:
+        text = raw.decode(charset)
+    except (LookupError, UnicodeDecodeError):
+        text = raw.decode("utf-8", errors="replace")
+    return normalize_encoding(text)
+
+
+def is_binary(raw: bytes) -> bool:
+    """Quick binary detection — check for null bytes in first 8KB."""
+    try:
+        import magic as _magic
+        mime = _magic.from_buffer(raw[:8192], mime=True)
+        if mime and not mime.startswith("text/"):
+            return True
+    except ImportError:
+        pass
+    # Fallback: check for null bytes
+    return b"\x00" in raw[:8192]
 
 
 @dataclass
@@ -34,6 +85,46 @@ class Chunk:
     content: str
     metadata: dict = field(default_factory=dict)
     is_image: bool = False
+
+    @classmethod
+    def from_content(
+        cls,
+        content_bytes: bytes,
+        name: str,
+        mime_type: str,
+        is_image: bool = False,
+        **extra_meta,
+    ) -> "Chunk":
+        """Create a Chunk from raw bytes rather than a filesystem path.
+
+        For images: base64-encode into a data URI.
+        For text: decode with charset detection and normalization.
+
+        Args:
+            content_bytes: Raw bytes of the source material.
+            name: Source name (filename or identifier).
+            mime_type: MIME type of the content.
+            is_image: If True, route through consult_vision().
+            **extra_meta: Additional metadata fields to include.
+
+        Returns:
+            A Chunk ready for distillation.
+        """
+        meta = {"source_path": name, "mime_type": mime_type}
+        meta.update(extra_meta)
+
+        if is_image:
+            encoded = base64.b64encode(content_bytes).decode("ascii")
+            data_uri = f"data:{mime_type};base64,{encoded}"
+            return cls(
+                content=data_uri,
+                metadata=meta,
+                is_image=True,
+            )
+
+        text = decode_bytes(content_bytes)
+        meta["file_size"] = len(text)
+        return cls(content=text, metadata=meta)
 
 
 class BaseParser:
