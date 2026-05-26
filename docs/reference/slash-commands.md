@@ -146,7 +146,7 @@ Messages persist for 7 days in the JetStream store. Offline instances catch up o
 
 Extracts durable memories from PDFs, images, CC transcripts, git history, and code files into the shared memory store. Solves the cold-start problem for new users and unlocks institutional knowledge locked in files.
 
-**MCP tools:** `mori-ingest`, `mori-ingest_status`, `mori-ingest_preview`
+**MCP tools:** `mori-ingest`, `mori-ingest_content`, `mori-ingest_status`, `mori-ingest_preview`
 
 **Parameters:**
 
@@ -181,6 +181,8 @@ Extracts durable memories from PDFs, images, CC transcripts, git history, and co
 /ingest --source ~/my-project --type git --since 90d
 /ingest --preview --source ~/docs/ --focus all
 ```
+
+**Works with remote servers:** `/ingest` reads files on the client device and sends content over the wire — no shared filesystem required. Works whether mori-advisor runs locally or on GCE.
 
 **Cost estimation note:** Token estimates are approximate — image-heavy PDFs may vary 2–3×. Use `--preview` before large ingestions.
 
