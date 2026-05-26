@@ -71,21 +71,21 @@ jobs:
           envs: GITHUB_REF_NAME
           script: |
             IMAGE="ghcr.io/fjwood69/mori:${GITHUB_REF_NAME}"
-            podman pull "$IMAGE"
-            podman stop mori-advisor-new || true
-            podman rm mori-advisor-new || true
-            podman run -d \
+            sudo podman pull "$IMAGE"
+            sudo podman stop mori-advisor-new || true
+            sudo podman rm mori-advisor-new || true
+            sudo podman run -d \
               --name mori-advisor-new \
               --network=host \
+              --restart=unless-stopped \
               -v /data/mori-advisor:/data/mori-advisor:Z \
               --env-file /data/mori-advisor/.env \
               "$IMAGE"
             for i in 1 2 3 4 5; do
               sleep $((i * 2))
               curl -sf http://localhost:8968/health && break
-              [ $i -eq 5 ] && { podman rm -f mori-advisor-new; exit 1; }
+              [ $i -eq 5 ] && { sudo podman rm -f mori-advisor-new; exit 1; }
             done
-            podman stop mori-advisor || true
-            podman rm mori-advisor || true
-            podman rename mori-advisor-new mori-advisor
-            podman update --restart=unless-stopped mori-advisor
+            sudo podman stop mori-advisor || true
+            sudo podman rm mori-advisor || true
+            sudo podman rename mori-advisor-new mori-advisor
