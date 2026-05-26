@@ -156,7 +156,9 @@ class PdfParser(BaseParser):
 
         for pn, text in pages:
             if len(current_text) + len(text) > CHUNK_CHAR_LIMIT and current_text:
-                chunks.append(self._make_chunk(current_text, current_pages, source_name, total_pages, part))
+                chunks.append(
+                    self._make_chunk(current_text, current_pages, source_name, total_pages, part)
+                )
                 part += 1
                 current_pages = []
                 current_text = ""
@@ -168,7 +170,9 @@ class PdfParser(BaseParser):
                 current_text = f"--- Page {pn} ---\n{text}"
 
         if current_text.strip():
-            chunks.append(self._make_chunk(current_text, current_pages, source_name, total_pages, part))
+            chunks.append(
+                self._make_chunk(current_text, current_pages, source_name, total_pages, part)
+            )
 
         return chunks
 

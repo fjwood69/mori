@@ -22,17 +22,15 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from io import BytesIO
 from pathlib import Path
 
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.memory_store import MemoryStore
 from mori_advisor.parsers import (
-    Chunk,
     CONTENT_SIZE_CEILING,
+    Chunk,
     get_parser,
     is_binary,
-    list_parsers,
 )
 from mori_advisor.parsers.exceptions import (
     ParserDependencyError,
@@ -110,11 +108,11 @@ class IngestionJob:
     """
 
     decoded_bytes: bytes
-    source_uri: str          # "content:<name>" or filesystem path
-    mime_hint: str | None    # From caller, None = auto-detect
-    provenance: str          # "filesystem" | "content"
-    file_hash: str           # SHA256 of decoded_bytes
-    size_bytes: int          # Raw size
+    source_uri: str  # "content:<name>" or filesystem path
+    mime_hint: str | None  # From caller, None = auto-detect
+    provenance: str  # "filesystem" | "content"
+    file_hash: str  # SHA256 of decoded_bytes
+    size_bytes: int  # Raw size
 
 
 class IngestionPipeline:
@@ -184,7 +182,9 @@ class IngestionPipeline:
         for path in source_paths:
             try:
                 # Dedup check
-                if not force and self._is_ingested_by_hash(self._hash_file(path), status_filter="committed"):
+                if not force and self._is_ingested_by_hash(
+                    self._hash_file(path), status_filter="committed"
+                ):
                     logger.info("Skipping already-ingested source: %s", path)
                     total_skipped += 1
                     continue
@@ -232,8 +232,15 @@ class IngestionPipeline:
                 # Write memories (unless dry run)
                 if not dry_run and batch_memories:
                     self._write_memories(batch_memories, tier, all_tags)
-                    self._record_ingestion(path, len(batch_memories), focus, tier, all_tags,
-                                           dry_run=False, status="committed")
+                    self._record_ingestion(
+                        path,
+                        len(batch_memories),
+                        focus,
+                        tier,
+                        all_tags,
+                        dry_run=False,
+                        status="committed",
+                    )
 
                 # Contradiction scan (unless dry run)
                 if not dry_run and batch_memories:
@@ -327,7 +334,9 @@ class IngestionPipeline:
 
             size = len(decoded)
             if size > CONTENT_SIZE_CEILING:
-                errors.append(f"Content too large for {name}: {size} bytes (max {CONTENT_SIZE_CEILING})")
+                errors.append(
+                    f"Content too large for {name}: {size} bytes (max {CONTENT_SIZE_CEILING})"
+                )
                 continue
 
             file_hash = self._hash_bytes(decoded)
@@ -338,14 +347,16 @@ class IngestionPipeline:
                 logger.info("Skipping already-ingested content: %s", name)
                 continue
 
-            jobs.append(IngestionJob(
-                decoded_bytes=decoded,
-                source_uri=uri,
-                mime_hint=mime_type or None,
-                provenance="content",
-                file_hash=file_hash,
-                size_bytes=size,
-            ))
+            jobs.append(
+                IngestionJob(
+                    decoded_bytes=decoded,
+                    source_uri=uri,
+                    mime_hint=mime_type or None,
+                    provenance="content",
+                    file_hash=file_hash,
+                    size_bytes=size,
+                )
+            )
 
         if not jobs:
             result = {
@@ -402,7 +413,9 @@ class IngestionPipeline:
         for job in jobs:
             try:
                 # Dedup check
-                if not force and self._is_ingested_by_hash(job.file_hash, status_filter="committed"):
+                if not force and self._is_ingested_by_hash(
+                    job.file_hash, status_filter="committed"
+                ):
                     logger.info("Skipping already-ingested: %s", job.source_uri)
                     total_skipped += 1
                     continue
@@ -506,11 +519,11 @@ class IngestionPipeline:
         3. text/plain with byte-sniffing → TextParser
         4. Unknown binary → skip with warning
         """
-        from mori_advisor.parsers.text_parser import TextParser
-        from mori_advisor.parsers.pdf_parser import PdfParser
-        from mori_advisor.parsers.image_parser import ImageParser
-        from mori_advisor.parsers.transcript_parser import TranscriptParser
         from mori_advisor.parsers.git_parser import GitParser
+        from mori_advisor.parsers.image_parser import ImageParser
+        from mori_advisor.parsers.pdf_parser import PdfParser
+        from mori_advisor.parsers.text_parser import TextParser
+        from mori_advisor.parsers.transcript_parser import TranscriptParser
 
         # Map parser type names to classes for lookup
         PARSER_CLASSES = {
@@ -626,8 +639,7 @@ class IngestionPipeline:
                 )
             else:
                 cur = conn.execute(
-                    "SELECT COUNT(*) FROM ingestion_log "
-                    "WHERE source_hash = ? AND dry_run = 0",
+                    "SELECT COUNT(*) FROM ingestion_log WHERE source_hash = ? AND dry_run = 0",
                     (file_hash,),
                 )
             return cur.fetchone()[0] > 0
@@ -907,8 +919,7 @@ class IngestionPipeline:
             status_str = status or ("dry-run" if dry_run else ("errors" if errors else "committed"))
             src_short = Path(source_path).name[:40]
             lines.append(
-                f"| {src_short} | {dt[:16]} | {count} | {model} "
-                f"| {focus} | {tier} | {status_str} |"
+                f"| {src_short} | {dt[:16]} | {count} | {model} | {focus} | {tier} | {status_str} |"
             )
 
         return "\n".join(lines)
@@ -960,8 +971,6 @@ class IngestionPipeline:
                 parts.append(f"- **{s}**: no extractable content")
                 continue
 
-            image_chunks = sum(1 for c in chunks if c.is_image)
-            text_chunks = len(chunks) - image_chunks
             tokens = sum(255 if c.is_image else len(c.content) // CHARS_PER_TOKEN for c in chunks)
             cost = (tokens / 1000) * DEFAULT_INPUT_PRICE_PER_1K
             cost += (
@@ -973,8 +982,7 @@ class IngestionPipeline:
             total_cost += cost
 
             parts.append(
-                f"- **{path.name}**: ~{tokens:,} tokens, {len(chunks)} chunks — "
-                f"est. ${cost:.4f}"
+                f"- **{path.name}**: ~{tokens:,} tokens, {len(chunks)} chunks — est. ${cost:.4f}"
             )
 
         parts.append(

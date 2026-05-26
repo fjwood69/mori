@@ -6,9 +6,9 @@ import logging
 from pathlib import Path
 
 from mori_advisor.parsers import (
+    CONTENT_SIZE_CEILING,
     BaseParser,
     Chunk,
-    CONTENT_SIZE_CEILING,
     decode_bytes,
     register_parser,
 )

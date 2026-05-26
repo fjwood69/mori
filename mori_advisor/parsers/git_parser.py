@@ -14,7 +14,6 @@ import subprocess
 from pathlib import Path
 
 from mori_advisor.parsers import BaseParser, Chunk, register_parser
-from mori_advisor.parsers.exceptions import ParserDependencyError
 
 logger = logging.getLogger(__name__)
 
@@ -170,13 +169,15 @@ class GitParser(BaseParser):
         # Convert to the same format expected by _chunk_commits
         normalized = []
         for c in commits:
-            normalized.append({
-                "hash": c["hash"],
-                "date": c["date"],
-                "author": c["author"],
-                "message": c["message"],
-                "sanitized_block": c["sanitized_block"],
-            })
+            normalized.append(
+                {
+                    "hash": c["hash"],
+                    "date": c["date"],
+                    "author": c["author"],
+                    "message": c["message"],
+                    "sanitized_block": c["sanitized_block"],
+                }
+            )
 
         # Use a placeholder source name since we don't have a real repo path
         return self._chunk_commits_content(normalized, name)
@@ -219,8 +220,10 @@ class GitParser(BaseParser):
 
         for commit in commits:
             text = commit.get("sanitized_block", "")
-            if (len(batch_text) + len(text) > CHUNK_CHAR_LIMIT
-                    or len(batch) >= MAX_COMMITS_PER_CHUNK):
+            if (
+                len(batch_text) + len(text) > CHUNK_CHAR_LIMIT
+                or len(batch) >= MAX_COMMITS_PER_CHUNK
+            ):
                 if batch_text.strip():
                     chunks.append(self._make_content_chunk(batch_text, batch, source_name, part))
                     part += 1

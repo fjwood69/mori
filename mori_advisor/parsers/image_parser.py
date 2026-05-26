@@ -53,7 +53,9 @@ class ImageParser(BaseParser):
             )
 
         try:
-            return self._process_image(str(source), str(source), f"image/{source.suffix.lower().lstrip('.')}")
+            return self._process_image(
+                str(source), str(source), f"image/{source.suffix.lower().lstrip('.')}"
+            )
         except Exception as e:
             logger.warning("Failed to parse image %s: %s", source, e)
             return []
