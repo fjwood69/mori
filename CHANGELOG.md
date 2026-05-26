@@ -50,11 +50,24 @@ Kimi K2.6 via standard OpenAI Vision content array format. Dream model only
 
 - **VK_CONFIG**: corrected from `mori-*-local` to `moku-*-local` to match actual Bifrost DB keys
 
+### Installer improvements
+
+Brought all three bridge installers (Claude Code, Cursor, Antigravity) to full parity:
+
+- **Doctor mode** (`-Doctor` / `--doctor`) — validates settings.json, MCP config, server health, event hooks, permissions seeding, and skills; each check includes an actionable fix hint
+- **UpgradeSkills** (`-UpgradeSkills` / `--upgrade-skills`) — skips already-deployed skill folders by default; flag forces refresh
+- **MCP permissions seeding** — `permissions.allow` populated with all 31 `mcp__mori__*` tools; eliminates per-call permission prompts in Claude Code and Cursor
+- **Hook discriminator** (`_mori_managed: true`) — hook entries now carry a reserved field; merge identifies Mori hooks by field rather than command-string substring; backwards-compatible fallback for old installs
+- **Hook merge fix** — per-event in-place merge preserves non-Mori hooks; previous behaviour replaced the entire hooks object on re-run
+- **MCP allow list expanded** from 13 to 31 tools — previous list missing `pensieve`, `standards_reload`, all `mori_ingest_*` tools, and extended memory management tools
+- **Headless detection** (PS1) — wizard prompts suppressed when required args supplied on CLI
+
 ### Docs
 
 - Configuration reference updated with model role and VK env vars
 - `.env.example` updated with three model roles and Bifrost VK section
 - Slash commands reference documents `/ingest`
+- `docs/getting-started/claude-code.md` — new installer flags, Verify It's Working, Troubleshooting, and Known Limitations sections added
 - Changelog created (this file)
 
 ## v0.1.2 — Security fixes, Antigravity IDE, built-in standards
