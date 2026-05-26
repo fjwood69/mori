@@ -60,8 +60,7 @@ jobs:
       - name: Connect to Tailscale
         uses: tailscale/github-action@v3
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          authkey: ${{ secrets.TS_AUTH_KEY }}
 
       - name: Deploy to GCE via SSH
         uses: appleboy/ssh-action@v1
