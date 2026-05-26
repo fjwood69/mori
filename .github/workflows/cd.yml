@@ -79,7 +79,8 @@ jobs:
           key: ${{ secrets.GCE_SSH_KEY }}
           envs: GITHUB_REF_NAME
           script: |
-            IMAGE="ghcr.io/fjwood69/mori:${GITHUB_REF_NAME}"
+            VERSION="${GITHUB_REF_NAME#v}"
+            IMAGE="ghcr.io/fjwood69/mori:${VERSION}"
             sudo podman pull "$IMAGE"
             sudo podman stop mori-advisor-new || true
             sudo podman rm mori-advisor-new || true
