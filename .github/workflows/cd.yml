@@ -82,8 +82,8 @@ jobs:
             VERSION="${GITHUB_REF_NAME#v}"
             IMAGE="ghcr.io/fjwood69/mori:${VERSION}"
             sudo podman pull "$IMAGE"
-            sudo podman stop mori-advisor-new || true
-            sudo podman rm mori-advisor-new || true
+            sudo podman stop mori-advisor-new 2>/dev/null || true
+            sudo podman rm mori-advisor-new 2>/dev/null || true
             sudo podman run -d \
               --name mori-advisor-new \
               --network=host \
@@ -96,6 +96,6 @@ jobs:
               curl -sf http://localhost:8968/health && break
               [ $i -eq 5 ] && { sudo podman rm -f mori-advisor-new; exit 1; }
             done
-            sudo podman stop mori-advisor || true
-            sudo podman rm mori-advisor || true
+            sudo podman stop mori-advisor 2>/dev/null || true
+            sudo podman rm mori-advisor 2>/dev/null || true
             sudo podman rename mori-advisor-new mori-advisor
