@@ -127,6 +127,8 @@ Translates all skills from the `skills/` folder into `SKILL.md` format and deplo
 | `/nats` | Cross-device awareness via NATS messaging |
 | `/wrap` | Session wrap + publish state of play |
 
+**Ingesting files:** `/ingest` reads files from your local Cursor machine and sends them to the remote mori-advisor — no shared filesystem needed. See [docs/reference/slash-commands.md](../reference/slash-commands.md) for full options.
+
 ---
 
 ## MCP Server Config (Manual)

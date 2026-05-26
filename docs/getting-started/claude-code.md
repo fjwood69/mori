@@ -156,6 +156,14 @@ powershell -File scripts/install-mori-claude.ps1 -UpgradeSkills -MoriUrl "http:/
 
 ---
 
+## Ingesting Files into Memory
+
+Use `/ingest` to bootstrap the shared memory store from existing source material — PDFs, images, code, CC transcripts, or git history. Files are read on the client device and sent over the wire, so it works even when mori-advisor runs on a remote server.
+
+Full reference and all options: [docs/reference/slash-commands.md](../reference/slash-commands.md).
+
+---
+
 ## Upgrading from an Earlier Version
 
 If you installed Mori before the shipper-script update, your `settings.json` will contain inline curl hook commands like:

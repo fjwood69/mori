@@ -65,6 +65,25 @@ Deploys all slash command `.skill.md` files from the `skills/` directory into Cl
 
 ---
 
+## Available Slash Commands
+
+After installation, these slash commands are available in Cline:
+
+| Command | Description |
+|---------|-------------|
+| `/brief` | Load shared memories at session start |
+| `/dream` | Distil session events into structured memories |
+| `/consult` | Strategic review with focus areas |
+| `/pensieve` | Search the shared memory store |
+| `/ingest` | Feed documents, code, or transcripts into memory |
+| `/req` | Lightweight requirements tracking |
+| `/nats` | Cross-device awareness via NATS messaging |
+| `/wrap` | Session wrap + publish state of play |
+
+**`/ingest`** reads files from the local Cline machine and sends them to the remote mori-advisor — no shared filesystem needed. Full reference: [docs/reference/slash-commands.md](../reference/slash-commands.md).
+
+---
+
 ## Upgrading from an Earlier Version
 
 If you installed Mori before the shipper-script update, your Cline settings will contain inline curl hook commands like:

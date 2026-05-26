@@ -139,6 +139,7 @@ Once installed, the easiest way to interact with Mori is by using the custom sla
 * **`/mori-dream`**: Manages and runs the dream distillation pipeline.
 * **`/mori-pensieve`**: Performs a search query across the shared memory store.
 * **`/mori-nats`**: Real-time cross-device messaging awareness tools.
+* **`/mori-ingest`**: Feeds documents, code, transcripts, or git history into the shared memory store — reads files from this device, works with remote mori-advisor instances. Full reference: [docs/reference/slash-commands.md](../reference/slash-commands.md).
 
 Using these slash commands instructs the agent to invoke the underlying Mori MCP tools automatically, presenting the context directly inside your session.
 
