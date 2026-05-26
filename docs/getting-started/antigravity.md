@@ -84,27 +84,40 @@ If you are scripting the installation or running in CI/CD, you can bypass the wi
 
 ### PowerShell Options:
 ```powershell
-powershell -File scripts/install-mori-antigravity.ps1 -MoriUrl "http://10.0.0.5:8968" -ApiKey "secret" -ClientName "my-client" -Force
+powershell -File scripts/install-mori-antigravity.ps1 -MoriUrl "http://10.0.0.5:8968" -ApiKey "secret" -ClientName "my-client" -Force -UpgradeSkills
 ```
 
 ### Bash Options:
 ```bash
-./scripts/install-mori-antigravity.sh --url "http://10.0.0.5:8968" --api-key "secret" --client "my-client" --force
+./scripts/install-mori-antigravity.sh --url "http://10.0.0.5:8968" --api-key "secret" --client "my-client" --force --upgrade-skills
 ```
 
 Use the `-Force` / `--force` switch to bypass interactive prompts if the server is offline during the setup.
+Use the `-UpgradeSkills` / `--upgrade-skills` switch to force overwriting existing skills in the plugin folder (by default, the installer skips existing skills to protect manual edits).
+
+---
+
+## Doctor Mode (Diagnostics)
+
+Validate your installation using the doctor check:
+
+### PowerShell:
+```powershell
+powershell -File scripts/install-mori-antigravity.ps1 -Doctor -MoriUrl "http://localhost:8968"
+```
+
+### Bash:
+```bash
+./scripts/install-mori-antigravity.sh --doctor --url "http://localhost:8968"
+```
 
 ---
 
 ## Upgrading from an Earlier Version
 
-If you installed Mori before the shipper-script update, your hooks config will contain inline curl hook commands like:
-
-```
-"curl -sf -X POST \"http://...\" -d @- >/dev/null 2>&1; exit 0"
-```
-
-Re-running the installer upgrades them automatically — it replaces `hooks.json` with the new shipper-script pattern and deploys `mori-ship-event.sh` (Linux/macOS) or `mori-ship-event.ps1` (Windows) to `~/.claude/`.
+Re-running the installer upgrades event capture hooks and skills automatically:
+* It merges event logging hooks into `hooks.json` cleanly, preserving other third-party hooks.
+* It deploys `mori-ship-event.sh` (Linux/macOS) or `mori-ship-event.ps1` (Windows) to `~/.gemini/config/plugins/mori-bridge/`.
 
 The shipper scripts provide:
 - Reliable stdin capture (no subprocess pipe issues)
