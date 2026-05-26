@@ -69,6 +69,21 @@ def _is_mori_command(cmd: str) -> bool:
     )
 
 
+def _is_mori_hook(entry: dict[str, Any]) -> bool:
+    if entry.get("_mori_managed") is True:
+        return True
+    return _is_mori_command(entry.get("command", ""))
+
+
+def _new_hook_entry(cmd: str) -> dict[str, Any]:
+    return {"type": "command", "command": cmd, "_mori_managed": True}
+
+
+def _upgrade_hook_entry(entry: dict[str, Any], new_cmd: str) -> None:
+    entry["command"] = new_cmd
+    entry["_mori_managed"] = True
+
+
 def _hook_command(shipper: str, url: str, client: str, api_key: str, mode: str) -> str:
     if shipper.lower().endswith(".ps1"):
         api_flag = f' -ApiKey "{api_key}"' if api_key else ""
@@ -86,13 +101,13 @@ def _hook_command(shipper: str, url: str, client: str, api_key: str, mode: str) 
 def _update_entry_command(entry: dict[str, Any], new_cmd: str) -> bool:
     if "hooks" in entry and isinstance(entry["hooks"], list):
         for h in entry["hooks"]:
-            if h.get("type") == "command" and _is_mori_command(h.get("command", "")):
-                h["command"] = new_cmd
+            if isinstance(h, dict) and h.get("type") == "command" and _is_mori_hook(h):
+                _upgrade_hook_entry(h, new_cmd)
                 return True
-        entry["hooks"].insert(0, {"type": "command", "command": new_cmd})
+        entry["hooks"].insert(0, _new_hook_entry(new_cmd))
         return True
-    if entry.get("type") == "command" and _is_mori_command(entry.get("command", "")):
-        entry["command"] = new_cmd
+    if entry.get("type") == "command" and _is_mori_hook(entry):
+        _upgrade_hook_entry(entry, new_cmd)
         return True
     return False
 
@@ -108,8 +123,30 @@ def _merge_hook_list(existing: list[Any], new_cmd: str) -> list[Any]:
                 updated = True
 
     if not updated:
-        existing.insert(0, {"type": "command", "command": new_cmd})
+        existing.insert(0, _new_hook_entry(new_cmd))
     return existing
+
+
+def _hook_list_has_mori(entries: list[Any]) -> bool:
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if _is_mori_hook(entry):
+            return True
+        nested = entry.get("hooks")
+        if isinstance(nested, list) and _hook_list_has_mori(nested):
+            return True
+    return False
+
+
+def _settings_has_mori_hooks(settings: dict[str, Any]) -> bool:
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    for event_list in hooks.values():
+        if isinstance(event_list, list) and _hook_list_has_mori(event_list):
+            return True
+    return False
 
 
 def merge_settings(
@@ -283,8 +320,20 @@ def doctor(mori_url: str | None, client: str) -> int:
 
     if settings_path.is_file():
         text = settings_path.read_text(encoding="utf-8")
-        if "mori-ship-event" in text or "/api/events/raw" in text:
-            print(f"OK  Event hooks present in {settings_path}")
+        hooks_ok = False
+        try:
+            hooks_ok = _settings_has_mori_hooks(json.loads(text))
+        except json.JSONDecodeError:
+            pass
+        if not hooks_ok:
+            hooks_ok = (
+                "mori-ship-event" in text
+                or "/api/events/raw" in text
+                or '"_mori_managed": true' in text
+                or '"_mori_managed":true' in text
+            )
+        if hooks_ok:
+            print(f"OK  Event hooks present in {settings_path} (_mori_managed or legacy)")
         else:
             print(f"WARN  No Mori hooks in {settings_path}")
             errors += 1

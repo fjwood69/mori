@@ -46,6 +46,33 @@ function Test-MoriHookCommand {
     return ($Command -like "*mori-ship-event*" -or $Command -like "*/api/events/raw*" -or $Command -like "*/api/precompact*")
 }
 
+function Test-MoriHookEntry {
+    param($Entry)
+    if ($null -eq $Entry) { return $false }
+    if ($Entry.PSObject.Properties.Name -contains '_mori_managed' -and $Entry._mori_managed -eq $true) {
+        return $true
+    }
+    if ($Entry.PSObject.Properties.Name -contains 'command') {
+        return (Test-MoriHookCommand $Entry.command)
+    }
+    return $false
+}
+
+function New-MoriHookEntry {
+    param([string]$Command)
+    return [PSCustomObject]@{
+        type          = "command"
+        command       = $Command
+        _mori_managed = $true
+    }
+}
+
+function Set-MoriHookEntryFields {
+    param($Entry, [string]$NewCommand)
+    $Entry | Add-Member -NotePropertyName command -NotePropertyValue $NewCommand -Force
+    $Entry | Add-Member -NotePropertyName _mori_managed -NotePropertyValue $true -Force
+}
+
 function Get-MoriShipperCommands {
     param([string]$ShipperPath, [string]$Url, [string]$Client, [string]$Key)
     $apiFlag = if ($Key) { " -ApiKey `"$Key`"" } else { "" }
@@ -80,20 +107,17 @@ function Update-HookEntry {
     param($Entry, [string]$NewCommand)
     if ($null -eq $Entry) { return $false }
     if ($Entry.PSObject.Properties.Name -contains "hooks") {
-        $found = $false
         foreach ($h in @($Entry.hooks)) {
-            if ($h.type -eq "command" -and (Test-MoriHookCommand $h.command)) {
-                $h | Add-Member -NotePropertyName command -NotePropertyValue $NewCommand -Force
+            if ($h.type -eq "command" -and (Test-MoriHookEntry $h)) {
+                Set-MoriHookEntryFields -Entry $h -NewCommand $NewCommand
                 return $true
             }
         }
-        if (-not $found) {
-            $Entry.hooks = @([PSCustomObject]@{ type = "command"; command = $NewCommand }) + @($Entry.hooks)
-            return $true
-        }
+        $Entry.hooks = @(New-MoriHookEntry $NewCommand) + @($Entry.hooks)
+        return $true
     }
-    if ($Entry.type -eq "command" -and (Test-MoriHookCommand $Entry.command)) {
-        $Entry | Add-Member -NotePropertyName command -NotePropertyValue $NewCommand -Force
+    if ($Entry.type -eq "command" -and (Test-MoriHookEntry $Entry)) {
+        Set-MoriHookEntryFields -Entry $Entry -NewCommand $NewCommand
         return $true
     }
     return $false
@@ -127,7 +151,7 @@ function Merge-MoriSettings {
             if (Update-HookEntry -Entry $entry -NewCommand $cmd) { $updated = $true }
         }
         if (-not $updated) {
-            $list = @([PSCustomObject]@{ type = "command"; command = $cmd }) + $list
+            $list = @(New-MoriHookEntry $cmd) + $list
         }
         $existing.hooks | Add-Member -NotePropertyName $name -NotePropertyValue $list -Force
     }
@@ -214,9 +238,31 @@ function Invoke-MoriDoctor {
 
     $settings = Join-Path $ClaudeDir "settings.json"
     if (Test-Path $settings) {
-        $text = Get-Content $settings -Raw
-        if (Test-MoriHookCommand $text) { Write-Host "OK  Event hooks present" -ForegroundColor Green }
+        $hooksOk = $false
+        try {
+            $cfg = Get-Content $settings -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($null -ne $cfg.hooks) {
+                foreach ($prop in $cfg.hooks.PSObject.Properties) {
+                    foreach ($entry in @($prop.Value)) {
+                        if ((Test-MoriHookEntry $entry) -or (
+                            $entry.PSObject.Properties.Name -contains 'hooks' -and
+                            (@($entry.hooks) | Where-Object { Test-MoriHookEntry $_ }).Count -gt 0
+                        )) {
+                            $hooksOk = $true
+                            break
+                        }
+                    }
+                    if ($hooksOk) { break }
+                }
+            }
+        } catch { }
+        if (-not $hooksOk) {
+            $text = Get-Content $settings -Raw
+            $hooksOk = (Test-MoriHookCommand $text)
+        }
+        if ($hooksOk) { Write-Host "OK  Event hooks present (_mori_managed or legacy)" -ForegroundColor Green }
         else { Write-Host "WARN  No Mori hooks" -ForegroundColor Yellow; $errors++ }
+        $text = Get-Content $settings -Raw
         if ($text -match "mcp__mori__brief") { Write-Host "OK  MCP permissions seeded" -ForegroundColor Green }
         else { Write-Host "WARN  permissions.allow may be missing Mori tools" -ForegroundColor Yellow }
     } else { Write-Host "FAIL  settings.json missing" -ForegroundColor Red; $errors++ }
