@@ -124,3 +124,19 @@ The shipper scripts provide:
 - Local failure logging (`%TEMP%\mori-hook.log` on Windows, `/tmp/mori-hook.log` on Linux/macOS)
 - Log rotation at 100 KB
 - Always exit 0 so a Mori outage never interrupts your Antigravity session
+
+---
+
+## Usage (Using Mori in Antigravity)
+
+Once installed, the easiest way to interact with Mori is by using the custom slash commands registered by the plugin's skills. In the Antigravity chat UI, you can call them directly:
+
+* **`/mori-brief`**: Session bootstrap. Loads recent/canonical shared memories, checks team standards, and verifies server status. (Equivalent to `/brief` in Cursor/Claude Code)
+* **`/mori-consult`**: Requests strategic guidance from the Mori Advisor model (e.g., `/mori-consult --focus architecture "Review my current approach"`).
+* **`/mori-req`**: Manages project requirements and delivery tracking.
+* **`/mori-dream`**: Manages and runs the dream distillation pipeline.
+* **`/mori-pensieve`**: Performs a search query across the shared memory store.
+* **`/mori-nats`**: Real-time cross-device messaging awareness tools.
+
+Using these slash commands instructs the agent to invoke the underlying Mori MCP tools automatically, presenting the context directly inside your session.
+
