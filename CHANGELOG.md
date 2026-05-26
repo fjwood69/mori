@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.1.4 — Remote client ingestion, GitHub Actions CI/CD
+
+### Remote client ingestion (`mori_ingest_content`)
+
+Solves the remote-server boundary problem. `mori_ingest` resolves paths
+server-side — unusable when mori-advisor runs on GCE and the client is on a
+different machine. `mori_ingest_content` flips the model: the MCP client
+(Claude Code, Cursor, etc.) reads files locally, base64-encodes them, and
+sends bytes over the wire. The server processes in memory.
+
+- **`Chunk.from_content()`** — create chunks from raw bytes rather than filesystem paths
+- **`parse_content()`** on all 5 parsers (text, PDF, image, transcript, git) — in-memory
+  extraction; git parser accepts pre-collected `git log --patch` stdout as `text/x-git-log`
+- **`IngestionJob` + `_run_pipeline()`** — shared execution engine used by both
+  `ingest()` (path-based) and `ingest_content()` (wire-based); no logic duplication
+- **`_parser_for_mime()`** — MIME routing table maps content types to registered parsers
+- **New MCP tool**: `mori_ingest_content` — accepts `[{name, content_b64, mime_type}]`
+- **`/ingest` skill updated** — dual-mode: resolves paths locally, reads + encodes files,
+  calls `mori_ingest_content`; batches ≤20 files/call; git log collected client-side
+- **Dedup**: SHA256 computed from decoded bytes; `source_uri = "<content:name>"`
+- **Allow lists**: `mcp__mori__mori_ingest_content` added across all bridge installers
+
+### GitHub Actions CI/CD
+
+- **`ci.yml`** — ruff lint + format check + Docker build check on every push/PR to `main`
+- **`cd.yml`** — multi-arch (`linux/amd64,linux/arm64`) build+push to
+  `ghcr.io/fjwood69/mori` on semver tags; blue/green GCE deploy with exponential-backoff
+  health check — new container starts as `mori-advisor-new`, old container only stopped
+  after health passes; rolls back on failure
+- **`pyproject.toml`** — ruff config: `line-length = 100`, `target-version = "py313"`
+
 ## v0.1.3 — Universal Ingestion, model refactor, shared utilities
 
 ### Ingestion pipeline (`/ingest`)
