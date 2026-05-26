@@ -62,6 +62,15 @@ jobs:
         with:
           authkey: ${{ secrets.TS_AUTH_KEY }}
 
+      - name: Wait for Tailscale route
+        run: |
+          for i in $(seq 1 10); do
+            nc -z -w 3 ${{ secrets.GCE_HOST }} 22 && echo "SSH port reachable" && exit 0
+            echo "Attempt $i: waiting..."
+            sleep 3
+          done
+          echo "SSH port not reachable after 30s" && exit 1
+
       - name: Deploy to GCE via SSH
         uses: appleboy/ssh-action@v1
         with:
