@@ -21,7 +21,12 @@ HOOK_EVENTS = (
 )
 
 
-def _is_mori_command(cmd: str) -> bool:
+def _is_mori_hook(entry: dict[str, Any]) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("_mori_managed") is True:
+        return True
+    cmd = entry.get("command", "")
     return (
         "mori-ship-event" in cmd
         or "/api/events/raw" in cmd
@@ -46,13 +51,15 @@ def _hook_command(shipper: str, url: str, client: str, api_key: str, mode: str) 
 def _update_entry_command(entry: dict[str, Any], new_cmd: str) -> bool:
     if "hooks" in entry and isinstance(entry["hooks"], list):
         for h in entry["hooks"]:
-            if h.get("type") == "command" and _is_mori_command(h.get("command", "")):
+            if isinstance(h, dict) and h.get("type") == "command" and _is_mori_hook(h):
                 h["command"] = new_cmd
+                h["_mori_managed"] = True
                 return True
-        entry["hooks"].insert(0, {"type": "command", "command": new_cmd})
+        entry["hooks"].insert(0, {"type": "command", "command": new_cmd, "_mori_managed": True})
         return True
-    if entry.get("type") == "command" and _is_mori_command(entry.get("command", "")):
+    if entry.get("type") == "command" and _is_mori_hook(entry):
         entry["command"] = new_cmd
+        entry["_mori_managed"] = True
         return True
     return False
 
@@ -68,7 +75,7 @@ def _merge_hook_list(existing: list[Any], new_cmd: str) -> list[Any]:
                 updated = True
 
     if not updated:
-        existing.insert(0, {"type": "command", "command": new_cmd})
+        existing.insert(0, {"type": "command", "command": new_cmd, "_mori_managed": True})
     return existing
 
 

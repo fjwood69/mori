@@ -19,10 +19,19 @@ function Write-Utf8File {
     [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false))
 }
 
-function Test-MoriHookCommand {
-    param([string]$Command)
-    if ([string]::IsNullOrWhiteSpace($Command)) { return $false }
-    return ($Command -like "*mori-ship-event*" -or $Command -like "*/api/events/raw*" -or $Command -like "*/api/precompact*")
+function Test-MoriHookEntry {
+    param($Entry)
+    if ($null -eq $Entry) { return $false }
+    try {
+        if ($Entry._mori_managed -eq $true) { return $true }
+    } catch {}
+    try {
+        if ($null -ne $Entry.command) {
+            $cmd = $Entry.command
+            return ($cmd -like "*mori-ship-event*" -or $cmd -like "*/api/events/raw*" -or $cmd -like "*/api/precompact*")
+        }
+    } catch {}
+    return $false
 }
 
 function Get-MoriShipperCommands {
@@ -61,18 +70,20 @@ function Update-HookEntry {
     if ($Entry.PSObject.Properties.Name -contains "hooks") {
         $found = $false
         foreach ($h in @($Entry.hooks)) {
-            if ($h.type -eq "command" -and (Test-MoriHookCommand $h.command)) {
+            if ($h.type -eq "command" -and (Test-MoriHookEntry -Entry $h)) {
                 $h | Add-Member -NotePropertyName command -NotePropertyValue $NewCommand -Force
-                return $true
+                $h | Add-Member -NotePropertyName _mori_managed -NotePropertyValue $true -Force
+                $found = $true
             }
         }
-        if (-not $found) {
-            $Entry.hooks = @([PSCustomObject]@{ type = "command"; command = $NewCommand }) + @($Entry.hooks)
-            return $true
-        }
+        if ($found) { return $true }
+        $newHook = [PSCustomObject]@{ type = "command"; command = $NewCommand; _mori_managed = $true }
+        $Entry.hooks = @($newHook) + @($Entry.hooks)
+        return $true
     }
-    if ($Entry.type -eq "command" -and (Test-MoriHookCommand $Entry.command)) {
+    if ($Entry.type -eq "command" -and (Test-MoriHookEntry -Entry $Entry)) {
         $Entry | Add-Member -NotePropertyName command -NotePropertyValue $NewCommand -Force
+        $Entry | Add-Member -NotePropertyName _mori_managed -NotePropertyValue $true -Force
         return $true
     }
     return $false
@@ -106,7 +117,7 @@ function Merge-MoriHooks {
             if (Update-HookEntry -Entry $entry -NewCommand $cmd) { $updated = $true }
         }
         if (-not $updated) {
-            $list = @([PSCustomObject]@{ type = "command"; command = $cmd }) + $list
+            $list = @([PSCustomObject]@{ type = "command"; command = $cmd; _mori_managed = $true }) + $list
         }
         $existing.hooks | Add-Member -NotePropertyName $name -NotePropertyValue $list -Force
     }
@@ -196,7 +207,7 @@ function Invoke-MoriDoctor {
 
     if (Test-Path $hooksPath) {
         $text = Get-Content $hooksPath -Raw
-        if (Test-MoriHookCommand $text) { Write-Host "OK  Event hooks present" -ForegroundColor Green }
+        if ($text -like "*_mori_managed*" -or $text -like "*mori-ship-event*") { Write-Host "OK  Event hooks present" -ForegroundColor Green }
         else { Write-Host "WARN  No Mori hooks in hooks.json" -ForegroundColor Yellow; $errors++ }
     } else { Write-Host "FAIL  hooks.json missing" -ForegroundColor Red; $errors++ }
 
