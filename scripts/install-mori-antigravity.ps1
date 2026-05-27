@@ -181,9 +181,11 @@ function Invoke-MoriDoctor {
         Write-Host "OK  MCP config: $mcpPath" -ForegroundColor Green
         try {
             $mcp = Get-Content $mcpPath -Raw | ConvertFrom-Json
-            if ($mcp.mcpServers.mori.url) {
-                Write-Host "    mori URL: $($mcp.mcpServers.mori.url)"
-                if ($mcp.mcpServers.mori.url -match "^(https?://[^/]+)") { $Url = $Matches[1] }
+            $moriUrlField = $mcp.mcpServers.mori.serverUrl
+            if ($null -eq $moriUrlField) { $moriUrlField = $mcp.mcpServers.mori.url }
+            if ($moriUrlField) {
+                Write-Host "    mori URL: $moriUrlField"
+                if ($moriUrlField -match "^(https?://[^/]+)") { $Url = $Matches[1] }
             } else { Write-Host "FAIL  mcp_config.json missing mori URL" -ForegroundColor Red; $errors++ }
         } catch { Write-Host "FAIL  Could not parse mcp_config.json" -ForegroundColor Red; $errors++ }
     } else {
@@ -275,7 +277,14 @@ $mcpOk = $false
 
 Write-Host "[1/3] Configuring MCP server..." -ForegroundColor Yellow
 try {
-    Merge-McpFile -Path "$AppDataDir\mcp_config.json" -MoriServer ([PSCustomObject]@{ type = "http"; url = "$MoriUrl/mcp" })
+    $MoriServerObj = [ordered]@{
+        type = "http"
+        serverUrl = "$MoriUrl/mcp"
+    }
+    if ($ApiKey) {
+        $MoriServerObj["headers"] = @{ "X-Api-Key" = $ApiKey }
+    }
+    Merge-McpFile -Path "$AppDataDir\mcp_config.json" -MoriServer ([PSCustomObject]$MoriServerObj)
     $mcpOk = $true
 } catch { Write-Host "  Error: $_" -ForegroundColor Red }
 

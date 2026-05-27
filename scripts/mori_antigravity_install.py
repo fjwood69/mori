@@ -107,8 +107,10 @@ def merge_hooks(
         f.write("\n")
 
 
-def merge_mcp(mcp_path: Path, mori_url: str) -> None:
-    mori_server = {"type": "http", "url": f"{mori_url.rstrip('/')}/mcp"}
+def merge_mcp(mcp_path: Path, mori_url: str, api_key: str = "") -> None:
+    mori_server = {"type": "http", "serverUrl": f"{mori_url.rstrip('/')}/mcp"}
+    if api_key:
+        mori_server["headers"] = {"X-Api-Key": api_key}
     if mcp_path.is_file() and mcp_path.stat().st_size > 0:
         with mcp_path.open(encoding="utf-8") as f:
             data = json.load(f)
@@ -196,12 +198,12 @@ def doctor(mori_url: str | None, client: str) -> int:
         print(f"OK  MCP config: {mcp_path}")
         try:
             data = json.loads(mcp_path.read_text(encoding="utf-8"))
-            url = data.get("mcpServers", {}).get("mori", {}).get("url", "")
+            url = data.get("mcpServers", {}).get("mori", {}).get("serverUrl", "") or data.get("mcpServers", {}).get("mori", {}).get("url", "")
             if url:
                 print(f"    mori URL: {url}")
                 mori_url = mori_url or url.removesuffix("/mcp")
             else:
-                print("FAIL  mcp_config.json missing mcpServers.mori.url")
+                print("FAIL  mcp_config.json missing mcpServers.mori.serverUrl")
                 errors += 1
         except Exception as e:
             print(f"FAIL  Could not parse mcp_config.json: {e}")
@@ -260,6 +262,7 @@ def main() -> int:
     p_mcp = sub.add_parser("merge-mcp")
     p_mcp.add_argument("--mcp-path", required=True)
     p_mcp.add_argument("--url", required=True)
+    p_mcp.add_argument("--api-key", default="")
 
     p_set = sub.add_parser("merge-hooks")
     p_set.add_argument("--hooks-path", required=True)
@@ -280,7 +283,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.cmd == "merge-mcp":
-        merge_mcp(Path(args.mcp_path), args.url)
+        merge_mcp(Path(args.mcp_path), args.url, args.api_key)
         return 0
     if args.cmd == "merge-hooks":
         merge_hooks(
