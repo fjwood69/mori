@@ -147,7 +147,7 @@ HOOKS_OK=0
 # ---- Step 1: MCP config (required) ----
 echo "[1/3] Configuring MCP server..."
 MCP_CONFIG_PATH="$APP_DATA_DIR/mcp_config.json"
-if python3 "$INSTALL_PY" merge-mcp --mcp-path "$MCP_CONFIG_PATH" --url "$MORI_URL"; then
+if python3 "$INSTALL_PY" merge-mcp --mcp-path "$MCP_CONFIG_PATH" --url "$MORI_URL" --api-key "$API_KEY"; then
   MCP_OK=1
 else
   echo "  Error: failed to write MCP config" >&2
