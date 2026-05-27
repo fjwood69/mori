@@ -121,3 +121,20 @@ jobs:
             sudo podman stop mori-ingestion 2>/dev/null || true
             sudo podman rm mori-ingestion 2>/dev/null || true
             sudo podman rename mori-ingestion-new mori-ingestion
+
+  create-release:
+    name: Create GitHub Release
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes
