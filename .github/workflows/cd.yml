@@ -82,6 +82,8 @@ jobs:
             VERSION="${GITHUB_REF_NAME#v}"
             IMAGE="ghcr.io/fjwood69/mori:${VERSION}"
             sudo podman pull "$IMAGE"
+
+            # advisor blue/green
             sudo podman stop mori-advisor-new 2>/dev/null || true
             sudo podman rm mori-advisor-new 2>/dev/null || true
             sudo podman run -d \
@@ -91,11 +93,31 @@ jobs:
               -v /data/mori-advisor:/data/mori-advisor:Z \
               --env-file /data/mori-advisor/.env \
               "$IMAGE"
+
+            # ingestion blue/green
+            sudo podman stop mori-ingestion-new 2>/dev/null || true
+            sudo podman rm mori-ingestion-new 2>/dev/null || true
+            sudo podman run -d \
+              --name mori-ingestion-new \
+              --network=host \
+              --restart=unless-stopped \
+              -v /data/mori-advisor:/data/mori-advisor:Z \
+              --env-file /data/mori-advisor/.env \
+              "$IMAGE" python -m mori_advisor.ingestion_server
+
+            # wait for both to be healthy
             for i in 1 2 3 4 5; do
               sleep $((i * 2))
-              curl -sf http://localhost:8968/health && break
-              [ $i -eq 5 ] && { sudo podman rm -f mori-advisor-new; exit 1; }
+              curl -sf http://localhost:8968/health && curl -sf http://localhost:8969/health && break
+              [ $i -eq 5 ] && { sudo podman rm -f mori-advisor-new mori-ingestion-new; exit 1; }
             done
+
+            # swap advisor
             sudo podman stop mori-advisor 2>/dev/null || true
             sudo podman rm mori-advisor 2>/dev/null || true
             sudo podman rename mori-advisor-new mori-advisor
+
+            # swap ingestion
+            sudo podman stop mori-ingestion 2>/dev/null || true
+            sudo podman rm mori-ingestion 2>/dev/null || true
+            sudo podman rename mori-ingestion-new mori-ingestion
