@@ -243,7 +243,23 @@ su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-advisor --r
   -e MOKU_NATS_URL='$MORI_NATS_URL' \
   '$CONTAINER_IMAGE'"
 
-echo "Moku-advisor container started."
+echo "Mori-advisor container started."
+
+# Start mori-ingestion container (port 8969) — same image, different entrypoint.
+# Shares /data/mori-advisor bind-mount with mori-advisor (co-location mandatory).
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-ingestion \
+  --restart=always --network=host --user 0 \
+  -v /data/mori-advisor:/data/mori-advisor:Z \
+  -e MORI_ADVISOR_DATA=/data/mori-advisor \
+  -e MORI_ADVISOR_API_KEY='$MORI_ADVISOR_API_KEY' \
+  -e MORI_BASE_URL=http://localhost:8787 \
+  -e MORI_MODEL='$MORI_MODEL' \
+  -e MORI_DREAM_MODEL='$MORI_DREAM_MODEL' \
+  -e MORI_TRUSTED_DREAMERS='$MORI_TRUSTED_DREAMERS' \
+  -e MORI_NATS_URL='$MORI_NATS_URL' \
+  '$CONTAINER_IMAGE' python -m mori_advisor.ingestion_server"
+
+echo "Mori-ingestion container started."
 
 # ── Set up dream cron (every 4 hours) ────────────────────────────────────
 DREAM_CRON="0 */4 * * * XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec mori-advisor python -m mori_advisor.dream_job >/data/mori-advisor/dream-cron.log 2>&1"

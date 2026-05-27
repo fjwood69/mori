@@ -27,6 +27,28 @@ services:
       start_period: 10s
       retries: 3
 
+  mori-ingestion:
+    build: ../..
+    image: mori-advisor:latest
+    container_name: mori-ingestion
+    restart: unless-stopped
+    ports:
+      - "8969:8969"
+    volumes:
+      - mori-data:/data/mori-advisor
+    env_file:
+      - .env
+    command: ["python", "-m", "mori_advisor.ingestion_server"]
+    depends_on:
+      mori-advisor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8969/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
   dream-cron:
     image: alpine:latest
     container_name: mori-dream-cron
