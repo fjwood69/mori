@@ -179,9 +179,7 @@ async def upload(
             )
         total_bytes += len(data)
         if total_bytes > max_total_bytes:
-            raise HTTPException(
-                status_code=413, detail=f"Total upload exceeds {MAX_TOTAL_MB}MB"
-            )
+            raise HTTPException(status_code=413, detail=f"Total upload exceeds {MAX_TOTAL_MB}MB")
         uploaded.append(
             _UploadedFile(
                 name=f.filename or "upload",
