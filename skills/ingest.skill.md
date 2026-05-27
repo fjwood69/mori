@@ -26,7 +26,7 @@ Requires:
 ```bash
 JOB=$(curl -sf -X POST "${MORI_INGEST_URL}/api/ingest/upload" \
   -H "X-Api-Key: ${MORI_API_KEY}" \
-  -F "file=@${path}" \
+  -F "files=@${path}" \
   -F "focus=${focus}" \
   -F "tier=${tier}" \
   -F "tags=${tags}" \
@@ -41,7 +41,7 @@ $r = Invoke-RestMethod -Uri "$env:MORI_INGEST_URL/api/ingest/upload" `
   -Method POST `
   -Headers @{"X-Api-Key" = $env:MORI_API_KEY} `
   -Form @{
-    file    = Get-Item $path
+    files   = Get-Item $path
     focus   = $focus
     tier    = $tier
     tags    = $tags
