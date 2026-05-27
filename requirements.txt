@@ -15,7 +15,6 @@ prometheus-client>=0.21.0
 
 # ── Optional: ingestion parsers ────────────────────────────────────────
 # Uncomment to enable specific source types:
-# pymupdf>=1.24.0         # PDF ingestion (recommended)
-# pypdf2>=3.0.0           # PDF ingestion (fallback, simpler)
-# pillow>=10.0.0          # Image ingestion (whiteboards, diagrams)
+pymupdf>=1.24.0
+pillow>=10.0.0
 # gitpython>=3.1.0        # Git history ingestion (optional — uses subprocess otherwise)
