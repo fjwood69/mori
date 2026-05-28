@@ -1,5 +1,70 @@
 # Changelog
 
+## v0.1.5 — Project-scoped /brief, dream auto-tagging
+
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/main/docs/assets/header-dark-v0_1_4.svg)
+
+### Project-scoped `/brief`
+
+`/brief` previously loaded all memories up to a hard cap of 50 — bifrost sessions got mori
+memories they didn't need, and busy projects lost relevant memories to truncation. Project
+scoping fixes both problems simultaneously.
+
+**Three new `/brief` invocations:**
+
+| Command | Effect |
+|---|---|
+| `/brief` | Unscoped — existing behaviour, all memories up to cap |
+| `/brief --project <name>` | Scoped to a project — right memories in full |
+| `/brief --auto` | Auto-detect project from working directory |
+
+**Three-bucket loading (scoped mode):**
+- **Project memories** — canonical always in full; working ≤14 days in full; working >14 days as summary only
+- **Global memories** — `scope:global`, `scope:cross-project`, type `profile`/`pattern` — always loaded regardless of project
+- **Other-project index** — one line per project with count; cross-project awareness without loading cost
+
+Output header:
+```
+**Mori Brief — project: mori** (23 project + 18 global memories)
+153 memories from other projects — /pensieve to explore
+```
+
+**Implementation:**
+- `memory_store.get_memories_by_project()` — all filtering pushed to SQLite; no superset-then-filter in Python
+- `brief()` MCP tool gains `project`, `include_global`, `include_index` parameters
+- Requirements filtered to current project when scoped
+- Graceful fallback to unscoped on any exception
+
+### Dream pipeline auto-tagging
+
+New memories written by the dream pipeline are now automatically tagged `project:<name>` based
+on the working directory of the session that produced them.
+
+**Resolver chain** (first match wins):
+1. `.mori-project` file — place at repo root (or any parent) with the project name as content
+2. `MORI_PROJECT` environment variable — for CI or non-interactive shells
+3. `git rev-parse --show-toplevel` — uses the git repository root directory name as fallback
+
+New methods on `DreamPipeline`: `_resolve_project(cwd)` and `_extract_project_from_events(events)`.
+
+### Backfill migration script
+
+`scripts/backfill_project_tags.py` — one-time idempotent pass to tag existing memories.
+Maps name prefixes to project tags (`project-mori-*` → `project:mori`, etc.) and adds
+`scope:global` to profiles, patterns, and cross-cutting memories. Safe to re-run.
+
+```bash
+python scripts/backfill_project_tags.py /data/mori-advisor/memories.db --dry-run
+python scripts/backfill_project_tags.py /data/mori-advisor/memories.db
+```
+
+### Docs
+
+- `docs/for-teams.md` — new **Project scoping** section: commands, resolver chain, backfill instructions, cost-annotated example configs updated with actual `--auto` / `--project` commands
+- `docs/reference/slash-commands.md` — `--project` and `--auto` flags documented with cost table
+
+---
+
 ## v0.1.4 — Remote client ingestion, GitHub Actions CI/CD
 
 ### Remote client ingestion (`mori_ingest_content`)
