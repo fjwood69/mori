@@ -130,6 +130,23 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          VERSION="${{ github.ref_name }}"
+          python3 - <<'EOF'
+          import re, sys
+          tag = "${{ github.ref_name }}"
+          content = open("CHANGELOG.md").read()
+          pattern = rf"(## {re.escape(tag)}.*?)(?=\n## v|\Z)"
+          match = re.search(pattern, content, re.DOTALL)
+          notes = match.group(1).strip() if match else f"Release {tag}"
+          with open("release_notes.md", "w") as f:
+              f.write(notes)
+          EOF
+
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -137,4 +154,4 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
-            --generate-notes
+            --notes-file release_notes.md
