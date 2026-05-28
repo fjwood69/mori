@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -154,6 +156,7 @@ class DreamPipeline:
             dict.fromkeys(e.get("session_id") for e in events if e.get("session_id"))
         )
         batch_clients = list(dict.fromkeys(e.get("client") for e in events if e.get("client")))
+        batch_project = self._extract_project_from_events(events)
 
         # Begin IMMEDIATE transaction — if we crash between writing memories
         # and advancing the watermark, the transaction rolls back and the
@@ -179,7 +182,8 @@ class DreamPipeline:
                 name = self._path_to_name(path)
                 try:
                     self._write_memory(
-                        mem, name, action, batch_session_ids, batch_clients, _conn=txn_conn
+                        mem, name, action, batch_session_ids, batch_clients,
+                        project=batch_project, _conn=txn_conn
                     )
                     logger.info("  ✓ %s %s", action, name)
                     written += 1
@@ -312,6 +316,44 @@ class DreamPipeline:
             return "project"
         return "decision"
 
+    def _resolve_project(self, cwd: str) -> str | None:
+        """Resolve project name from CWD via resolver chain.
+
+        Chain: .mori-project file → MORI_PROJECT env var → git root name.
+        """
+        if not cwd:
+            return None
+        p = Path(cwd)
+        for candidate in [p, *p.parents]:
+            marker = candidate / ".mori-project"
+            if marker.exists():
+                return marker.read_text().strip().lower() or None
+        env_project = os.environ.get("MORI_PROJECT")
+        if env_project:
+            return env_project.lower()
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode == 0:
+                return Path(result.stdout.strip()).name.lower()
+        except Exception:
+            pass
+        return None
+
+    def _extract_project_from_events(self, events: list[dict]) -> str | None:
+        """Extract project name from the first SessionStart event's CWD."""
+        for ev in events:
+            if ev.get("event_name") == "SessionStart":
+                name = self._resolve_project(ev.get("cwd", ""))
+                if name:
+                    return name
+        return None
+
     def _write_memory(
         self,
         mem: dict,
@@ -319,10 +361,14 @@ class DreamPipeline:
         action: str,
         batch_session_ids: list[str],
         batch_clients: list[str],
+        project: str | None = None,
         _conn: sqlite3.Connection | None = None,
     ) -> str:
         path = mem.get("path", name)
         body = mem.get("body", "")
+        tags = ["dream-phase", action.lower()]
+        if project:
+            tags.append(f"project:{project}")
 
         self.memory_store.write(
             name=name,
@@ -331,7 +377,7 @@ class DreamPipeline:
             type=self._infer_type(path),
             tier="working",
             body=body,
-            tags=["dream-phase", action.lower()],
+            tags=tags,
             origin_session_ids=batch_session_ids,
             origin_clients=batch_clients,
             _skip_protection=True,

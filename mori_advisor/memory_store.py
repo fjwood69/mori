@@ -1044,6 +1044,103 @@ class MemoryStore:
 
     # ── Attribution ────────────────────────────────────────────────────
 
+    def get_memories_by_project(
+        self,
+        project: str,
+        include_global: bool = True,
+    ) -> dict:
+        """Return project-scoped memory sets for brief() tiered loading.
+
+        Filters at the database layer — never loads a superset and filters
+        in Python. LIKE on JSON arrays does a full table scan, which is
+        acceptable at the current scale (~200 memories); migrate to a
+        normalised tags junction table if the store exceeds ~2000 entries.
+
+        Returns:
+            project_memories: list of memory dicts tagged project:<name>
+                              (canonical + working, non-superseded)
+            global_memories:  list of memory dicts tagged scope:global or
+                              scope:cross-project, OR type in (profile, pattern)
+            other_projects:   list of (project_name, count) tuples for index
+        """
+        import sqlite3
+
+        tag_value = f"project:{project}"
+        conn = self._get_conn()
+        try:
+            # Project memories — canonical first, then working, most-recent first
+            cur = conn.execute(
+                """
+                SELECT * FROM memories
+                WHERE tags LIKE ?
+                  AND tier IN ('canonical', 'working')
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                ORDER BY
+                  CASE tier WHEN 'canonical' THEN 0 ELSE 1 END ASC,
+                  updated_at DESC
+                """,
+                (f'%"{tag_value}"%',),
+            )
+            project_rows = cur.fetchall()
+
+            # Global memories — always loaded regardless of project filter
+            global_rows: list = []
+            if include_global:
+                cur = conn.execute(
+                    """
+                    SELECT * FROM memories
+                    WHERE (
+                        tags LIKE '%"scope:global"%'
+                        OR tags LIKE '%"scope:cross-project"%'
+                        OR type IN ('profile', 'pattern')
+                    )
+                    AND (superseded_by IS NULL OR superseded_by = '')
+                    AND tags NOT LIKE ?
+                    ORDER BY tier DESC, updated_at DESC
+                    """,
+                    (f'%"{tag_value}"%',),  # exclude already-included project memories
+                )
+                global_rows = cur.fetchall()
+
+            # Other-project index — distinct project: tags from non-matching memories
+            cur = conn.execute(
+                """
+                SELECT tags FROM memories
+                WHERE tags LIKE '%"project:%"'
+                  AND tags NOT LIKE ?
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                """,
+                (f'%"{tag_value}"%',),
+            )
+            other_rows = cur.fetchall()
+        except sqlite3.Error as e:
+            logger.warning("get_memories_by_project failed: %s", e)
+            return {"project_memories": [], "global_memories": [], "other_projects": []}
+        finally:
+            conn.close()
+
+        project_memories = [self._row_to_dict(r) for r in project_rows]
+        global_memories = [self._row_to_dict(r) for r in global_rows]
+
+        # Parse other-project tag counts
+        other_counts: dict[str, int] = {}
+        for (tags_raw,) in other_rows:
+            for tag in self._parse_tags(tags_raw):
+                if tag.startswith("project:") and tag != tag_value:
+                    proj_name = tag[len("project:"):]
+                    other_counts[proj_name] = other_counts.get(proj_name, 0) + 1
+        other_projects = sorted(other_counts.items(), key=lambda x: x[1], reverse=True)
+
+        # Bump retrievals for loaded memories
+        for m in project_memories + global_memories:
+            self._bump_retrieval(m["name"])
+
+        return {
+            "project_memories": project_memories,
+            "global_memories": global_memories,
+            "other_projects": other_projects,
+        }
+
     def session_summary(self, session_id: str) -> str:
         """Show all memories attributed to a given session."""
         return self.list(session=session_id)

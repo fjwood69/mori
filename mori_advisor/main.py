@@ -299,27 +299,122 @@ def _build_prompt(
 
 
 @mcp.tool()
-async def brief() -> str:
+async def brief(
+    project: str | None = None,
+    include_global: bool = True,
+    include_index: bool = True,
+) -> str:
     """Session bootstrap: load shared memories and team standards.
 
-    Also runs a freshness check on canonical memories tagged with
-    infrastructure/dependency/tooling/config tags.
+    When project is specified, loads memories in tiered scopes:
+      - Full body: all memories tagged project:<name> + global/cross-project memories
+      - Index only: other projects (title + count, no body)
+    When project is None, loads all memories (legacy behaviour, limit=50).
 
-    Returns a state-of-play summary with counts of memories and standards
-    loaded into session context. Call this at the start of every session.
+    Also runs a freshness check on canonical memories and reports dream state.
+
+    Args:
+        project: Scope loading to this project name (e.g. "mori", "bifrost").
+                 Use /brief --auto in the skill to auto-detect from git root.
+        include_global: Include scope:global / scope:cross-project / profile /
+                        pattern memories (default True).
+        include_index: Show a count-only index of memories from other projects
+                       (default True).
     """
+    from datetime import datetime, timezone
+
     parts: list[str] = []
 
-    # Load memories
-    try:
-        memories = memory_store.list(limit=50)
-        mem_count = 0
-        if memories and "No memories" not in memories:
-            # Count actual entries (format: "- **name**: title (type)")
-            mem_count = sum(1 for line in memories.split("\n") if line.strip().startswith("- **"))
-        parts.append(f"**Shared memories:** {mem_count} loaded")
-    except Exception as e:
-        parts.append(f"**Shared memories:** error loading ({e})")
+    # ── Scoped loading ─────────────────────────────────────────────────
+    if project:
+        try:
+            scoped = memory_store.get_memories_by_project(
+                project, include_global=include_global
+            )
+            proj_mems = scoped["project_memories"]
+            glob_mems = scoped["global_memories"]
+            other = scoped["other_projects"]
+
+            total_other = sum(c for _, c in other)
+            header = (
+                f"**Mori Brief — project: {project}** "
+                f"({len(proj_mems)} project + {len(glob_mems)} global memories)"
+            )
+            parts.append(header)
+
+            # Project memories — canonical full body, working split by age
+            cutoff_14d = (
+                datetime.now(timezone.utc)
+                .replace(tzinfo=None)
+                .strftime("%Y-%m-%d")
+            )
+            from datetime import timedelta
+            cutoff_dt = (datetime.now(timezone.utc) - timedelta(days=14)).strftime(
+                "%Y-%m-%d"
+            )
+
+            if proj_mems:
+                canonical = [m for m in proj_mems if m["tier"] == "canonical"]
+                working_recent = [
+                    m for m in proj_mems
+                    if m["tier"] != "canonical" and m["updated_at"][:10] >= cutoff_dt
+                ]
+                working_older = [
+                    m for m in proj_mems
+                    if m["tier"] != "canonical" and m["updated_at"][:10] < cutoff_dt
+                ]
+
+                lines = ["\n**Project memories:**"]
+                for m in canonical:
+                    tags_str = (
+                        f"[{', '.join(m['tags'])}]" if m["tags"] else ""
+                    )
+                    lines.append(f"- **{m['name']}**: {m['title']} (canonical) {tags_str}")
+                for m in working_recent:
+                    tags_str = (
+                        f"[{', '.join(m['tags'])}]" if m["tags"] else ""
+                    )
+                    lines.append(f"- **{m['name']}**: {m['title']} (working) {tags_str}")
+                for m in working_older:
+                    lines.append(
+                        f"- **{m['name']}**: {m['title']} — "
+                        f"{m['description'] or m['updated_at'][:10]} (working, >14d)"
+                    )
+                parts.append("\n".join(lines))
+
+            # Global memories
+            if glob_mems:
+                lines = ["\n**Global memories:**"]
+                for m in glob_mems:
+                    lines.append(f"- **{m['name']}**: {m['title']} ({m['type']})")
+                parts.append("\n".join(lines))
+
+            # Other-project index
+            if include_index and other:
+                idx_parts = []
+                for name, count in other[:8]:
+                    idx_parts.append(f"{name} ({count})")
+                parts.append(
+                    f"\n*{total_other} memories from other projects: "
+                    f"{', '.join(idx_parts)} — /pensieve to explore*"
+                )
+
+        except Exception as e:
+            parts.append(f"**Memories:** error loading scoped brief ({e})")
+            project = None  # fall through to unscoped
+
+    # ── Unscoped loading (legacy behaviour) ────────────────────────────
+    if not project:
+        try:
+            memories = memory_store.list(limit=50)
+            mem_count = 0
+            if memories and "No memories" not in memories:
+                mem_count = sum(
+                    1 for line in memories.split("\n") if line.strip().startswith("- **")
+                )
+            parts.append(f"**Shared memories:** {mem_count} loaded")
+        except Exception as e:
+            parts.append(f"**Shared memories:** error loading ({e})")
 
     # Freshness check on canonical infrastructure memories
     try:
