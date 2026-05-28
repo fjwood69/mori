@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.5 — Project-scoped /brief, dream auto-tagging
+## v0.1.8 — Project-scoped /brief, dream auto-tagging
 
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/main/docs/assets/header-dark-v0_1_4.svg)
 
