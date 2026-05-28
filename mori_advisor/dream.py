@@ -182,8 +182,13 @@ class DreamPipeline:
                 name = self._path_to_name(path)
                 try:
                     self._write_memory(
-                        mem, name, action, batch_session_ids, batch_clients,
-                        project=batch_project, _conn=txn_conn
+                        mem,
+                        name,
+                        action,
+                        batch_session_ids,
+                        batch_clients,
+                        project=batch_project,
+                        _conn=txn_conn,
                     )
                     logger.info("  ✓ %s %s", action, name)
                     written += 1

@@ -328,9 +328,7 @@ async def brief(
     # ── Scoped loading ─────────────────────────────────────────────────
     if project:
         try:
-            scoped = memory_store.get_memories_by_project(
-                project, include_global=include_global
-            )
+            scoped = memory_store.get_memories_by_project(project, include_global=include_global)
             proj_mems = scoped["project_memories"]
             glob_mems = scoped["global_memories"]
             other = scoped["other_projects"]
@@ -344,31 +342,28 @@ async def brief(
 
             # Project memories — canonical full body, working split by age
             from datetime import timedelta
-            cutoff_dt = (datetime.now(timezone.utc) - timedelta(days=14)).strftime(
-                "%Y-%m-%d"
-            )
+
+            cutoff_dt = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y-%m-%d")
 
             if proj_mems:
                 canonical = [m for m in proj_mems if m["tier"] == "canonical"]
                 working_recent = [
-                    m for m in proj_mems
+                    m
+                    for m in proj_mems
                     if m["tier"] != "canonical" and m["updated_at"][:10] >= cutoff_dt
                 ]
                 working_older = [
-                    m for m in proj_mems
+                    m
+                    for m in proj_mems
                     if m["tier"] != "canonical" and m["updated_at"][:10] < cutoff_dt
                 ]
 
                 lines = ["\n**Project memories:**"]
                 for m in canonical:
-                    tags_str = (
-                        f"[{', '.join(m['tags'])}]" if m["tags"] else ""
-                    )
+                    tags_str = f"[{', '.join(m['tags'])}]" if m["tags"] else ""
                     lines.append(f"- **{m['name']}**: {m['title']} (canonical) {tags_str}")
                 for m in working_recent:
-                    tags_str = (
-                        f"[{', '.join(m['tags'])}]" if m["tags"] else ""
-                    )
+                    tags_str = f"[{', '.join(m['tags'])}]" if m["tags"] else ""
                     lines.append(f"- **{m['name']}**: {m['title']} (working) {tags_str}")
                 for m in working_older:
                     lines.append(
