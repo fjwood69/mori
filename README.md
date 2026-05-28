@@ -12,7 +12,7 @@ account, no LLM Gateway required — though those all work too.
 
 ## Multi-Instance Coherence
 
-![One Forest, Many Agents](https://raw.githubusercontent.com/fjwood69/mori/5d55d248dc91fc7c8292c3deaf6d2a2aa40192ce/docs/assets/figure-5-one-forest.svg)
+![One Forest, Many Agents](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-5-one-forest.svg)
 
 If you run AI coding agents across multiple machines, profiles, or in a team — one focused on the API layer, another on the frontend, a third on infrastructure — you already know the problem: each instance is brilliant in isolation, but none of them know what the others decided.
 
@@ -30,7 +30,7 @@ others know.
 
 ## Quickstart
 
-![Runs Anywhere](https://raw.githubusercontent.com/fjwood69/mori/74f13d4dbb321d8af6bf3ea5640566d255f33c6c/docs/assets/figure-3-runs-anywhere.svg)
+![Runs Anywhere](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-3-runs-anywhere.svg)
 
 ### 1. Deploy
 
@@ -101,7 +101,7 @@ Full reference: [docs/reference/slash-commands.md](docs/reference/slash-commands
 Session events are captured via Claude Code lifecycle hooks and distilled into
 structured memories by a configurable LLM.
 
-![Dream Pipeline](https://raw.githubusercontent.com/fjwood69/mori/5d55d248dc91fc7c8292c3deaf6d2a2aa40192ce/docs/assets/figure-1-dream-pipeline.svg)
+![Dream Pipeline](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-1-dream-pipeline.svg)
 
 ```
 Hook fires  →  POST /api/events/raw  →  SQLite events table
@@ -124,7 +124,7 @@ session ID, hostname, working directory, transcript path.
 
 ### Memory store
 
-![The Forest Remembers](https://raw.githubusercontent.com/fjwood69/mori/5d55d248dc91fc7c8292c3deaf6d2a2aa40192ce/docs/assets/figure-2-the-forest-remembers.svg)
+![The Forest Remembers](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-2-the-forest-remembers.svg)
 
 Memories live in SQLite (`memories.db`) with three tiers:
 
@@ -139,7 +139,7 @@ See [docs/reference/configuration.md](docs/reference/configuration.md).
 
 ### Universal ingestion
 
-![Feed Anything, Remember Everything](https://raw.githubusercontent.com/fjwood69/mori/4f7e3a984527d91bcc23db431bfae8089ce20006/docs/assets/figure-6-feed-anything.svg)
+![Feed Anything, Remember Everything](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-6-feed-anything.svg)
 
 New team members start cold. `/ingest` bootstraps the memory store from
 existing source material — applying the same distillation pipeline that
@@ -166,9 +166,39 @@ mori-advisor is running locally or on GCE.
 **Cost guard:** `--max-cost` (default $5.00) aborts before spending. Preview
 is always free. SHA256 dedup prevents re-ingesting the same content.
 
+### Strategic consultation (`/consult`)
+
+![Ask hard questions. Get grounded answers.](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-7-strategic-consultation.svg)
+
+Ask a question mid-session and get strategic guidance grounded in your actual
+project context — not generic advice. When a focus area is specified,
+relevant team standards are automatically pulled from the memory store and
+injected alongside your question. The advisor checks against your own baseline,
+not a textbook.
+
+```bash
+# Architecture review with file context:
+/consult "should we move auth to a separate service?" --focus architecture
+
+# Security review against your team's own baseline:
+/consult "review this handler" --focus security --file src/auth.py
+
+# Chain tool output directly into the advisor:
+/consult "review this" --focus security --file src/auth.py --file snyk-report.json
+```
+
+**Focus areas:** `general`, `architecture`, `security`, `performance`, `style`
+
+**Depth levels:** `quick` (fast scan), `balanced` (default), `deep` (thorough)
+
+**Standards-aware:** set `MORI_STANDARDS_DIR` to a directory of `.md` files
+and Mori imports them as protected memories. `/consult --focus security`
+automatically injects your security baseline — your agents check against your
+rules, not generic ones.
+
 ### Architecture
 
-![Mori Architecture](https://raw.githubusercontent.com/fjwood69/mori/5d55d248dc91fc7c8292c3deaf6d2a2aa40192ce/docs/assets/figure-4-architecture.svg)
+![Mori Architecture](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-4-architecture.svg)
 
 ---
 
