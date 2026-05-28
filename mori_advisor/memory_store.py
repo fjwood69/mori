@@ -1127,7 +1127,7 @@ class MemoryStore:
         for (tags_raw,) in other_rows:
             for tag in self._parse_tags(tags_raw):
                 if tag.startswith("project:") and tag != tag_value:
-                    proj_name = tag[len("project:"):]
+                    proj_name = tag[len("project:") :]
                     other_counts[proj_name] = other_counts.get(proj_name, 0) + 1
         other_projects = sorted(other_counts.items(), key=lambda x: x[1], reverse=True)
 
