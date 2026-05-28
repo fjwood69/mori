@@ -17,6 +17,16 @@ Loads shared memories and team standards into context at the start of every sess
 
 **Usage:** Runs automatically at session start. `/brief` to re-run.
 
+**Project-scoped loading:**
+
+| Command | Effect |
+|---|---|
+| `/brief` | Unscoped — all memories, up to limit |
+| `/brief --project mori` | Scoped to `mori` — full body for project memories, global memories always included, lightweight index of other projects |
+| `/brief --auto` | Auto-detect project from git working directory (checks `.mori-project` file → `MORI_PROJECT` env → `git rev-parse --show-toplevel`) |
+
+Scoped briefs load full memory bodies for the target project rather than truncating at the global cap — the right memories in full, not a truncated slice of everything.
+
 **Design rationale — session grounding instead of RAG:** All context is loaded up front (one LLM cost), not retrieved per-query. Works because the corpus is small (<50 documents). Beyond that, scale via namespace-separated Mori instances rather than adding a vector database.
 
 ---
