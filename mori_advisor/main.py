@@ -343,11 +343,6 @@ async def brief(
             parts.append(header)
 
             # Project memories — canonical full body, working split by age
-            cutoff_14d = (
-                datetime.now(timezone.utc)
-                .replace(tzinfo=None)
-                .strftime("%Y-%m-%d")
-            )
             from datetime import timedelta
             cutoff_dt = (datetime.now(timezone.utc) - timedelta(days=14)).strftime(
                 "%Y-%m-%d"
