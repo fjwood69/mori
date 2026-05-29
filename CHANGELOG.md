@@ -65,7 +65,7 @@ python scripts/backfill_project_tags.py /data/mori-advisor/memories.db
 
 ---
 
-## v0.1.4 — Remote client ingestion, GitHub Actions CI/CD
+## v0.1.4 — Remote client ingestion
 
 ### Remote client ingestion (`mori_ingest_content`)
 
@@ -87,14 +87,6 @@ sends bytes over the wire. The server processes in memory.
 - **Dedup**: SHA256 computed from decoded bytes; `source_uri = "<content:name>"`
 - **Allow lists**: `mcp__mori__mori_ingest_content` added across all bridge installers
 
-### GitHub Actions CI/CD
-
-- **`ci.yml`** — ruff lint + format check + Docker build check on every push/PR to `main`
-- **`cd.yml`** — multi-arch (`linux/amd64,linux/arm64`) build+push to
-  `ghcr.io/fjwood69/mori` on semver tags; blue/green GCE deploy with exponential-backoff
-  health check — new container starts as `mori-advisor-new`, old container only stopped
-  after health passes; rolls back on failure
-- **`pyproject.toml`** — ruff config: `line-length = 100`, `target-version = "py313"`
 
 ## v0.1.3 — Universal Ingestion, model refactor, shared utilities
 
@@ -192,9 +184,8 @@ Brought all three bridge installers (Claude Code, Cursor, Antigravity) to full p
 - External service access standards
 - mori-shipper VS Code extension README
 
-## v0.1.1 — Moku → Mori rename, mori-shipper VS Code extension
+## v0.1.1 — mori-shipper VS Code extension
 
-- Project renamed from Moku to Mori throughout codebase, docs, and configs
 - mori-shipper VS Code extension (v0.1.1) — ships events from VS Code-native CC instances
 - README images and terminology update
 
