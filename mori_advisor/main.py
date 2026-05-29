@@ -721,9 +721,28 @@ def _update_all(device: str) -> str:
     if not cfg:
         return f"Unknown device '{device}'."
 
-    # Build a single command: for each skill, write temp file, copy to profiles
     profiles = cfg["profiles"]
     parts = []
+
+    if cfg["family"] == "linux":
+        for sk in skills:
+            skill_path = Path(SKILLS_DIR) / sk / "SKILL.md"
+            if not skill_path.exists():
+                continue
+            content = skill_path.read_text(encoding="utf-8")
+            tmp = f"/tmp/_{sk}_skill.md"
+            parts.append(f"cat > {tmp} << 'SKILLEOF'\n{content}\nSKILLEOF")
+            for p in profiles:
+                parts.append(f"mkdir -p ~/{p}/skills/{sk}")
+                parts.append(f"cp {tmp} ~/{p}/skills/{sk}/SKILL.md")
+            parts.append(f"rm -f {tmp}")
+        joined = "\n".join(parts)
+        return (
+            f"**{device} — bash ({len(skills)} packages, {len(profiles)} profiles)**"
+            f"\n\n```bash\n{joined}\n```"
+        )
+
+    # Windows — PowerShell
     for sk in skills:
         skill_path = Path(SKILLS_DIR) / sk / "SKILL.md"
         if not skill_path.exists():
@@ -732,17 +751,16 @@ def _update_all(device: str) -> str:
         temp = f"$env:TEMP\\_{sk}_skill.md"
         parts.append(f'Set-Content -Path "{temp}" -Value @"{content}"@ -Encoding UTF8')
         for p in profiles:
-            dir_part = f'New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\\{p}\\skills\\{sk}" | Out-Null'
-            copy_part = f'Copy-Item "{temp}" "$env:USERPROFILE\\{p}\\skills\\{sk}\\SKILL.md"'
-            parts.append(dir_part)
-            parts.append(copy_part)
+            parts.append(
+                f'New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\\{p}\\skills\\{sk}" | Out-Null'
+            )
+            parts.append(f'Copy-Item "{temp}" "$env:USERPROFILE\\{p}\\skills\\{sk}\\SKILL.md"')
         parts.append(f'Remove-Item "{temp}"')
-
     joined = "; ".join(parts)
-    if cfg["family"] == "linux":
-        return f"**{device} — bash ({len(skills)} packages, {len(profiles)} profiles)**\n\n```bash\n{joined}\n```"
-
-    return f"**{device} — PowerShell ({len(skills)} packages, {len(profiles)} profiles)**\n\n```powershell\n{joined}\n```"
+    return (
+        f"**{device} — PowerShell ({len(skills)} packages, {len(profiles)} profiles)**"
+        f"\n\n```powershell\n{joined}\n```"
+    )
 
 
 @mcp.tool()
