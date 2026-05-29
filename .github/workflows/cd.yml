@@ -147,11 +147,18 @@ jobs:
               f.write(notes)
           EOF
 
-      - name: Create release
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            --title "${{ github.ref_name }}" \
-            --notes-file release_notes.md
+          if gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" &>/dev/null; then
+            gh release edit "${{ github.ref_name }}" \
+              --repo "${{ github.repository }}" \
+              --title "${{ github.ref_name }}" \
+              --notes-file release_notes.md
+          else
+            gh release create "${{ github.ref_name }}" \
+              --repo "${{ github.repository }}" \
+              --title "${{ github.ref_name }}" \
+              --notes-file release_notes.md
+          fi
