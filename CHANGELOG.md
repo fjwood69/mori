@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.1.9 — /update skill deployment fixed
+
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/main/docs/assets/header-dark-v0_1_4.svg)
+
+### `/update` skill deployment — three fixes
+
+The `/update` MCP tool generates shell commands to deploy skills to all Claude profile
+directories on a target device. Three bugs prevented it from working at all.
+
+**Skills now shipped in the Docker image**
+
+`skills/` directory was not included in the Dockerfile `COPY` — `MORI_SKILLS_DIR` was
+unset and `_list_skills()` always returned an empty list. Fixed:
+
+```dockerfile
+COPY skills/ ./skills/
+ENV MORI_SKILLS_DIR=/app/skills
+```
+
+**Correct subdirectory format**
+
+Skills were stored as flat files (`skills/brief.skill.md`) but Claude Code expects and
+`_list_skills()` looks for subdirectory format (`skills/brief/SKILL.md`). All 7 skill files
+renamed to match:
+
+```
+skills/brief/SKILL.md
+skills/consult/SKILL.md
+skills/dream/SKILL.md
+skills/ingest/SKILL.md
+skills/nats/SKILL.md
+skills/pensieve/SKILL.md
+skills/req/SKILL.md
+```
+
+**Bash generation for Linux devices**
+
+`_update_all()` always emitted PowerShell syntax regardless of device family, producing broken
+commands for Linux targets (CB14P, NUC). Fixed with a family branch — Linux devices now get
+bash heredoc commands; Windows (Twiggy, UX3405) retains PowerShell output.
+
+**Usage after this release:**
+
+```
+/update cb14p all   → pasteable bash that deploys all 7 skills to 4 profile dirs
+/update twiggy all  → pasteable PowerShell equivalent
+```
+
+---
+
 ## v0.1.8 — Project-scoped /brief, dream auto-tagging
 
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/main/docs/assets/header-dark-v0_1_4.svg)
