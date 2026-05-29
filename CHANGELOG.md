@@ -2,7 +2,7 @@
 
 ## v0.1.9 — /update skill deployment fixed
 
-![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/main/docs/assets/header-dark-v0_1_4.svg)
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/main/docs/assets/header-v0_1_4.svg)
 
 ### `/update` skill deployment — three fixes
 
@@ -52,7 +52,7 @@ bash heredoc commands; Windows (Twiggy, UX3405) retains PowerShell output.
 
 ## v0.1.8 — Project-scoped /brief, dream auto-tagging
 
-![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/main/docs/assets/header-dark-v0_1_4.svg)
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/main/docs/assets/header-v0_1_4.svg)
 
 ### Project-scoped `/brief`
 
