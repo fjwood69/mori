@@ -921,9 +921,9 @@ async def nats_sub(replay: bool = False, wait: int = 2) -> str:
         js = nc.jetstream()
 
         if replay:
+            from nats.errors import TimeoutError as JsTimeout
             from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
             from nats.js.errors import NotFoundError
-            from nats.js.errors import TimeoutError as JsTimeout
 
             # Ensure stream exists — try info first, create if missing (idempotent)
             try:
