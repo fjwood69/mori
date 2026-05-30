@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.12 — NATS import fix
+
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/1eb4fa8efffcc66643da9ad3ad85ad70319629283/docs/assets/header-blank.svg)
+
+### Fix: `TimeoutError` import path
+
+`nats.js.errors` does not export `TimeoutError` — caused `ImportError` on deploy (Python 3.14). Changed to `nats.errors.TimeoutError`.
+
+---
+
 ## v0.1.11 — `/wrap` skill, NATS replay fix
 
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/559229efffcc66643da9ad3ad85ad70319629283/docs/assets/header-blank.svg)
