@@ -918,41 +918,51 @@ async def nats_sub(replay: bool = False, wait: int = 2) -> str:
         import nats
 
         nc = await nats.connect(NATS_URL)
+        js = nc.jetstream()
 
         if replay:
-            # JetStream pull subscription for historical messages
-            js = nc.jetstream()
+            from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy, StreamConfig
+            from nats.js.errors import NotFoundError, TimeoutError as JsTimeout
+
+            # Ensure stream exists — try info first, create if missing (idempotent)
             try:
-                from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
-
-                config = ConsumerConfig(
-                    deliver_policy=DeliverPolicy.ALL,
-                    ack_policy=AckPolicy.NONE,
-                    max_deliver=1,
+                await js.stream_info("cc")
+            except NotFoundError:
+                await js.add_stream(
+                    name="cc",
+                    subjects=["cc.>"],
+                    max_age=7 * 86400,
+                    storage="file",
+                    retention="limits",
                 )
-                psub = await js.pull_subscribe("cc.>", stream="cc", config=config)
-                msgs: list[str] = []
-                try:
-                    batch = await psub.fetch(50, timeout=min(wait, 10))
-                    for msg in batch:
-                        try:
-                            data = json.loads(msg.data.decode())
-                            msgs.append(f"[{data.get('from', '?')}] {data.get('text', '')}")
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            msgs.append(f"[raw] {msg.data[:200]}")
-                        await msg.ack()
-                except (asyncio.TimeoutError, __import__("nats.errors").TimeoutError):
-                    pass
-                await nc.drain()
-                if msgs:
-                    output = "\n".join(msgs)
-                    if len(msgs) > 50:
-                        output = "\n".join(msgs[:50]) + f"\n... ({len(msgs) - 50} more lines)"
-                    return output
-            except Exception:
-                pass
 
-        # Core NATS live subscription (no-replay or replay fallback)
+            config = ConsumerConfig(
+                deliver_policy=DeliverPolicy.ALL,
+                ack_policy=AckPolicy.NONE,
+                max_deliver=1,
+            )
+            psub = await js.pull_subscribe("cc.>", stream="cc", config=config)
+            msgs: list[str] = []
+            try:
+                batch = await psub.fetch(10, timeout=min(wait, 10))
+                for msg in batch:
+                    try:
+                        data = json.loads(msg.data.decode())
+                        msgs.append(f"[{data.get('from', '?')}] {data.get('text', '')}")
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        msgs.append(f"[raw] {msg.data[:200]}")
+                    await msg.ack()
+            except (asyncio.TimeoutError, JsTimeout):
+                pass
+            finally:
+                await psub.unsubscribe()
+
+            await nc.drain()
+            if msgs:
+                return "\n".join(msgs)
+            return "No NATS messages."
+
+        # Core NATS live subscription (no-replay path)
         sub = await nc.subscribe("cc.>")
         await asyncio.sleep(min(wait, 10))
         await sub.unsubscribe()
