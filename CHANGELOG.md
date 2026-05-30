@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.1.11 — `/wrap` skill, NATS replay fix
+
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/559229efffcc66643da9ad3ad85ad70319629283/docs/assets/header-blank.svg)
+
+### New `/wrap` skill
+
+Session wrap-up as a single command — captures work before a release. Runs the full sign-off sequence:
+
+- **Summarise** — writes a concise session summary
+- **cc-share** — publishes to cross-session storage (7-day TTL)
+- **NATS** — broadcasts one-liner to the message bus
+- **Dream** — flushes undreamed events to durable memory
+
+Use before every release tag to avoid losing session context when the MCP server restarts.
+
+### NATS replay fix
+
+`nats_sub(replay=True)` silently returned "No NATS messages" because the `cc` JetStream stream was never created. The replay branch now auto-creates the stream on first call and cleans up ephemeral consumers after each read.
+
+Includes the lint fix from CI: removed unused `StreamConfig` import and ruff-organised inline imports.
+
+---
+
 ## v0.1.9 — /update skill deployment fixed
 
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/89af2974c249b473e426199e3e574c05c4119364/docs/assets/header-blank.svg)
