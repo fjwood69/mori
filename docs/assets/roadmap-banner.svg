@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="120" viewBox="0 0 900 120" font-family="'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace">
+
+  <rect width="900" height="120" fill="#112418"/>
+
+  <g transform="translate(32 30) scale(0.9)">
+    <line x1="6" y1="32" x2="58" y2="32" stroke="#f3f0e8" stroke-width="1.25" stroke-linecap="round"/>
+    <line x1="32" y1="32" x2="32" y2="10" stroke="#f3f0e8" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="32" y1="14" x2="24" y2="8" stroke="#f3f0e8" stroke-width="1.25" stroke-linecap="round"/>
+    <line x1="32" y1="14" x2="40" y2="8" stroke="#f3f0e8" stroke-width="1.25" stroke-linecap="round"/>
+    <line x1="32" y1="20" x2="22" y2="14" stroke="#f3f0e8" stroke-width="1.25" stroke-linecap="round"/>
+    <line x1="32" y1="20" x2="42" y2="14" stroke="#f3f0e8" stroke-width="1.25" stroke-linecap="round"/>
+    <line x1="32" y1="26" x2="25" y2="22" stroke="#f3f0e8" stroke-width="1.25" stroke-linecap="round"/>
+    <line x1="32" y1="26" x2="39" y2="22" stroke="#f3f0e8" stroke-width="1.25" stroke-linecap="round"/>
+    <line x1="32" y1="32" x2="32" y2="54" stroke="#c4cdb8" stroke-width="1" stroke-linecap="round"/>
+    <line x1="32" y1="38" x2="22" y2="48" stroke="#c4cdb8" stroke-width="1" stroke-linecap="round"/>
+    <line x1="32" y1="38" x2="42" y2="48" stroke="#c4cdb8" stroke-width="1" stroke-linecap="round"/>
+    <line x1="32" y1="44" x2="16" y2="52" stroke="#c4cdb8" stroke-width="1" stroke-linecap="round"/>
+    <line x1="32" y1="44" x2="48" y2="52" stroke="#c4cdb8" stroke-width="1" stroke-linecap="round"/>
+    <circle cx="32" cy="32" r="1.6" fill="#f3f0e8"/>
+  </g>
+
+  <line x1="110" y1="28" x2="110" y2="92" stroke="rgba(243,240,232,0.18)" stroke-width="1"/>
+
+  <text x="130" y="74" font-size="36" font-weight="500" letter-spacing="-0.04em" fill="#f3f0e8">roadmap</text>
+
+  <text x="876" y="24" text-anchor="end" font-size="10" letter-spacing="0.16em" fill="rgba(243,240,232,0.7)">森 · ROADMAP</text>
+
+</svg>
