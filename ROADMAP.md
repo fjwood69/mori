@@ -110,7 +110,6 @@ Horizontal scale and advanced intelligence. Build when paying customers need it.
 
 ## Experiments / Research
 
-- Memory merge strategy — post-Toronto relocation, real split-brain data to work with
 - Bifrost custom provider pricing accuracy
 - Reflect operation — surface as a first-class `/reflect` command, analogous to dream but on-demand and targeted
 
