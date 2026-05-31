@@ -103,7 +103,7 @@ class BifrostClient:
                 "dream": self.bifrost_dream_vk,
                 "fast": self.bifrost_fast_vk,
             }
-            effective_key = VK_CONFIG.get(vk) or key_map.get(vk, self.bifrost_advisor_vk)
+            effective_key = key_map.get(vk) or VK_CONFIG.get(vk) or self.bifrost_advisor_vk
             model_map = {
                 "advisor": self.advisor_model,
                 "dream": self.dream_model,
