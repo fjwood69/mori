@@ -1,6 +1,6 @@
 """Dream job entry point for scheduled execution.
 
-Invoked by systemd timer (GCE) or cron (homelab). This is a standalone
+Invoked by systemd timer (GCE) or cron (self-hosted). This is a standalone
 script that runs the dream pipeline once and exits — separate from the
 long-running MCP server.
 

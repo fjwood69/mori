@@ -1,6 +1,6 @@
 """Dream pipeline — distill session events into durable memories.
 
-Extracted from the homelab's mori-dream CLI into a library class
+Extracted from the mori-dream CLI into a library class
 that can be called from MCP tools or scheduled jobs. Operates
 entirely inside the container — no host filesystem access needed.
 """
