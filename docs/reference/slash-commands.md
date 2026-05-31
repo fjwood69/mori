@@ -173,7 +173,7 @@ When the post-push git hook is installed, every `git push` automatically publish
 [your-hostname] GitPush: mori/main abc1234 — feat: content-based ingestion
 ```
 
-**Install the hook:** see [docs/getting-started/git-hooks.md](../getting-started/git-hooks.md)
+**Install the hook:** see [docs/reference/git-hooks.md](git-hooks.md)
 
 ---
 

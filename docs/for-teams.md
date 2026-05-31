@@ -13,7 +13,7 @@ starts informed rather than cold.
 3. Each member runs the installer for their platform — see [Platform guides](../README.md#platform-guides)
 4. Set `MORI_TRUSTED_DREAMERS` to the hostnames of team members who can approve canonical writes
 5. The dream pipeline runs on a schedule — no manual consolidation needed
-6. Install the git push hook in each shared repo so pushes are visible to all instances via `/brief` — see [docs/getting-started/git-hooks.md](getting-started/git-hooks.md)
+6. Install the git push hook in each shared repo so pushes are visible to all instances via `/brief` — see [docs/reference/git-hooks.md](reference/git-hooks.md)
 
 ---
 
@@ -278,7 +278,7 @@ Install the post-push hook in each shared repo:
 ./scripts/install-git-hooks.sh --repo ~/dotfiles
 ```
 
-Set `MORI_URL` in your environment (e.g. `~/.bashrc`) so the hook knows where to send events — see [docs/getting-started/git-hooks.md](getting-started/git-hooks.md).
+Set `MORI_URL` in your environment (e.g. `~/.bashrc`) so the hook knows where to send events — see [docs/reference/git-hooks.md](reference/git-hooks.md).
 
 ### Inter-agent messaging
 
