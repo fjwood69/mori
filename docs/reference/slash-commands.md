@@ -150,6 +150,31 @@ Publish and subscribe to real-time messages across Claude Code instances (requir
 
 Messages persist for 7 days in the JetStream store. Offline instances catch up on reconnect.
 
+### `GitPush` event
+
+When the post-push git hook is installed, every `git push` automatically publishes a `GitPush` event to NATS. Other instances see it via `/nats sub` replay and `/brief` at session start.
+
+**Event payload:**
+```json
+{
+  "hook_event_name": "GitPush",
+  "session_id": "abc1234",
+  "repo": "mori",
+  "branch": "main",
+  "sha": "abc1234",
+  "message": "feat: content-based ingestion",
+  "remote": "origin",
+  "client": "uk-smr-nuc15pro"
+}
+```
+
+**NATS message format** (what `/nats sub` shows):
+```
+[uk-smr-nuc15pro] GitPush: mori/main abc1234 — feat: content-based ingestion
+```
+
+**Install the hook:** see [docs/getting-started/git-hooks.md](../getting-started/git-hooks.md)
+
 ---
 
 ## `/ingest` — Universal Ingestion

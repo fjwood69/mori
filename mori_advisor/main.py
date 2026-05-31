@@ -9,6 +9,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -1702,6 +1703,32 @@ async def log_event(request: Request) -> JSONResponse:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
+async def _nats_publish_git_push(payload: dict) -> None:
+    """Fire-and-forget NATS publish for GitPush events."""
+    try:
+        import nats as _nats
+
+        repo = payload.get("repo", "unknown")
+        branch = payload.get("branch", "unknown")
+        sha = payload.get("sha", payload.get("session_id", "unknown"))
+        message = payload.get("message", "")
+        client = payload.get("client", "unknown")
+
+        text = f"GitPush: {repo}/{branch} {sha}"
+        if message:
+            text += f" — {message}"
+
+        msg = json.dumps(
+            {"from": client, "text": text, "ts": __import__("time").time(), "type": "git-push"}
+        )
+        nc = await _nats.connect(NATS_URL)
+        await nc.publish(f"cc.{client}", msg.encode())
+        await nc.flush()
+        await nc.drain()
+    except Exception as e:
+        logger.warning("GitPush NATS publish failed: %s", e)
+
+
 @mcp.custom_route("/api/events/raw", methods=["POST"])
 async def log_event_raw(request: Request) -> JSONResponse:
     """Accept raw CC hook stdin JSON and map to structured event."""
@@ -1737,6 +1764,8 @@ async def log_event_raw(request: Request) -> JSONResponse:
         logger.info(
             "Raw event %s for session %s (id=%s)", event.event_name, event.session_id, row_id
         )
+        if event.event_name == "GitPush" and NATS_URL:
+            asyncio.create_task(_nats_publish_git_push(body))
         return JSONResponse({"status": "accepted", "event_id": row_id}, status_code=202)
     except Exception as e:
         logger.error("Failed to log raw event: %s", e)
