@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.14 — Fix GitPush NATS publish
+
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/ea4eb044f8c22bff2ea064cb7aec75a41f1d1303/docs/assets/header-blank.svg)
+
+### Fix: `asyncio.create_task` GC bug in GitPush NATS publish
+
+`asyncio.create_task(_nats_publish_git_push(...))` discards the task reference — Python only holds a weak reference, so the task is garbage collected before it runs and the NATS message is never sent. Changed to `await _nats_publish_git_push(body)`. Also removes the now-redundant local `import asyncio` inside `nats_sub` (moved to module level in v0.1.13).
+
+---
+
 ## v0.1.13 — Git push NATS notification
 
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/842fbfb3912db78e52a2e6a692e4f3f5bc3fff95/docs/assets/header-blank.svg)
