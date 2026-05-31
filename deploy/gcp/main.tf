@@ -291,7 +291,7 @@ resource "google_compute_instance" "mori" {
   }
 
   metadata = {
-    ssh-keys              = "nucadmin:${var.ssh_public_key}"
+    ssh-keys              = "${var.ssh_user}:${var.ssh_public_key}"
     google-logging-enabled    = "true"
     google-monitoring-enabled = "true"
   }

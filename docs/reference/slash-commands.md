@@ -33,7 +33,7 @@ Scoped briefs load full memory bodies for the target project rather than truncat
 
 ## `/wrap` — Session Wrap
 
-Session-closing counterpart to `/ready` (Fred's personal bootstrap). Summarises the session and publishes to cc-share and NATS so the next session (on any device) starts with context.
+Session-closing counterpart to your session bootstrap skill (e.g. `/ready`). Summarises the session and publishes to cc-share and NATS so the next session (on any device) starts with context.
 
 **MCP tools:** cc-share (`POST /cc-share/`), `mori-nats_pub`, `mori-dream_run`
 
@@ -164,13 +164,13 @@ When the post-push git hook is installed, every `git push` automatically publish
   "sha": "abc1234",
   "message": "feat: content-based ingestion",
   "remote": "origin",
-  "client": "uk-smr-nuc15pro"
+  "client": "your-hostname"
 }
 ```
 
 **NATS message format** (what `/nats sub` shows):
 ```
-[uk-smr-nuc15pro] GitPush: mori/main abc1234 — feat: content-based ingestion
+[your-hostname] GitPush: mori/main abc1234 — feat: content-based ingestion
 ```
 
 **Install the hook:** see [docs/getting-started/git-hooks.md](../getting-started/git-hooks.md)

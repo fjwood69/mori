@@ -41,9 +41,15 @@ variable "tailscale_auth_key" {
 }
 
 variable "container_image" {
-  description = "Container image tag for mori-advisor (currently ghcr.io/fjwood69/moku:latest until mori image is published)"
+  description = "Container image tag for mori-advisor"
   type        = string
-  default     = "ghcr.io/fjwood69/moku:latest"
+  default     = "ghcr.io/fjwood69/mori:latest"
+}
+
+variable "ssh_user" {
+  description = "Linux username for SSH key injection (used in GCE metadata)"
+  type        = string
+  default     = "mori"
 }
 
 variable "backup_retention_days" {

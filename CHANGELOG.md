@@ -140,13 +140,13 @@ skills/req/SKILL.md
 
 `_update_all()` always emitted PowerShell syntax regardless of device family, producing broken
 commands for Linux targets (CB14P, NUC). Fixed with a family branch — Linux devices now get
-bash heredoc commands; Windows (Twiggy, UX3405) retains PowerShell output.
+bash heredoc commands; Windows devices retain PowerShell output.
 
 **Usage after this release:**
 
 ```
-/update cb14p all   → pasteable bash that deploys all 7 skills to 4 profile dirs
-/update twiggy all  → pasteable PowerShell equivalent
+/update my-linux-device all   → pasteable bash that deploys all 7 skills to 4 profile dirs
+/update my-windows-device all  → pasteable PowerShell equivalent
 ```
 
 ---

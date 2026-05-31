@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 # to resolve VKs. Model routing is controlled by the VK's model_override
 # in Bifrost DB. Not used in direct mode.
 VK_CONFIG: dict[str, str] = {
-    "advisor": "moku-advisor-local",
-    "dream": "moku-dream-local",
-    "fast": "moku-fast-local",
+    "advisor": "mori-advisor-local",
+    "dream": "mori-dream-local",
+    "fast": "mori-fast-local",
 }
 
 
