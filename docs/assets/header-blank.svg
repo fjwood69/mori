@@ -29,10 +29,10 @@
     <text x="12" y="3" font-size="12" letter-spacing="0.12em" fill="#5a5f5b">A SHARED MEMORY LAYER FOR AI CODING AGENTS</text>
   </g>
   <g transform="translate(172, 188)" font-size="11">
-    <g><rect x="0" y="-10" width="36" height="20" rx="10" fill="#f3f0e8" stroke="#d6d2c5"></rect>
-      <text x="10" y="4" fill="#5a5f5b">MIT</text></g>
-    <g><rect x="46" y="-10" width="118" height="20" rx="10" fill="#f3f0e8" stroke="#d6d2c5"></rect>
-      <text x="56" y="4" fill="#5a5f5b">build · passing</text></g>
+    <g><rect x="0" y="-10" width="44" height="20" rx="10" fill="#f3f0e8" stroke="#d6d2c5"></rect>
+      <text x="10" y="4" fill="#5a5f5b">AGPL</text></g>
+    <g><rect x="54" y="-10" width="118" height="20" rx="10" fill="#f3f0e8" stroke="#d6d2c5"></rect>
+      <text x="64" y="4" fill="#5a5f5b">build · passing</text></g>
   </g>
   <text x="876" y="34" text-anchor="end" font-size="10" letter-spacing="0.16em" fill="#5a5f5b">森 · FOREST</text>
 </svg>
