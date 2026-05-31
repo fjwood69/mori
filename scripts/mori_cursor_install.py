@@ -59,6 +59,10 @@ MORI_MCP_ALLOW = [
     "mcp__mori__nats_pub",
     "mcp__mori__nats_sub",
     "mcp__mori__nats_ping",
+    # Messaging
+    "mcp__mori__msg_send",
+    "mcp__mori__msg_recv",
+    "mcp__mori__msg_thread",
 ]
 
 

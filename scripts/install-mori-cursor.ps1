@@ -30,7 +30,9 @@ $Script:MoriMcpAllow = @(
     # Ingest
     "mcp__mori__mori_ingest", "mcp__mori__mori_ingest_status", "mcp__mori__mori_ingest_preview", "mcp__mori__mori_ingest_content",
     # NATS
-    "mcp__mori__nats_pub", "mcp__mori__nats_sub", "mcp__mori__nats_ping"
+    "mcp__mori__nats_pub", "mcp__mori__nats_sub", "mcp__mori__nats_ping",
+    # Messaging
+    "mcp__mori__msg_send", "mcp__mori__msg_recv", "mcp__mori__msg_thread"
 )
 
 function Write-Utf8File {

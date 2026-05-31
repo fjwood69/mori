@@ -21,6 +21,8 @@
 | `MORI_SKILLS_DIR` | — | Path to slash command skill files (for /update) |
 | `MORI_DREAM_INTERVAL` | `60` | Dream pipeline interval in minutes |
 | `MORI_BIFROST_TIMEOUT` | `300` | API timeout in seconds |
+| `MORI_MSG_HEADLESS_ENABLED` | `false` | Spawn headless `claude` process for incoming `task` messages |
+| `MORI_MSG_HEADLESS_TRUSTED` | `""` | Comma-separated hostnames allowed to trigger headless CC |
 
 ## Dream interval
 

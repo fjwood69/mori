@@ -34,6 +34,59 @@
 /msg done <id>                   # mark task done
 ```
 
+## Examples
+
+### Task delegation
+
+```bash
+# UX3405 — delegate a refactor to the NUC
+/msg send nuc15pro task "Extract rate limiting into its own module in bifrost/src/middleware/ — current impl in src/server.rs lines 140-180"
+
+# NUC — next /brief surfaces the task:
+# [task]  from uk-smr-ux3405-win11  2026-05-31 14:22  id=a3f9c2b1
+#   Extract rate limiting into its own module...
+#   → ack: mori-msg_send(to="uk-smr-ux3405-win11", type="ack", reply_to="a3f9c2b1-...", body="...")
+
+/msg ack a3f9c2b1 "starting now, should be done this session"
+
+# NUC — once complete:
+/msg done a3f9c2b1
+
+# UX3405 — check status:
+/msg inbox
+# [done]  from uk-smr-nuc15pro  id=a3f9c2b1  ✓
+```
+
+### Cross-device decision
+
+```bash
+# Record a decision from any device — daemon writes to memory_store immediately,
+# no human session needed on the receiving end
+/msg send broadcast decision "Settled on pull consumers over push for all NATS daemons — better restart recovery and no duplicate delivery on reconnect"
+```
+
+### Question and answer
+
+```bash
+# GCE — ask the NUC something
+/msg send nuc15pro question "Did the JWT expiry edge case in session.rs get resolved? Dream pipeline flagged it as unresolved last week."
+
+# NUC — /brief surfaces it, reply in one step:
+mori-msg_send(to="ca-gcp-mori-advisor", type="reply", reply_to="b4e8f3c2-...", body="Yes — fixed in commit c7a5665, added a 60s clock-skew buffer. Backfilled the memory.")
+
+# GCE — view the thread:
+/msg thread b4e8f3c2
+```
+
+### Broadcast session summary
+
+```bash
+# /wrap does this automatically as step 4b — shown here for clarity
+/msg send --broadcast "nuc on uk-smr-nuc15pro: rebuilt mori:local from feat/mori-msg, smoke 8/8 green, msg_daemon running"
+
+# All devices see it in next /msg inbox or /brief
+```
+
 ## MCP tools
 
 ### `mori-msg_send`
