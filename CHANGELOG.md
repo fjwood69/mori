@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.1.0 — Inter-agent messaging (mori-msg)
+
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/f4fee0826da3ab8b234f8677fa8f96f37ce07e88/docs/assets/header-blank.svg)
+
+### New: `mori-msg` — addressed, typed, reply-threaded messages between agents
+
+Agents can now delegate tasks, ask questions, and share decisions across the device network without a shared session. Messages are picked up at the next `/brief` — no mid-session push, no extra infrastructure.
+
+**New MCP tools:** `mori-msg_send`, `mori-msg_recv`, `mori-msg_thread`
+
+**New daemon:** `mori_advisor/msg_daemon.py` — long-running durable JetStream pull consumer. Same image as `mori-advisor`, different entrypoint. Sole writer to `msg.db`; dispatches by type:
+- `decision` → written directly to `memory_store` (no human session needed)
+- `task` → persisted + auto-acked; appears in next `/brief`
+- `question` / `broadcast` → persisted for `/brief` pickup
+- `done` / `ack` / `reply` → update referenced message status
+
+**Infrastructure:** new `MORI_MSG` JetStream stream (`mori.msg.*` + `mori.reply.*`, 7-day retention). Separate `msg.db` (not `memories.db`) — sole writer is the daemon, clean WAL ownership.
+
+**Updated pod stack:** `mori-advisor` (8968) + `mori-ingestion` (8969) + `mori-dream` (internal) + `mori-msg` (internal daemon)
+
+**Skills:** `/brief` calls `mori-msg_recv(unacked=True)` at session start; `/wrap` broadcasts session summary to `mori-msg`; new `/msg` skill for direct inbox/send/thread use.
+
+**Opt-in headless CC:** `MORI_MSG_HEADLESS_ENABLED=true` + `MORI_MSG_HEADLESS_TRUSTED=<hostnames>`. Off by default.
+
+---
+
 ## v1.0.0 — AGPL-3.0 licence, defensive publication
 
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/97ee8bb6b52ba12cabcb6ce308a75ce12f7367c5/docs/assets/header-blank.svg)
