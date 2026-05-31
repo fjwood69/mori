@@ -3,8 +3,8 @@
 #
 # Usage:
 #   ./scripts/smoke-test.sh [--strict] [URL]
-#   MORI_URL=http://100.84.128.79:8968 MORI_API_KEY=xxx ./scripts/smoke-test.sh
-#   ./scripts/smoke-test.sh --strict http://100.90.219.111:8968
+#   MORI_URL=http://<nuc-ip>:8968 MORI_API_KEY=xxx ./scripts/smoke-test.sh
+#   ./scripts/smoke-test.sh --strict http://<gce-ip>:8968
 #
 # --strict: treat 'degraded' as failure (use for GCE post-deploy confirmation)
 # Exit 0 = ok (or degraded without --strict); exit 1 = failed

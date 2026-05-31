@@ -13,9 +13,9 @@ A VS Code extension that watches Cline and Continue conversation files and ships
 
    | Setting | Value | Notes |
    |---------|-------|-------|
-   | `moriShipper.apiUrl` | `http://100.90.219.111:8968/api/events/raw` | GCE Mori endpoint |
-   | `moriShipper.apiKey` | `ab5f028221642ea2abaf1895f686424141180816ea8c7c465412dce7f497bb2a` | API key for event ingestion |
-   | `moriShipper.clientName` | your device name | e.g. `twiggy`, `ux3405`, `nuc15pro` |
+   | `moriShipper.apiUrl` | `http://<mori-host>:8968/api/events/raw` | Your Mori server endpoint |
+   | `moriShipper.apiKey` | `<your-api-key>` | Value of `MORI_ADVISOR_API_KEY` on your server |
+   | `moriShipper.clientName` | your device name | e.g. `my-laptop`, `workstation` |
 
 3. Restart VS Code. The extension activates on startup and runs in the background.
 

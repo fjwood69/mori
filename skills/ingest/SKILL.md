@@ -81,7 +81,7 @@ Report: memories written, estimated cost, errors. After success, suggest `/brief
 
 ### Error handling
 
-- `MORI_INGEST_URL` not set → tell user to set it (e.g. `http://100.90.219.111:8969`) and re-run
+- `MORI_INGEST_URL` not set → tell user to set it (e.g. `http://<mori-host>:8969`) and re-run
 - HTTP 413 → file too large (50MB/file, 200MB total)
 - HTTP 401 → API key mismatch — check `MORI_API_KEY`
 - status `failed` → report `errors` field from job response

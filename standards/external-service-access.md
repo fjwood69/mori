@@ -22,18 +22,18 @@ It writes nothing to stdout other than the value. No quoting issues.
 
 ```bash
 GITHUB_TOKEN=$(~/bin/get-secret.sh GITHUB_TOKEN)
-git push https://fjwood69:${GITHUB_TOKEN}@github.com/fjwood69/<repo>.git <branch>
+git push https://<user>:${GITHUB_TOKEN}@github.com/<user>/<repo>.git <branch>
 ```
 
-The token is in `.secrets` as `GITHUB_TOKEN`. It works for all fjwood69 repos.
 Use branch name, not just `main` — confirm current branch first.
 
 ## cc-share
 
 ```bash
 KEY=$(~/bin/get-secret.sh CC_SHARE_API_KEY)
-curl -s http://100.90.219.111:8999/cc-share/?prefix= -H "X-Api-Key: $KEY"
-curl -s -X POST http://100.90.219.111:8999/cc-share/<key> \
+CC_SHARE_URL=$(~/bin/get-secret.sh CC_SHARE_URL)
+curl -s "${CC_SHARE_URL}/cc-share/?prefix=" -H "X-Api-Key: $KEY"
+curl -s -X POST "${CC_SHARE_URL}/cc-share/<key>" \
   -H "X-Api-Key: $KEY" -d '<value>'
 ```
 
@@ -45,41 +45,14 @@ Use MCP tools, not the nats CLI:
 - `mori-nats_sub` — read recent messages (pass `replay=true` for history)
 - `mori-nats_pub` — publish a message
 
-## Grafana (local)
-
-```bash
-PASS=$(~/bin/get-secret.sh GF_SECURITY_ADMIN_PASSWORD)
-curl -u "admin:$PASS" http://10.1.2.202:3000/api/...
-```
-
-Use `10.1.2.202` not `localhost` (pasta networking quirk).
-
-## Prometheus
-
-```bash
-PASS=$(~/bin/get-secret.sh PROMETHEUS_ADMIN_PASSWORD)
-curl -u "admin:$PASS" http://10.1.2.202:9090/api/v1/...
-```
-
 ## Remote SSH
 
-All Pi credentials are prefixed by hostname in `.secrets`. Pattern:
-
-| Host | `.secrets` prefix | Host IP |
-|------|--------------------|---------|
-| ca-ws-raspi5 | `REMOTE_RASPI5B_` | 100.117.216.45 |
-| uk-ga-raspi5 | `REMOTE_UKGA_` | 100.119.3.81 |
-| uk-smr-raspi4b | `REMOTE_RASPI4B_` | 10.1.2.222 |
-| uk-smr-jetson | `REMOTE_JETSON_` | 10.1.2.214 |
-
-Example:
-```bash
-PASS=$(~/bin/get-secret.sh REMOTE_RASPI5B_PASSWORD)
-sshpass -p "$PASS" ssh piadmin@100.117.216.45 <command>
-```
-
-## Bifrost DB (sqlite3 on GCE)
+Credentials are in `~/.claude/.secrets`. Read the host, user, and password,
+then connect:
 
 ```bash
-ssh -t jadmin@100.90.219.111 "sqlite3 /data/bifrost/config.db \"SELECT ...\""
+PASS=$(~/bin/get-secret.sh REMOTE_<HOST>_PASSWORD)
+USER=$(~/bin/get-secret.sh REMOTE_<HOST>_USER)
+HOST=$(~/bin/get-secret.sh REMOTE_<HOST>_HOST)
+sshpass -p "$PASS" ssh "${USER}@${HOST}" <command>
 ```

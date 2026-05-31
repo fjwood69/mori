@@ -41,7 +41,7 @@ organisational context. Contact us to discuss your requirements.
 
 ## Contact
 
-**Email:** fred@moriapp.dev
+**Email:** fredjwood@proton.me
 
 **GitHub:** [@fjwood69](https://github.com/fjwood69)
 
