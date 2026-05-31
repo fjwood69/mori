@@ -913,7 +913,6 @@ async def nats_sub(replay: bool = False, wait: int = 2) -> str:
         wait: Seconds to wait for new messages (default 2, max 10).
     """
     try:
-        import asyncio
         import json
 
         import nats
@@ -1765,7 +1764,7 @@ async def log_event_raw(request: Request) -> JSONResponse:
             "Raw event %s for session %s (id=%s)", event.event_name, event.session_id, row_id
         )
         if event.event_name == "GitPush" and NATS_URL:
-            asyncio.create_task(_nats_publish_git_push(body))
+            await _nats_publish_git_push(body)
         return JSONResponse({"status": "accepted", "event_id": row_id}, status_code=202)
     except Exception as e:
         logger.error("Failed to log raw event: %s", e)
