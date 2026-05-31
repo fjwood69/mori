@@ -177,6 +177,31 @@ When the post-push git hook is installed, every `git push` automatically publish
 
 ---
 
+## `/msg` — Inter-Agent Messaging
+
+Send tasks, questions, and decisions to other Mori agents. Messages are picked up at the next `/brief` on the receiving device — no mid-session push required.
+
+**MCP tools:** `mori-msg_send`, `mori-msg_recv`, `mori-msg_thread`
+
+| Command | Effect |
+|---------|--------|
+| `/msg send <to> <type> <body>` | Send addressed message |
+| `/msg send --broadcast <body>` | Fan-out to all agents |
+| `/msg recv` or `/msg inbox` | Show pending messages |
+| `/msg thread <id>` | Full reply thread |
+| `/msg ack <id>` | Acknowledge a task |
+| `/msg done <id>` | Mark task complete |
+
+**Types:** `task`, `decision`, `question`, `reply`, `ack`, `done`, `broadcast`
+
+`decision` messages are written to `memory_store` immediately by the `mori-msg` daemon — no human session needed on the receiving side.
+
+Requires the `mori-msg` daemon running alongside `mori-advisor` (included in the default pod stack).
+
+Full reference: [msg.md](msg.md)
+
+---
+
 ## `/ingest` — Universal Ingestion
 
 Extracts durable memories from PDFs, images, CC transcripts, git history, and code files into the shared memory store. Solves the cold-start problem for new users and unlocks institutional knowledge locked in files.

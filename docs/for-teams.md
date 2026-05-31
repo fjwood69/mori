@@ -279,3 +279,17 @@ Install the post-push hook in each shared repo:
 ```
 
 Set `MORI_URL` in your environment (e.g. `~/.bashrc`) so the hook knows where to send events — see [docs/getting-started/git-hooks.md](getting-started/git-hooks.md).
+
+### Inter-agent messaging
+
+`/msg` lets agents delegate tasks, ask questions, and record decisions across the device network. The receiving agent picks them up at the next `/brief` — no shared session required.
+
+- **`decision`** — written directly to `memory_store` by the daemon (no human session needed on the receiving end)
+- **`task`** — persisted and auto-acked; surfaced at next `/brief` with a ready-made reply command
+- **`question` / `broadcast`** — persisted for `/brief` pickup
+
+The `mori-msg` daemon runs alongside `mori-advisor` as a separate container (same image, different entrypoint). It is the sole writer to `msg.db` — distinct from `memories.db` so there is no write contention with the advisor or dream pipeline.
+
+**Headless CC** (opt-in): set `MORI_MSG_HEADLESS_ENABLED=true` and `MORI_MSG_HEADLESS_TRUSTED=<hostnames>` to spawn `claude --print <task>` automatically for incoming tasks from trusted hosts. Off by default — requires explicit opt-in per deployment.
+
+**Governance note:** `decision` messages bypass the normal dream/approval pipeline — they are written immediately. Ensure only trusted hostnames send decision messages to shared deployments.

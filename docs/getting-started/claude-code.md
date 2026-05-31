@@ -74,11 +74,15 @@ Translates all `.skill.md` files from the `skills/` folder into Claude Code's `S
 
 ```
 skills/
-  mori-brief/SKILL.md
-  mori-consult/SKILL.md
-  mori-dream/SKILL.md
-  mori-pensieve/SKILL.md
-  ...
+  brief/SKILL.md
+  consult/SKILL.md
+  dream/SKILL.md
+  ingest/SKILL.md
+  msg/SKILL.md
+  nats/SKILL.md
+  pensieve/SKILL.md
+  req/SKILL.md
+  wrap/SKILL.md
 ```
 
 ---

@@ -88,6 +88,7 @@ powershell -File scripts/install-mori-cursor.ps1
 | **Requirements tracking** | Lightweight project checklist surfaced via `/brief` | `/req` |
 | **Governance** | Versioning, trusted dreamers, rollback, attribution | — |
 | **NATS messaging** | Real-time cross-device awareness | `/nats` |
+| **Inter-agent messaging** | Send tasks, questions, and decisions across the device network | `/msg` |
 | **Skill deployment** | Push slash commands to all devices in one step | `/update` |
 
 Full reference: [docs/reference/slash-commands.md](docs/reference/slash-commands.md)
@@ -196,6 +197,35 @@ and Mori imports them as protected memories. `/consult --focus security`
 automatically injects your security baseline — your agents check against your
 rules, not generic ones.
 
+### Inter-agent messaging (`/msg`)
+
+![The forest whispers](https://raw.githubusercontent.com/fjwood69/mori/2a74b681fd49c9b41aad57d69f02c0be0101f661/docs/assets/figure-8-the-forest-whispers-dark.svg)
+
+Delegate tasks, ask questions, and share decisions across your Claude Code
+instances — without a shared session. Messages are typed, reply-threaded, and
+picked up at the next `/brief`. The `mori-msg` daemon receives messages
+server-side: `decision` messages are written directly to the memory store
+without any human session on the receiving end.
+
+```bash
+# From UX3405, delegate a task to the NUC:
+/msg send nuc15pro task "Refactor auth middleware — extract rate limiting into its own module"
+
+# NUC picks it up at next /brief and acks:
+/msg ack a3f9c2b1 "on it"
+
+# Back on UX3405, check the reply:
+/msg inbox
+
+# NUC marks it done when finished:
+/msg done a3f9c2b1
+```
+
+**Message types:** `task`, `decision`, `question`, `reply`, `ack`, `done`, `broadcast`
+
+Requires the `mori-msg` daemon running alongside `mori-advisor` (included in
+the default pod stack). See [docs/reference/msg.md](docs/reference/msg.md) for full reference.
+
 ### Architecture
 
 ![Mori Architecture](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-4-architecture.svg)
@@ -221,6 +251,8 @@ Key environment variables:
 | `MORI_TRUSTED_DREAMERS` | — | Comma-separated trusted hostnames |
 | `MORI_DREAM_INTERVAL` | `60` | Dream cron interval (minutes) |
 | `MORI_STANDARDS_DIR` | — | Path to team standards `.md` files |
+| `MORI_MSG_HEADLESS_ENABLED` | `false` | Spawn headless Claude for incoming tasks |
+| `MORI_MSG_HEADLESS_TRUSTED` | — | Comma-separated hostnames allowed to trigger headless CC |
 
 ---
 
