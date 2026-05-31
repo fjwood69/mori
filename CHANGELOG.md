@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.1.13 — Git push NATS notification
+
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/842fbfb3912db78e52a2e6a692e4f3f5bc3fff95/docs/assets/header-blank.svg)
+
+### New: git push NATS notification hook
+
+When you push to any git repo with the hook installed, a `GitPush` event is published immediately to NATS — so every other active Claude Code instance sees the push in real time via `/nats sub` and `/brief` replay.
+
+**New files:**
+- `scripts/post-push.sh` / `scripts/post-push.ps1` — the hook itself; always `exit 0`, fire-and-forget
+- `scripts/install-git-hooks.sh` / `scripts/install-git-hooks.ps1` — one-command install per repo
+- `docs/getting-started/git-hooks.md` — installation guide
+
+**Server change (`main.py`):**
+- `_nats_publish_git_push` helper — publishes to `cc.<client>` immediately on receipt, bypassing the dream pipeline for instant cross-device visibility
+- `/api/events/raw` handler — fires the NATS publish via `asyncio.create_task` after logging `GitPush` events
+
+**Install:**
+```bash
+# From the mori repo root
+./scripts/install-git-hooks.sh
+
+# Other repos
+./scripts/install-git-hooks.sh --repo ~/bifrost
+./scripts/install-git-hooks.sh --repo ~/dotfiles
+```
+
+Set `MORI_URL`, `MORI_API_KEY`, `MORI_CLIENT` in your environment — see `docs/getting-started/git-hooks.md`.
+
+---
+
 ## v0.1.12 — NATS import fix
 
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/1eb4fa8efffcc66643da9ad3ad85ad70319629283/docs/assets/header-blank.svg)
