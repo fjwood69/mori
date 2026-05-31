@@ -75,7 +75,7 @@ It is updated with each release.
 
 ### Experiments
 
-- Split-brain NUC vs GCE Mori instances — independent stores, diverging memory
+- Split-brain homelab vs GCE Mori instances — independent stores, diverging memory
 - Memory merge strategy across independent stores
 - Parallel ingestion workers — unlocked by Postgres concurrency
 - Bifrost composite routing metric — throughput-weighted VK scoring
