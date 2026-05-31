@@ -38,6 +38,13 @@ Set TTL to 604800 (7 days) so it persists across the week.
 
 Publish a one-line wrap message: `mori_nats_pub` with message `"<name> on <hostname>: <one-line summary of session>"`.
 
+## 4b. Broadcast to mori-msg
+
+`mori-msg_send(to="broadcast", type="broadcast", body="<same one-line summary as step 4>")`
+
+This makes the summary replayable via `mori-msg_recv` alongside the existing `cc.>` NATS stream.
+Skip silently if the tool is unavailable.
+
 ## 5. Dream
 
 Call `mori_dream_run` to flush any undreamed events.

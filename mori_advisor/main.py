@@ -1006,6 +1006,130 @@ async def nats_ping() -> str:
         return f"NATS server not reachable: {e}"
 
 
+# ── Inter-agent messaging tools ──────────────────────────────────────────
+
+
+@mcp.tool()
+async def msg_send(
+    to: str,
+    type: str,
+    body: str,
+    reply_to: str = "",
+) -> str:
+    """Send a typed message to another agent or broadcast to all.
+
+    Args:
+        to: Target hostname (e.g. "nuc15pro") or "broadcast" for all agents.
+        type: Message type — task, decision, question, reply, ack, done, broadcast.
+        body: Message content.
+        reply_to: UUID of the message being replied to (for reply/ack/done types).
+    """
+    try:
+        from .msg import MsgType, build_message, publish_message
+
+        valid_types: list[MsgType] = [
+            "task",
+            "decision",
+            "question",
+            "reply",
+            "ack",
+            "done",
+            "broadcast",
+        ]
+        if type not in valid_types:
+            return f"Unknown type '{type}'. Valid: {', '.join(valid_types)}"
+
+        msg = build_message(
+            to=to,
+            type=type,  # type: ignore[arg-type]
+            body=body,
+            reply_to=reply_to or None,
+        )
+        await publish_message(NATS_URL, msg)
+        return f"Sent [{type}] to {to} (id={msg.id[:8]})"
+    except Exception as e:
+        return f"msg_send failed: {e}"
+
+
+@mcp.tool()
+async def msg_recv(
+    types: list[str] | None = None,
+    from_agent: str = "",
+    unacked: bool = False,
+    include_broadcast: bool = True,
+) -> str:
+    """Fetch messages addressed to this agent.
+
+    Reads from the local msg_log (populated by the mori-msg daemon).
+
+    Args:
+        types: Filter by type(s) — task, question, reply, ack, done, decision, broadcast.
+        from_agent: Filter by sender hostname.
+        unacked: Only return messages not yet acked or done (status=pending).
+        include_broadcast: Include mori.msg.broadcast messages (default true).
+    """
+    try:
+        import socket
+
+        from .msg_store import MsgStore
+
+        hostname = socket.gethostname()
+        store = MsgStore(db_path=DATA_DIR / "msg.db")
+        rows = store.get_pending(
+            hostname=hostname,
+            types=types,
+            from_host=from_agent or None,
+            unacked=unacked,
+            include_broadcast=include_broadcast,
+        )
+        if not rows:
+            return "No messages."
+
+        lines = []
+        for r in rows:
+            ts = r["ts"][:16].replace("T", " ")
+            reply_info = f" (reply_to={r['reply_to'][:8]})" if r.get("reply_to") else ""
+            lines.append(
+                f"[{r['type']}]  from {r['from_host']}  {ts}  status={r['status']}{reply_info}\n"
+                f"  id={r['id']}\n"
+                f"  {r['body']}"
+            )
+        return "\n\n".join(lines)
+    except Exception as e:
+        return f"msg_recv failed: {e}"
+
+
+@mcp.tool()
+async def msg_thread(id: str) -> str:
+    """Get the full reply thread rooted at a message ID.
+
+    Returns the root message and all replies in chronological order.
+
+    Args:
+        id: Root message UUID (or first 8 chars as a prefix — exact match required).
+    """
+    try:
+        from .msg_store import MsgStore
+
+        store = MsgStore(db_path=DATA_DIR / "msg.db")
+        thread = store.get_thread(id)
+        if not thread:
+            return f"No message found with id={id}"
+
+        lines = []
+        for r in thread:
+            ts = r["ts"][:16].replace("T", " ")
+            indent = "  → " if r.get("reply_to") else ""
+            lines.append(
+                f"{indent}[{r['type']}]  {r['from_host']} → {r['to_host']}  {ts}\n"
+                f"{indent}  id={r['id']}  status={r['status']}\n"
+                f"{indent}  {r['body']}"
+            )
+        return "\n\n".join(lines)
+    except Exception as e:
+        return f"msg_thread failed: {e}"
+
+
 # ── Ingestion tools ─────────────────────────────────────────────────────
 
 
@@ -1878,6 +2002,17 @@ async def smoke_test(request: Request) -> JSONResponse:
         checks["ingestion"] = {"status": "ok"}
     except Exception as e:
         checks["ingestion"] = {"status": "failed", "error": str(e)}
+        degraded = True
+
+    # 8. msg_daemon — degraded only (daemon may not be running on all deployments)
+    try:
+        from .msg_store import MsgStore
+
+        _ms = MsgStore(db_path=DATA_DIR / "msg.db")
+        msg_count = _ms.count()
+        checks["msg_daemon"] = {"status": "ok", "msg_count": msg_count}
+    except Exception as e:
+        checks["msg_daemon"] = {"status": "failed", "error": str(e)}
         degraded = True
 
     overall = "failed" if critical_failed else ("degraded" if degraded else "ok")
