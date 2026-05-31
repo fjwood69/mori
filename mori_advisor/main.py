@@ -59,7 +59,7 @@ STANDARDS_DIR = os.environ.get("MORI_STANDARDS_DIR", "")
 # Skills directory (for /update tool to read skill content server-side)
 SKILLS_DIR = os.environ.get("MORI_SKILLS_DIR", "")
 
-NATS_URL = os.environ.get("MORI_NATS_URL", "nats://cc:MHRqnbvNew52VpDFTa8IM1PR@localhost:4222")
+NATS_URL = os.environ.get("MORI_NATS_URL", "nats://localhost:4222")
 
 # ── System prompts ──────────────────────────────────────────────────────
 
@@ -675,32 +675,29 @@ async def pensieve(
 # ── Update tool (device profile commands) ────────────────────────────────
 
 
-DEVICE_PROFILES = {
-    "nuc": {
-        "hostname": "uk-smr-nuc15pro",
-        "family": "linux",
-        "profiles": [".claude", ".claude-jr", ".claude-sub", ".claude-api"],
-        "shell": "bash",
-    },
-    "twiggy": {
-        "hostname": "uk-smr-twiggy-win11",
-        "family": "windows",
-        "profiles": [".claude", ".claude-sr", ".claude-sub", ".claude-api"],
-        "shell": "powershell",
-    },
-    "ux3405": {
-        "hostname": "uk-smr-ux3405-win11",
-        "family": "windows",
-        "profiles": [".claude", ".claude-sr", ".claude-sub", ".claude-api"],
-        "shell": "powershell",
-    },
-    "cb14p": {
-        "hostname": "uk-smr-chromebook-plus-14",
-        "family": "linux",
-        "profiles": [".claude", ".claude-sr", ".claude-sub", ".claude-api"],
-        "shell": "bash",
-    },
-}
+def _load_device_profiles() -> dict:
+    """Load device profiles from MORI_DEVICES_CONFIG (path to JSON file).
+
+    Example JSON structure:
+    {
+      "nuc": {"hostname": "my-nuc", "family": "linux",
+              "profiles": [".claude"], "shell": "bash"}
+    }
+    """
+    config_path = os.environ.get("MORI_DEVICES_CONFIG", "")
+    if not config_path:
+        return {}
+    try:
+        import json as _json
+
+        with open(config_path) as f:
+            return _json.load(f)
+    except Exception as e:
+        logger.warning("Could not load MORI_DEVICES_CONFIG %s: %s", config_path, e)
+        return {}
+
+
+DEVICE_PROFILES = _load_device_profiles()
 
 
 def _list_skills() -> list[str]:

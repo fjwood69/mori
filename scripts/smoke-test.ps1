@@ -1,8 +1,8 @@
 # Mori smoke test — Windows equivalent of smoke-test.sh
 #
 # Usage:
-#   .\scripts\smoke-test.ps1 [-Strict] [-Url http://100.84.128.79:8968]
-#   $env:MORI_URL="http://100.84.128.79:8968"; $env:MORI_API_KEY="xxx"; .\scripts\smoke-test.ps1
+#   .\scripts\smoke-test.ps1 [-Strict] [-Url http://<mori-host>:8968]
+#   $env:MORI_URL="http://<mori-host>:8968"; $env:MORI_API_KEY="xxx"; .\scripts\smoke-test.ps1
 #
 # -Strict: treat 'degraded' as failure (use for GCE post-deploy confirmation)
 
