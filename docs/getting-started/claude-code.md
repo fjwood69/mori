@@ -183,3 +183,10 @@ The shipper scripts provide:
 - Local failure logging to `%TEMP%\mori-hook.log` (Windows) or `/tmp/mori-hook.log` (Linux/macOS)
 - Log rotation at 100 KB
 - Always exit 0 so a Mori outage never interrupts your AI session
+
+
+---
+
+## Optional: Git push notifications
+
+Install the post-push hook in your repos to broadcast a `GitPush` event to NATS whenever you push — every other active instance sees it at the next `/brief`. See [docs/reference/git-hooks.md](../reference/git-hooks.md).

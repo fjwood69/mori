@@ -143,3 +143,10 @@ Once installed, the easiest way to interact with Mori is by using the custom sla
 
 Using these slash commands instructs the agent to invoke the underlying Mori MCP tools automatically, presenting the context directly inside your session.
 
+
+
+---
+
+## Optional: Git push notifications
+
+Install the post-push hook in your repos to broadcast a `GitPush` event to NATS whenever you push — every other active instance sees it at the next `/brief`. See [docs/reference/git-hooks.md](../reference/git-hooks.md).
