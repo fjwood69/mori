@@ -62,6 +62,7 @@ RESPONSE=$(curl -sf --max-time 30 "${AUTH_ARGS[@]}" "$MORI_URL/api/smoke" 2>&1) 
 if [ "$PARSER" = "python3" ]; then
   python3 - <<EOF
 import json, sys
+sys.stdout.reconfigure(encoding='utf-8')
 
 data = json.loads('''$RESPONSE''')
 checks = data.get("checks", {})
