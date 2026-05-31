@@ -1782,6 +1782,114 @@ async def events_health(request: Request) -> JSONResponse:
     )
 
 
+@mcp.custom_route("/api/smoke", methods=["GET"])
+async def smoke_test(request: Request) -> JSONResponse:
+    """End-to-end smoke test — verifies DB, event pipeline, dream watermark, NATS, ingestion."""
+    if not _check_auth(request):
+        return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
+
+    import sqlite3 as _sql
+    import urllib.request as _urllib
+
+    checks: dict = {}
+    critical_failed = False
+    degraded = False
+
+    # 1. db_read — SQLite readable
+    try:
+        _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=5)
+        _c.execute("PRAGMA journal_mode=WAL")
+        mem_count = _c.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        _c.close()
+        checks["db_read"] = {"status": "ok", "memory_count": mem_count}
+    except Exception as e:
+        checks["db_read"] = {"status": "failed", "error": str(e)}
+        critical_failed = True
+
+    # 2. db_write — integrity check + write-lock test, no data written
+    try:
+        _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=5)
+        _c.execute("PRAGMA journal_mode=WAL")
+        integrity = _c.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise RuntimeError(f"integrity_check returned: {integrity}")
+        _c.execute("BEGIN IMMEDIATE")
+        _c.execute("ROLLBACK")
+        _c.close()
+        checks["db_write"] = {"status": "ok"}
+    except Exception as e:
+        checks["db_write"] = {"status": "failed", "error": str(e)}
+        critical_failed = True
+
+    # 3. event_log — session log accessible
+    try:
+        total = session_log.count_events()
+        checks["event_log"] = {"status": "ok", "total_events": total}
+    except Exception as e:
+        checks["event_log"] = {"status": "failed", "error": str(e)}
+        critical_failed = True
+
+    # 4. event_roundtrip — direct internal append, verify count increments
+    try:
+        before = session_log.count_events()
+        session_log.append_event(
+            session_id="smoke-test-probe",
+            event_name="SmokeTest",
+            client="smoke",
+        )
+        after = session_log.count_events()
+        if after != before + 1:
+            raise RuntimeError(f"count did not increment: {before} → {after}")
+        checks["event_roundtrip"] = {"status": "ok", "before": before, "after": after}
+    except Exception as e:
+        checks["event_roundtrip"] = {"status": "failed", "error": str(e)}
+        critical_failed = True
+
+    # 5. dream_watermark — pipeline state accessible
+    try:
+        _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=5)
+        _c.execute("PRAGMA journal_mode=WAL")
+        wm_row = _c.execute(
+            "SELECT value FROM dream_state WHERE key = 'last_dreamed_event_id'"
+        ).fetchone()
+        watermark = int(wm_row[0]) if wm_row else 0
+        max_id = _c.execute("SELECT MAX(id) FROM session_events").fetchone()[0] or 0
+        _c.close()
+        checks["dream_watermark"] = {
+            "status": "ok",
+            "watermark": watermark,
+            "undreamed": max_id - watermark,
+        }
+    except Exception as e:
+        checks["dream_watermark"] = {"status": "failed", "error": str(e)}
+        critical_failed = True
+
+    # 6. NATS — degraded only
+    try:
+        import nats as _nats
+
+        _nc = await _nats.connect(NATS_URL)
+        await _nc.drain()
+        checks["nats"] = {"status": "ok"}
+    except Exception as e:
+        checks["nats"] = {"status": "failed", "error": str(e)}
+        degraded = True
+
+    # 7. Ingestion pod — degraded only
+    try:
+        _urllib.urlopen("http://localhost:8969/health", timeout=3)
+        checks["ingestion"] = {"status": "ok"}
+    except Exception as e:
+        checks["ingestion"] = {"status": "failed", "error": str(e)}
+        degraded = True
+
+    overall = "failed" if critical_failed else ("degraded" if degraded else "ok")
+    return JSONResponse(
+        {"status": overall, "checks": checks},
+        status_code=500 if critical_failed else 200,
+    )
+
+
 @mcp.custom_route("/api/precompact", methods=["POST"])
 async def precompact(request: Request) -> JSONResponse:
     """PreCompact hook: log the event and immediately run dream pipeline synchronously.
