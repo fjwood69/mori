@@ -33,6 +33,7 @@ $Detail = @{
     event_log       = { param($c) "$($c.total_events) events" }
     event_roundtrip = { param($c) "$($c.before) → $($c.after)" }
     dream_watermark = { param($c) "watermark=$($c.watermark), undreamed=$($c.undreamed)" }
+    msg_daemon      = { param($c) "$($c.msg_count) messages" }
 }
 
 $Checks = $Response.checks.PSObject.Properties

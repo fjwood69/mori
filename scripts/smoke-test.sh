@@ -78,6 +78,7 @@ labels = {
     "dream_watermark": "dream_watermark",
     "nats":            "nats",
     "ingestion":       "ingestion",
+    "msg_daemon":      "msg_daemon",
 }
 
 detail = {
@@ -85,6 +86,7 @@ detail = {
     "event_log":       lambda c: f"{c.get('total_events','')} events",
     "event_roundtrip": lambda c: f"{c.get('before','')} → {c.get('after','')}",
     "dream_watermark": lambda c: f"watermark={c.get('watermark','')}, undreamed={c.get('undreamed','')}",
+    "msg_daemon":      lambda c: f"{c.get('msg_count','')} messages",
 }
 
 for key, label in labels.items():
