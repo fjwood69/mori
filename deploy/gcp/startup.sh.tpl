@@ -261,6 +261,19 @@ su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-ingestion \
 
 echo "Mori-ingestion container started."
 
+# Start mori-msg daemon (internal — no ports).
+# Sole writer to /data/mori-advisor/msg.db; subscribes MORI_MSG JetStream stream.
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f mori-msg 2>/dev/null; true"
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-msg \
+  --restart=always --network=host --user 0 \
+  -v /data/mori-advisor:/data/mori-advisor:Z \
+  -e MORI_ADVISOR_DATA=/data/mori-advisor \
+  -e MORI_NATS_URL='$MORI_NATS_URL' \
+  -e MORI_MSG_HEADLESS_ENABLED=false \
+  '$CONTAINER_IMAGE' python -m mori_advisor.msg_daemon"
+
+echo "Mori-msg daemon started."
+
 # ── Set up dream cron (every 4 hours) ────────────────────────────────────
 DREAM_CRON="0 */4 * * * XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec mori-advisor python -m mori_advisor.dream_job >/data/mori-advisor/dream-cron.log 2>&1"
 (crontab -l 2>/dev/null | grep -v mori-advisor; echo "$DREAM_CRON") | crontab -
@@ -285,7 +298,7 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
-for db in memories session_log; do
+for db in memories session_log msg; do
   if [ -f "$DB_DIR/$db.db" ]; then
     sqlite3 "$DB_DIR/$db.db" ".backup $DB_DIR/backup-$db-$DATE.db"
     gzip -f "$DB_DIR/backup-$db-$DATE.db"

@@ -30,6 +30,19 @@ If no arguments: run the standard unscoped brief.
 - With project: call `mori-brief` with `project=<name>`
 - Without project: call `mori-brief` (no params — loads all memories up to cap)
 
-### 4. Report
+### 4. Check pending messages
 
-Report "Ready" — summarise what was loaded (memory counts, project scope, dream state). Do not take autonomous actions.
+Call `mori-msg_recv(unacked=True)`.
+
+If messages are returned, surface them after the memory summary:
+
+- **task / question** — prominent; include a ready-made reply command:
+  - task → `mori-msg_send(to="<from_host>", type="ack", reply_to="<id>", body="acknowledged")`
+  - question → `mori-msg_send(to="<from_host>", type="reply", reply_to="<id>", body="...")`
+- **decision / broadcast** — awareness items only (lower prominence)
+
+Skip this section silently if no pending messages or if `mori-msg_recv` fails (daemon may not be running).
+
+### 5. Report
+
+Report "Ready" — summarise what was loaded (memory counts, project scope, dream state, pending message count if any). Do not take autonomous actions.
