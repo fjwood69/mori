@@ -13,6 +13,7 @@ starts informed rather than cold.
 3. Each member runs the installer for their platform — see [Platform guides](../README.md#platform-guides)
 4. Set `MORI_TRUSTED_DREAMERS` to the hostnames of team members who can approve canonical writes
 5. The dream pipeline runs on a schedule — no manual consolidation needed
+6. Install the git push hook in each shared repo so pushes are visible to all instances via `/brief` — see [docs/getting-started/git-hooks.md](getting-started/git-hooks.md)
 
 ---
 
@@ -259,3 +260,22 @@ deployments.
 
 The `PreCompact` hook triggers an immediate dream run before any instance's
 context is compressed — ensuring nothing is lost at the moment it matters most.
+
+### Cross-device push awareness
+
+When any team member pushes to a shared repo, other instances are notified
+automatically via NATS. The next `/brief` on any device surfaces the push:
+
+```
+[nuc15pro] GitPush: mori/main abc1234 — feat: content-based ingestion
+```
+
+Install the post-push hook in each shared repo:
+
+```bash
+./scripts/install-git-hooks.sh
+./scripts/install-git-hooks.sh --repo ~/bifrost
+./scripts/install-git-hooks.sh --repo ~/dotfiles
+```
+
+Set `MORI_URL` in your environment (e.g. `~/.bashrc`) so the hook knows where to send events — see [docs/getting-started/git-hooks.md](getting-started/git-hooks.md).
