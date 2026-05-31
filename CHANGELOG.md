@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.0.0 — AGPL-3.0 licence, defensive publication
+
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/97ee8bb6b52ba12cabcb6ce308a75ce12f7367c5/docs/assets/header-blank.svg)
+
+### Licence: MIT → AGPL-3.0
+
+Mori is now released under the [GNU Affero General Public License v3.0](LICENSE).
+
+Under AGPL-3.0, if you run Mori as a network service and modify the source code, you must release those modifications under AGPL-3.0. A commercial licence removes this requirement — see [COMMERCIAL.md](COMMERCIAL.md).
+
+### Defensive publication — prior art established
+
+[DISCLOSURE.md](DISCLOSURE.md) is a formal technical disclosure establishing prior art for the inventions in Mori: the dream pipeline, PreCompact synchronous distillation, multi-instance memory coherence, three-tier memory lifecycle, trusted dreamer governance, universal ingestion pipeline, and git push cross-instance notification. Published to prevent third-party patenting of these methods.
+
+### What v1.0 represents
+
+Mori has been running in production across a multi-device homelab since May 2026, accumulating 5,000+ session events and 60+ canonical memories across Claude Code, Cursor, and Cline instances. The 1.0 milestone reflects a stable core:
+
+- **Dream pipeline** — automatic session distillation via lifecycle hooks
+- **Session grounding** — `/brief` loads shared memories at session start
+- **Universal ingestion** — PDFs, images, transcripts, git history → memories
+- **Cross-device messaging** — NATS pub/sub, `/wrap`, git push notifications
+- **Governance** — trusted dreamers, pending write approval, full version history
+- **Smoke test** — `/api/smoke` endpoint for pre-deploy verification
+
+---
+
 ## v0.1.14 — Fix GitPush NATS publish
 
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/ea4eb044f8c22bff2ea064cb7aec75a41f1d1303/docs/assets/header-blank.svg)
