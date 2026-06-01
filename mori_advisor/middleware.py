@@ -16,7 +16,18 @@ from mori_advisor.auth import check_key
 
 logger = logging.getLogger(__name__)
 
-OPEN_PATHS = {"/health", "/ready", "/metrics", "/"}
+OPEN_PATHS = {
+    "/health",
+    "/ready",
+    "/metrics",
+    "/",
+    # OAuth 2.1 discovery endpoints — CC MCP HTTP client probes these before connecting
+    "/register",
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/openid-configuration",
+    "/.well-known/oauth-protected-resource/mcp",
+}
 
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
