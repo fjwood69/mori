@@ -1,6 +1,18 @@
 # Changelog
 
-## v2.1.0 — Named API key authentication
+## v2.1.0 — Named API key authentication + PostCompact re-grounding
+
+### New: PostCompact re-grounding hook
+
+A `PostCompact` hook (`~/.claude/hooks/post-compact-brief.sh`) is now installed
+alongside the other Mori lifecycle hooks. It fires after every context compression
+and injects a prompt instructing the agent to run `/brief` — re-establishing NATS
+messages, pending mori-msg items, and session state from before compaction.
+
+Enabled by default. Opt out with `MORI_POST_COMPACT_BRIEF=false`.
+
+A dedicated `/brief --post-compact` flag that pulls the compact summary directly
+is planned; plain `/brief` is the correct interim approach.
 
 ### New: per-client named API keys
 

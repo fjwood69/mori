@@ -10,7 +10,7 @@ Mori provides automated setup scripts that guide you through an interactive conf
 
 - Claude Code CLI or VS Code extension installed.
 - Access to a running Mori server (e.g. at `http://localhost:8968` or via a Tailscale IP).
-- Optional: An API key if your Mori server has `MORI_ADVISOR_API_KEY` enabled.
+- An API key if your Mori server has `MORI_API_KEYS` set (required for shared or internet-accessible deployments; optional for private Tailscale-only networks running in open mode).
 
 ---
 
@@ -33,7 +33,7 @@ Open your terminal and run:
 ### What You'll Be Asked
 
 1. **Mori Server URL** — The address of your Mori server including port (default: `http://localhost:8968`)
-2. **API Key** — Optional, skip if your server doesn't require one
+2. **API Key** — Your named key from `MORI_API_KEYS` on the server. Skip only if the server is running in open mode (no keys configured). Generate a key: `python3 -c "import secrets; print(secrets.token_hex(32))"` or use `mori-key_generate name="myhostname"` via MCP once connected.
 3. **Client Name** — A name to identify this device in logs (default: hostname)
 4. **Install Target** — Whether to install for CLI, VS Code, or both
 
@@ -64,7 +64,13 @@ For VS Code, the script also detects any named profiles and offers to install in
 ```
 
 ### 2. Enables Event Logging Hooks
-Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, and `PreCompact`) to Mori's event logging endpoints (`/api/events/raw` and `/api/precompact`). Hooks are merged per-event — any existing non-Mori hooks are preserved.
+Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `PreCompact`, and `PostCompact`) to Mori's event logging endpoints (`/api/events/raw` and `/api/precompact`). Hooks are merged per-event — any existing non-Mori hooks are preserved.
+
+The `PostCompact` hook (`~/.claude/hooks/post-compact-brief.sh`) fires after context compression and prompts you to run `/brief` to re-establish session context. It is enabled by default. To disable it:
+
+```bash
+export MORI_POST_COMPACT_BRIEF=false
+```
 
 ### 3. Seeds MCP Tool Permissions
 Populates `permissions.allow` with all `mcp__mori__*` tool names so they run without per-call prompts. Entries are added additively — existing permissions are not removed.

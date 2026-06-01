@@ -10,11 +10,17 @@ starts informed rather than cold.
 
 1. Choose a deployment posture — SQLite (solo/small team) or PostgreSQL (multi-pod, PITR backups) — see below
 2. Run Mori on a shared server or cloud container using the matching Compose file
-3. Each member points `mcpServers` at the shared URL
-4. Each member runs the installer for their platform — see [Platform guides](../README.md#platform-guides)
-5. Set `MORI_TRUSTED_DREAMERS` to the hostnames of team members who can approve canonical writes
-6. The dream pipeline runs on a schedule — no manual consolidation needed
-7. Install the git push hook in each shared repo so pushes are visible to all instances via `/brief` — see [docs/reference/git-hooks.md](reference/git-hooks.md)
+3. Generate a named API key for each team member and add them to `MORI_API_KEYS` on the server:
+   ```bash
+   # On the server, add to .env:
+   MORI_API_KEYS=alice:$(python3 -c "import secrets; print(secrets.token_hex(32))"),bob:...
+   ```
+   Each member passes their key to the installer as the **API Key** prompt. Keys appear by name in server logs and the audit trail. See [Authentication](../reference/configuration.md#authentication).
+4. Each member points `mcpServers` at the shared URL
+5. Each member runs the installer for their platform — see [Platform guides](../README.md#platform-guides)
+6. Set `MORI_TRUSTED_DREAMERS` to the hostnames of team members who can approve canonical writes
+7. The dream pipeline runs on a schedule — no manual consolidation needed
+8. Install the git push hook in each shared repo so pushes are visible to all instances via `/brief` — see [docs/reference/git-hooks.md](reference/git-hooks.md)
 
 ---
 
