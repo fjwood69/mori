@@ -24,7 +24,7 @@ show_help() {
   echo "  --client <name>       Client name to report in logs (default: hostname)"
   echo "  -f, --force           Proceed even if health check connection fails"
   echo "  --doctor              Run connectivity/config checks only (no changes)"
-  echo "  --upgrade-skills      Refresh mori-* skills from repo skills/*.skill.md"
+  echo "  --upgrade-skills      Refresh mori-* skills from repo skills/ subdirectories"
   echo "  -h, --help            Show this help message"
   echo ""
   echo "Post-install: Restart/reload your IDE if MCP config was just written."
@@ -196,6 +196,7 @@ UPGRADE_FLAG=""
 python3 "$INSTALL_PY" deploy-skills \
   --source "$MORI_REPO_ROOT/skills" \
   --dest "$SKILLS_TARGET_DIR" \
+  --prefix "mori-" \
   $UPGRADE_FLAG
 
 echo ""

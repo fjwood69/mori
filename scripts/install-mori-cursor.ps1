@@ -182,26 +182,28 @@ function Deploy-MoriSkills {
     }
     New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
     $count = 0
-    foreach ($File in Get-ChildItem -Path $SourceDir -Filter "*.skill.md") {
-        $Lines = Get-Content -Path $File.FullName -Encoding UTF8
+    foreach ($SkillDir in Get-ChildItem -Path $SourceDir -Directory) {
+        $SkillFile = Join-Path $SkillDir.FullName "SKILL.md"
+        if (-not (Test-Path $SkillFile)) { continue }
+        $Lines = Get-Content -Path $SkillFile -Encoding UTF8
         $Name = ""; $Desc = ""; $Rest = @()
         foreach ($Line in $Lines) {
             if ($Line -match "^-\s+name:\s*(.*)$") { $Name = $Matches[1].Trim() }
             elseif ($Line -match "^-\s+description:\s*(.*)$") { $Desc = $Matches[1].Trim() }
             elseif ($Name -or $Desc -or $Line.Trim()) { $Rest += $Line }
         }
-        if ($Name -eq "") { $Name = $File.BaseName.Replace(".skill", "") }
-        $Folder = Join-Path $DestDir "mori-$Name"
+        if ($Name -eq "") { $Name = $SkillDir.Name }
+        $Folder = Join-Path $DestDir "$Name"
         $Out = Join-Path $Folder "SKILL.md"
         if ((Test-Path $Out) -and -not $Upgrade) { continue }
         New-Item -ItemType Directory -Force -Path $Folder | Out-Null
         $body = ($Rest -join "`n").Trim()
-        Write-Utf8File $Out "---`nname: mori-$Name`ndescription: `"$($Desc.Replace('"','\"'))`"`n---`n`n$body`n"
-        Write-Host "  Deployed skill: mori-$Name" -ForegroundColor Cyan
+        Write-Utf8File $Out "---`nname: $Name`ndescription: `"$($Desc.Replace('"','\"'))`"`n---`n`n$body`n"
+        Write-Host "  Deployed skill: $Name" -ForegroundColor Cyan
         $count++
     }
     if ($count -eq 0) {
-        Write-Host "  No skills deployed (use -UpgradeSkills to refresh mori-*)" -ForegroundColor Cyan
+        Write-Host "  No skills deployed (use -UpgradeSkills to refresh)" -ForegroundColor Cyan
     }
 }
 
@@ -269,9 +271,9 @@ function Invoke-MoriDoctor {
         else { Write-Host "WARN  permissions.allow may be missing Mori tools" -ForegroundColor Yellow }
     } else { Write-Host "FAIL  settings.json missing" -ForegroundColor Red; $errors++ }
 
-    $skills = Get-ChildItem (Join-Path $ClaudeDir "skills") -Directory -Filter "mori-*" -ErrorAction SilentlyContinue
-    if ($skills) { Write-Host "OK  Skills: $($skills.Count) mori-*" -ForegroundColor Green }
-    else { Write-Host "WARN  No mori-* skills" -ForegroundColor Yellow }
+    $skills = Get-ChildItem (Join-Path $ClaudeDir "skills") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -in @("brief","consult","dream","ingest","msg","nats","pensieve","req","wrap") }
+    if ($skills) { Write-Host "OK  Skills: $($skills.Count) mori skills deployed" -ForegroundColor Green }
+    else { Write-Host "WARN  No mori skills deployed" -ForegroundColor Yellow }
 
     Write-Host "`nClient: $Client | Memory lives on the Mori server, not this PC.`n"
     if ($errors) { Write-Host "Doctor: $errors check(s) failed." -ForegroundColor Red; exit 1 }

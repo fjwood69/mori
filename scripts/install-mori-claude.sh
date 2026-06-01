@@ -50,7 +50,7 @@ show_help() {
   echo "  --client <name>      Client name (default: hostname)"
   echo "  --target <target>    Install target: cli, vscode, or both (default: prompt)"
   echo "  --doctor             Run diagnostic checks and exit"
-  echo "  --upgrade-skills     Overwrite existing mori-* skill folders"
+  echo "  --upgrade-skills     Overwrite existing mori skill folders"
   echo "  -f, --force          Skip health check"
   echo "  -h, --help           Show this help"
 }
@@ -123,12 +123,15 @@ doctor() {
         fi
     fi
 
-    local skill_count
-    skill_count=$(find "$CLAUDEDIR/skills" -maxdepth 1 -name "mori-*" -type d 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$skill_count" -gt 0 ]; then
-        echo "OK  Skills: $skill_count mori-* found"
+    local expected=("brief" "consult" "dream" "ingest" "msg" "nats" "pensieve" "req" "wrap")
+    local found=0
+    for d in "${expected[@]}"; do
+      [ -d "$CLAUDEDIR/skills/$d" ] && ((found++))
+    done
+    if [ "$found" -gt 0 ]; then
+        echo "OK  Skills: $found/${#expected[@]} mori skills deployed"
     else
-        echo "WARN  No mori-* skills — run installer with --upgrade-skills"
+        echo "WARN  No mori skills deployed — run installer with --upgrade-skills"
     fi
 
     echo ""

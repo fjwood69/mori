@@ -67,11 +67,7 @@ MORI_MCP_ALLOW = [
 
 
 def _is_mori_command(cmd: str) -> bool:
-    return (
-        "mori-ship-event" in cmd
-        or "/api/events/raw" in cmd
-        or "/api/precompact" in cmd
-    )
+    return "mori-ship-event" in cmd or "/api/events/raw" in cmd or "/api/precompact" in cmd
 
 
 def _is_mori_hook(entry: dict[str, Any]) -> bool:
@@ -226,27 +222,32 @@ def _parse_skill_md(path: Path) -> tuple[str, str, str]:
     return name, desc, body_lines
 
 
-def deploy_skills(source_dir: Path, dest_dir: Path, upgrade: bool) -> int:
+def deploy_skills(source_dir: Path, dest_dir: Path, upgrade: bool, prefix: str = "") -> int:
     if not source_dir.is_dir():
         print(f"  Warning: skills source not found: {source_dir}", file=sys.stderr)
         return 0
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     count = 0
-    for path in sorted(source_dir.glob("*.skill.md")):
-        name, desc, body_lines = _parse_skill_md(path)
-        folder = dest_dir / f"mori-{name}"
-        skill_file = folder / "SKILL.md"
-        if skill_file.exists() and not upgrade:
+    for path in sorted(source_dir.iterdir()):
+        if not path.is_dir():
+            continue
+        skill_file = path / "SKILL.md"
+        if not skill_file.is_file():
+            continue
+        name, desc, body_lines = _parse_skill_md(skill_file)
+        folder = dest_dir / f"{prefix}{name}"
+        skill_file_out = folder / "SKILL.md"
+        if skill_file_out.exists() and not upgrade:
             continue
         folder.mkdir(parents=True, exist_ok=True)
         escaped = desc.replace('"', '\\"')
         content = "\n".join(body_lines).rstrip() + "\n"
-        skill_file.write_text(
-            f'---\nname: mori-{name}\ndescription: "{escaped}"\n---\n\n{content}',
+        skill_file_out.write_text(
+            f'---\nname: {prefix}{name}\ndescription: "{escaped}"\n---\n\n{content}',
             encoding="utf-8",
         )
-        print(f"  Deployed skill: mori-{name}")
+        print(f"  Deployed skill: {prefix}{name}")
         count += 1
     return count
 
@@ -350,10 +351,15 @@ def doctor(mori_url: str | None, client: str) -> int:
         print(f"FAIL  settings.json missing: {settings_path}")
         errors += 1
 
-    mori_skills = list(skills_dir.glob("mori-*/SKILL.md")) if skills_dir.is_dir() else []
-    brief_skill = skills_dir / "brief" / "SKILL.md"
-    if mori_skills or brief_skill.is_file():
-        print(f"OK  Skills: {len(mori_skills)} mori-* + {'brief' if brief_skill.is_file() else 'no brief'}")
+    mori_skills = (
+        [p.parent.name for p in skills_dir.glob("*/SKILL.md")] if skills_dir.is_dir() else []
+    )
+    expected = {"brief", "consult", "dream", "ingest", "msg", "nats", "pensieve", "req", "wrap"}
+    deployed = set(mori_skills) & expected
+    if deployed:
+        print(
+            f"OK  Skills: {len(deployed)}/{len(expected)} mori skills deployed ({', '.join(sorted(deployed))})"
+        )
     else:
         print(f"WARN  No mori skills under {skills_dir}")
 
@@ -385,6 +391,7 @@ def main() -> int:
     p_sk.add_argument("--source", required=True)
     p_sk.add_argument("--dest", required=True)
     p_sk.add_argument("--upgrade", action="store_true")
+    p_sk.add_argument("--prefix", default="")
 
     p_doc = sub.add_parser("doctor")
     p_doc.add_argument("--url", default="")
@@ -405,7 +412,7 @@ def main() -> int:
         )
         return 0
     if args.cmd == "deploy-skills":
-        n = deploy_skills(Path(args.source), Path(args.dest), args.upgrade)
+        n = deploy_skills(Path(args.source), Path(args.dest), args.upgrade, args.prefix)
         if n == 0:
             print("  No skills deployed (already present; use --upgrade-skills to refresh)")
         return 0
