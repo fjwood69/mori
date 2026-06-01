@@ -1,8 +1,7 @@
-![mori Roadmap](https://raw.githubusercontent.com/fjwood69/mori/07780a6477fd5a2dd0ad693ed3ad237c30a8bda4/docs/assets/roadmap-banner.svg)
-
+![Mori Roadmap](https://raw.githubusercontent.com/fjwood69/mori/07780a6477fd5a2dd0ad693ed3ad237c30a8bda4/docs/assets/roadmap-banner.svg)
 
 This file tracks what has shipped, what is in progress, and what is planned.
-It is updated with each release.
+Updated with each release.
 
 ---
 
@@ -35,93 +34,151 @@ It is updated with each release.
 - Documentation pass — `/msg` slash command reference, env vars, for-teams guide
 - moriapp.dev landing page — Cloudflare Pages, static, no build step
 
+### v2.0.0
+- Dual-backend store layer — SQLite (solo) or PostgreSQL (team), selected via `MORI_DATABASE_URL`
+  - `BaseStore` ABC, `SQLiteStore` delegation wrapper, `PostgresStore` (asyncpg pool)
+  - `get_store()` factory — zero breaking change for existing SQLite deployments
+  - `mori export` / `mori import` CLI tools — SQLite → Postgres migration, idempotent
+  - pgBouncer in session mode (asyncpg prepared statement compatibility)
+  - NUC streaming replica via Tailscale — `mori-pg-replica` on port 5435, lag=0
+- WAL-G replacing Litestream — daily pg_dump to GCS, 14-day lifecycle policy
+  - GCS metadata server auth — no credentials in env vars
+  - RPO/RTO explicitly defined and tested on NUC
+- `deploy/solo/` — SQLite + Litestream sidecar (replaces `deploy/homelab/`)
+- `deploy/team/` — Postgres + pgBouncer + WAL-G sidecar
+
+### v2.0.1
+- `pending_writes` DDL fix — allow NULL `reviewed_by` in Postgres (pre-existing SQLite data quality gap)
+- asyncpg dependency uncommented in `requirements.txt`
+- Backup script updated — `pg_dump` path for Postgres backend, shell retention removed
+- Streaming replication documented in `docs/reference/team-configuration.md`
+
 ---
 
 ## v2.0 — In progress
 
-Core infrastructure hardening. No new features until the foundation is solid.
+Core hardening. Remaining items before v2.0 is complete. Target: one shared instance, 2–10 devs, zero ops overhead.
 
 - PostgreSQL migration
-  - asyncpg replacing sqlite3 throughout
-  - pgBouncer connection pooling
-  - Column encryption via `pg_crypto`
+  - Column encryption via GCP KMS envelope encryption — no keys in env vars
   - TLS on all Postgres connections
-- WAL-G replacing Litestream — continuous GCS backup maintained, no gap in DR coverage
-- JWT / API key auth — replace hostname-based trust (`MORI_TRUSTED_DREAMERS`)
+- WAL-G — continuous GCS backup, explicit RPO < 5min / RTO < 30min
 - REST API
-  - `GET /api/memories?query=...` — searchable from anywhere
-  - `POST /api/memories` — ingest from external systems
-  - `GET /api/events` — event log access
+  - `GET /api/memories?query=...`
+  - `POST /api/memories`
+  - `GET /api/events`
   - Webhook support — push notifications on significant memory writes
-  - Foundation for dashboard UI and third-party integrations
-- Prometheus native exposition on `/metrics` — homelab Prometheus scrape without OTLP
+  - OpenAPI spec
+  - Foundation for dashboard and third-party integrations
+- API rate limiting — per-key limits
+- Headless CC cost guards — per-message spend caps
+- Prometheus native exposition on `/metrics`
 
 ---
 
 ## v2.1 — In progress
 
-Team features and resilience. Requires v2.0 foundation.
+Small team coherence. Requires v2.0 foundation.
 
-- `/brief --post-compact` — dedicated flag to pull the compact summary and re-ground in one step; PostCompact hook ships in v2.1.0 and prompts for plain `/brief` in the interim
-- Dashboard UI — consumes REST API, lightweight memory management interface
-- Multi-project `/brief` — `--project mori --project bifrost`
-- Memory namespacing — personal vs shared, team namespace, COIN identity scoping for enterprise
-- Helm chart / K8s deployment — deploy to existing clusters via Helm, not just Docker Compose and GCE Terraform
-- Split-brain / Toronto failover architecture
-  - NUC as NATS leaf node
-  - Async Postgres replica via Tailscale
-  - Failover design for transatlantic link (uk-smr-* → ca-ws-* nodes, Q3 2026 relocation)
-  - Toronto agents write locally, sync async — no 90ms RTT penalty on every write
+**Shipped in v2.1.0:**
+- Named API key authentication — `MORI_API_KEYS=name:secret,...`, ASGI middleware covering all MCP tools and HTTP endpoints, backward compat with `MORI_ADVISOR_API_KEY`
+- PostCompact re-grounding hook — `~/.claude/hooks/post-compact-brief.sh`, opt-out via `MORI_POST_COMPACT_BRIEF=false`
 
----
+**Remaining:**
 
-## v2.2 — Planned
-
-Integrations and distribution. Requires v2.1 team features.
-
-- Ingestion parsers — Slack, Notion, Confluence, Teams, JIRA, GitHub
-- URL ingestion — fetch and ingest remote documents
-- SSE upload progress — streaming progress on ingest
-- Demo video — unblocks Product Hunt and HN Show HN
-- Headless CC cost guards — per-message spend caps on `MORI_MSG_HEADLESS_ENABLED`, not just global limits
-- Project intelligence connectors — bidirectional integration with issue trackers
-  - Inbound: issues → `/req`, sprint goals → `/brief`, PR comments and CI failures → memory context
-  - Outbound: auto-tag commits with ticket IDs, auto-comment on tickets, auto-transition status, session summaries as work log entries
-  - Connector interface (tracker-agnostic): `get_issues()`, `get_sprints()`, `get_epics()`, `comment()`, `transition()`, `link_commit()`, `close()`
-  - Connectors (priority order): GitHub Projects, JIRA, Linear, Notion, Azure DevOps (commercial), Shortcut
-  - Community-contributable — enterprise connectors behind commercial licence
+| Priority | Feature |
+|----------|---------|
+| P0 | **Multi-project `/brief`** — `--project api --project frontend` — small teams wear many hats |
+| P0 | **Simple web dashboard** — memory browser, search, delete. No RBAC. One admin password. Teams need to see what's in the store. |
+| P0 | **Demo video** — ships the week v2.1 does. Unblocks Product Hunt and HN Show HN. |
+| P1 | **URL ingestion** — bootstrap context from docs, RFCs, public pages without copy-paste |
+| P1 | **GitHub inbound ingestion** — issues, PR comments, commit history → memory context |
+| P1 | **Path-aware memory surfacing** — memories tagged to file/directory paths surface in `/brief` when working in that context |
+| P1 | **Streaming SSE progress** on ingest |
+| P1 | **`/brief --post-compact`** — lightweight re-grounding after context compression; auto-invoked via `PostCompact` hook in all installer scripts |
 
 ---
 
-## v3.0 — Future
+## v2.2 — Workflow fit
 
-Horizontal scale and advanced intelligence. Build when paying customers need it.
+Target: fits into existing small-team workflows. Requires v2.1.
 
-- Distributed dream pipeline — three-phase parallel distillation
-  - Phase 1 (fast VK): categorise and cluster all events by semantic proximity, assign non-overlapping slices to dreamers
-  - Phase 2 (parallel dream): stateless dream pods, each claims a cluster from `dream_jobs` table, dreams independently, guaranteed no contradictions within a slice
-  - Phase 3 (reconcile): `mori-reconcile` pod runs after all dreamers complete — lightweight cross-cluster dependency resolution on known edge list from phase 1
-  - Fast VK earns its keep twice — freshness check and pre-dream clustering in a single pass
-  - Scale by adding dream pods — Postgres coordinates via `dream_jobs` (claim, in-flight, complete)
-- Memory poisoning guardrails — Lakera / NeMo on dream pipeline LLM calls (requires multi-tenancy first)
-- Bifrost composite routing metric — throughput-weighted VK scoring
-- Horizontal scaling — multiple `mori-advisor` instances behind a load balancer
+| Priority | Feature |
+|----------|---------|
+| P0 | **Slack inbound ingestion** — `/ingest --source #dev-channel` (read-only, no write-back) |
+| P0 | **File upload via dashboard / API** — drag-and-drop PDFs, images |
+| P1 | **Linear / GitHub Issues connector** — inbound only, issues → `/req` |
+| P1 | **`/reflect` command** — on-demand targeted dream |
+| P1 | **Improved installer UX** — one-liner `curl | bash` with interactive provider selection |
+
+---
+
+## v3.0 — Enterprise platform
+
+Built for organisations with compliance requirements, multiple teams, and production scale.
+
+- Memory namespacing + COIN identity scoping + row-level security
+- SSO / SAML / SCIM / LDAP
+- Admin dashboard — user management, audit log, governance UI
+- Multi-tenant isolation
+- Distributed dream pipeline
+  - Phase 1 (fast VK): cluster events by semantic proximity, assign non-overlapping slices
+  - Phase 2 (parallel dream): stateless dream pods, each claims a cluster from `dream_jobs` table
+  - Phase 3 (reconcile): `mori-reconcile` pod resolves cross-cluster dependencies
+  - Scale by adding pods — Postgres coordinates via `dream_jobs`
+- Memory poisoning guardrails — Lakera / NeMo on dream pipeline LLM calls
+- Advanced K8s operator — HA, rolling updates, federation
+- Bidirectional project intelligence connectors — JIRA, Azure DevOps, ServiceNow write-back
+- Advanced analytics — usage per namespace, dream efficiency per team
 
 ---
 
 ## Experiments / Research
 
+- Memory merge strategy across independent stores
+- Bifrost composite routing metric — throughput-weighted VK scoring
 - Bifrost custom provider pricing accuracy
-- Reflect operation — surface as a first-class `/reflect` command, analogous to dream but on-demand and targeted
+- `/reflect` as a first-class on-demand dream operation (may promote to v2.2)
+
+---
+
+## Open core model
+
+Mori follows an open core model. The core engine is and will remain open-source
+under AGPL-3.0. Enterprise-specific features are developed separately under a
+commercial licence.
+
+**Open (AGPL-3.0) — always:**
+- Dream pipeline, event capture, memory distillation
+- NATS messaging and mori-msg inter-agent layer
+- REST API + OpenAPI spec
+- JWT / API key auth
+- Docker Compose and GCP Terraform deployment
+- All slash commands and MCP tools
+- Simple web dashboard (v2.1)
+- All inbound ingestion connectors (v2.1/v2.2)
+
+**Commercial — enterprise tier:**
+- SSO / SAML / SCIM / LDAP
+- Memory namespacing and COIN identity scoping
+- Advanced compliance logging (SOC2, HIPAA audit trails)
+- Bidirectional project intelligence connectors (JIRA write-back, Azure DevOps, ServiceNow)
+- Multi-tenant isolation
+- Enterprise support SLA
+- Advanced K8s operator
+
+Enterprise features are developed in a private `mori-enterprise` repository and
+never appear in the public core. See `COMMERCIAL.md` for licensing terms.
 
 ---
 
 ## Not planned
 
 - Mid-session push to active agent sessions — latency model is session-to-session by design
-- Message encryption between agents — all agents share NATS credential by design; revisit when memory namespacing ships and enterprise pilots begin
+- Message encryption between agents — all agents share NATS credential by design; revisit when namespacing ships
 - Multi-hop message routing — point-to-point and broadcast only
+- Split-brain / cross-region merge logic in core — advanced self-hosting pattern, not a product feature
 
 ---
 
-*Last updated: v1.1.0*
+*Last updated: v2.1.0*
