@@ -1,5 +1,7 @@
 # Team Configuration — PostgreSQL Backend
 
+> Advanced configuration for teams already running Mori. For getting started, see [docs/for-teams.md](../for-teams.md).
+
 Mori ships with SQLite as the default backend. For solo use and single-pod
 deployments SQLite is the right choice — zero dependencies, WAL mode, fast.
 
