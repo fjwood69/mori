@@ -605,7 +605,7 @@ class PostgresStore(BaseStore):
     async def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
-            result = await conn.execute(
+            await conn.execute(
                 "UPDATE pending_writes SET status='rejected', reviewer_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
                 write_id, note, reviewer, _now_utc(),
             )
@@ -740,7 +740,7 @@ class PostgresStore(BaseStore):
 
     async def read_events_grouped(self, since_event_id=None, group_limit=5) -> list:
         self._ensure_pool()
-        where = f"WHERE id > $1" if since_event_id else ""
+        where = "WHERE id > $1" if since_event_id else ""
         params = [since_event_id] if since_event_id else []
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(

@@ -32,6 +32,7 @@ from mori_advisor.metrics import (
     pending_writes_gauge,
 )
 from mori_advisor.session_log import SessionLog
+from mori_advisor.store import get_store as _get_store
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,6 @@ MAX_TOTAL_FILE_SIZE = 200 * 1024  # 200KB total
 # ── Global state ─────────────────────────────────────────────────────────
 
 # Bootstrap schema before any connections are created
-from mori_advisor.store import get_store as _get_store
 store = _get_store(DATA_DIR / "memories.db")
 store.bootstrap()
 

@@ -30,8 +30,8 @@ class SQLiteStore(BaseStore):
 
     def __init__(self, db_path: str | Path, msg_db_path: str | Path | None = None) -> None:
         from mori_advisor.memory_store import MemoryStore
-        from mori_advisor.session_log import SessionLog
         from mori_advisor.msg_store import MsgStore
+        from mori_advisor.session_log import SessionLog
 
         self.db_path = Path(db_path)
         msg_path = Path(msg_db_path) if msg_db_path else self.db_path.parent / "msg.db"
