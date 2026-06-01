@@ -113,7 +113,9 @@ def run(db_path: Path, dry_run: bool) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("db_path", help="Path to memories.db (or config.db containing memories table)")
+    parser.add_argument(
+        "db_path", help="Path to memories.db (or config.db containing memories table)"
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print changes without writing")
     args = parser.parse_args()
 

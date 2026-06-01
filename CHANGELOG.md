@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.1.8 — Async Postgres Ingestion & Security Hardening
+
+- **Async Ingestion Pipeline**: Converted `IngestionPipeline` execution flow and ingestion tasks to `async def` and integrated the dynamic `_a()` helper to resolve and await asynchronous `PostgresStore` writes/logs.
+- **Async Contradiction Scans**: Refactored `run_contradiction_scan` to be async-native. Under Postgres, it operates inside non-blocking database transactions to perform updates and queue eviction notices.
+- **MCP Endpoint Security**: Removed `/mcp` from `OPEN_PATHS` in `ApiKeyMiddleware`, requiring a valid API key for all MCP connections and tool invocations.
+- **NATS Timeout in Smoke Test**: Wrapped `nats.connect` inside `asyncio.wait_for` with a 2.0 second timeout to prevent the health check/smoke endpoint from hanging indefinitely during auth failures.
+- **UAT & Installer Verification**: Verified local UAT execution against the Postgres standby node and confirmed full installer idempotency and doctor health checks.
+
 ## v2.1.6 — Fix Postgres dream transaction poisoning
 
 Fix: PostgresStore.write() uses SELECT-then-INSERT, which causes

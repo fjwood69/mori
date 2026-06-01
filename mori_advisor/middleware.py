@@ -16,7 +16,7 @@ from mori_advisor.auth import check_key
 
 logger = logging.getLogger(__name__)
 
-OPEN_PATHS = {"/health", "/ready", "/metrics", "/", "/mcp"}
+OPEN_PATHS = {"/health", "/ready", "/metrics", "/"}
 
 # Return 404 for OAuth discovery so CC stops treating mori as an OAuth server
 # and falls back to using the X-Api-Key header directly

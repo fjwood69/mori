@@ -27,11 +27,7 @@ def _is_mori_hook(entry: dict[str, Any]) -> bool:
     if entry.get("_mori_managed") is True:
         return True
     cmd = entry.get("command", "")
-    return (
-        "mori-ship-event" in cmd
-        or "/api/events/raw" in cmd
-        or "/api/precompact" in cmd
-    )
+    return "mori-ship-event" in cmd or "/api/events/raw" in cmd or "/api/precompact" in cmd
 
 
 def _hook_command(shipper: str, url: str, client: str, api_key: str, mode: str) -> str:
@@ -124,23 +120,48 @@ def merge_mcp(mcp_path: Path, mori_url: str, api_key: str = "") -> None:
         f.write("\n")
 
 
-def _parse_skill_md(path: Path) -> tuple[str, str, str]:
+def _parse_skill_md(path: Path) -> tuple[str, str, list[str]]:
+    content = path.read_text(encoding="utf-8")
     name = ""
     desc = ""
     body_lines: list[str] = []
-    in_body = False
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if re.match(r"^-\s+name:\s*", line):
-            name = re.sub(r"^-\s+name:\s*", "", line).strip()
-        elif re.match(r"^-\s+description:\s*", line):
-            desc = re.sub(r"^-\s+description:\s*", "", line).strip()
-        elif not in_body and not name and not desc and not line.strip():
-            continue
+
+    lines = content.splitlines()
+    for line in lines:
+        name_match = re.match(r"^(?:-\s+)?name:\s*(.*)$", line)
+        desc_match = re.match(r"^(?:-\s+)?description:\s*(.*)$", line)
+        if name_match and not name:
+            name = name_match.group(1).strip()
+        elif desc_match and not desc:
+            desc = desc_match.group(1).strip().strip('"')
+
+    if len(lines) > 0 and lines[0].strip() == "---":
+        end_idx = -1
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                end_idx = i
+                break
+        if end_idx != -1:
+            body_lines = lines[end_idx + 1 :]
         else:
-            in_body = True
+            body_lines = lines
+    else:
+        in_body = False
+        for line in lines:
+            if not in_body:
+                if re.match(r"^(?:-\s+)?(?:name|description):\s*", line) or line.strip() == "---":
+                    continue
+                if not line.strip():
+                    continue
+                in_body = True
             body_lines.append(line)
+
     if not name:
-        name = path.stem.replace(".skill", "")
+        if path.stem in ("SKILL", "skill"):
+            name = path.parent.name
+        else:
+            name = path.stem.replace(".skill", "")
+
     return name, desc, body_lines
 
 
@@ -151,7 +172,16 @@ def deploy_skills(source_dir: Path, dest_dir: Path, upgrade: bool) -> int:
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     count = 0
-    for path in sorted(source_dir.glob("*.skill.md")):
+    paths = list(source_dir.glob("**/SKILL.md")) + list(source_dir.glob("**/*.skill.md"))
+    unique_paths = []
+    seen = set()
+    for p in paths:
+        if p.is_file():
+            resolved = p.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                unique_paths.append(p)
+    for path in sorted(unique_paths):
         name, desc, body_lines = _parse_skill_md(path)
         folder = dest_dir / f"mori-{name}"
         skill_file = folder / "SKILL.md"
@@ -187,7 +217,7 @@ def _http_get(url: str, timeout: int = 5) -> tuple[int, str]:
 
 def doctor(mori_url: str | None, client: str) -> int:
     home = Path.home()
-    mcp_path = home / ".gemini" / "antigravity-ide" / "mcp_config.json"
+    mcp_path = home / ".gemini" / "antigravity" / "mcp_config.json"
     hooks_path = home / ".gemini" / "config" / "hooks.json"
     skills_dir = home / ".gemini" / "config" / "plugins" / "mori-bridge" / "skills"
     errors = 0
@@ -198,7 +228,9 @@ def doctor(mori_url: str | None, client: str) -> int:
         print(f"OK  MCP config: {mcp_path}")
         try:
             data = json.loads(mcp_path.read_text(encoding="utf-8"))
-            url = data.get("mcpServers", {}).get("mori", {}).get("serverUrl", "") or data.get("mcpServers", {}).get("mori", {}).get("url", "")
+            url = data.get("mcpServers", {}).get("mori", {}).get("serverUrl", "") or data.get(
+                "mcpServers", {}
+            ).get("mori", {}).get("url", "")
             if url:
                 print(f"    mori URL: {url}")
                 mori_url = mori_url or url.removesuffix("/mcp")
@@ -297,7 +329,9 @@ def main() -> int:
     if args.cmd == "deploy-skills":
         n = deploy_skills(Path(args.source), Path(args.dest), args.upgrade)
         if n == 0 and not args.upgrade:
-            print("  No new skills deployed (all present skills skipped; use --upgrade-skills to overwrite/update existing skills)")
+            print(
+                "  No new skills deployed (all present skills skipped; use --upgrade-skills to overwrite/update existing skills)"
+            )
         return 0
     if args.cmd == "doctor":
         url = args.url or None

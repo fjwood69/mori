@@ -18,8 +18,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mori_advisor.bifrost_client import BifrostClient
-from mori_advisor.memory_store import MemoryStore
-from mori_advisor.session_log import SessionLog
 from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
 
 logger = logging.getLogger(__name__)
@@ -87,19 +85,20 @@ class DreamPipeline:
         self.store = store
 
         # Keep legacy aliases for any callers that reference them directly
-        self.session_log = store._log if hasattr(store, "_log") else SessionLog(db_path)
-        self.memory_store = store._mem if hasattr(store, "_mem") else MemoryStore(db_path)
+        self.session_log = store._log if hasattr(store, "_log") else store
+        self.memory_store = store._mem if hasattr(store, "_mem") else store
 
     # ── Public API ───────────────────────────────────────────────────────
 
-    def get_status(self) -> str:
+    async def get_status(self) -> str:
         """Return dream state as formatted text (same output as --status)."""
-        total = self.session_log.count_events()
-        sessions = self.session_log.list_sessions()
-        last_id_str = self.session_log.get_dream_state("last_dreamed_event_id", "0")
-        last_at = self.session_log.get_dream_state("last_dreamed_at", "never")
+        total = await _a(self.session_log.count_events())
+        sessions = await _a(self.session_log.list_sessions())
+        last_id_str = await _a(self.session_log.get_dream_state("last_dreamed_event_id", "0"))
+        last_at = await _a(self.session_log.get_dream_state("last_dreamed_at", "never"))
         last_id = int(last_id_str) if last_id_str and last_id_str != "never" else 0
-        undreamed = len(self.session_log.read_events(since_event_id=last_id, limit=0))
+        events_list = await _a(self.session_log.read_events(since_event_id=last_id, limit=0))
+        undreamed = len(events_list)
 
         now = datetime.now(timezone.utc)
         hour = now.hour
@@ -222,7 +221,7 @@ class DreamPipeline:
         superseded = 0
         if written > 0:
             try:
-                superseded = self._contradiction_scan(memories)
+                superseded = await self._contradiction_scan(memories)
                 if superseded > 0:
                     logger.info("Contradiction scan: %s existing memories superseded", superseded)
             except Exception as e:
@@ -436,7 +435,7 @@ class DreamPipeline:
 
     # ── Contradiction scan ────────────────────────────────────────────
 
-    def _contradiction_scan(self, new_memories: list[dict]) -> int:
+    async def _contradiction_scan(self, new_memories: list[dict]) -> int:
         """Check new memories against existing canonical ones for contradictions.
 
         Delegates to the shared run_contradiction_scan utility.
@@ -452,7 +451,7 @@ class DreamPipeline:
                 temperature=temperature,
             )
 
-        return run_contradiction_scan(
+        return await run_contradiction_scan(
             new_memories=new_memories,
             db_path=self.db_path,
             consult_fn=consult_fn,
