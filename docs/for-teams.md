@@ -1,4 +1,4 @@
-# For Teams
+# Team Configuration
 
 Each team member runs their own AI coding agent connected to the same Mori server.
 Memories are shared. Trusted dreamers approve canonical writes. Every session
@@ -8,12 +8,56 @@ starts informed rather than cold.
 
 ## Getting started
 
-1. Run Mori on a shared server or cloud container — see [docs/deployment/quickstart.md](docs/deployment/quickstart.md)
-2. Each member points `mcpServers` at the shared URL
-3. Each member runs the installer for their platform — see [Platform guides](../README.md#platform-guides)
-4. Set `MORI_TRUSTED_DREAMERS` to the hostnames of team members who can approve canonical writes
-5. The dream pipeline runs on a schedule — no manual consolidation needed
-6. Install the git push hook in each shared repo so pushes are visible to all instances via `/brief` — see [docs/reference/git-hooks.md](reference/git-hooks.md)
+1. Choose a deployment posture — SQLite (solo/small team) or PostgreSQL (multi-pod, PITR backups) — see below
+2. Run Mori on a shared server or cloud container using the matching Compose file
+3. Each member points `mcpServers` at the shared URL
+4. Each member runs the installer for their platform — see [Platform guides](../README.md#platform-guides)
+5. Set `MORI_TRUSTED_DREAMERS` to the hostnames of team members who can approve canonical writes
+6. The dream pipeline runs on a schedule — no manual consolidation needed
+7. Install the git push hook in each shared repo so pushes are visible to all instances via `/brief` — see [docs/reference/git-hooks.md](reference/git-hooks.md)
+
+---
+
+## Deployment posture
+
+Mori ships two Docker Compose configurations. Choose based on your team's concurrency and ops requirements.
+
+### Solo / small team — SQLite (`deploy/solo/`)
+
+Default. No database server, no extra deps. SQLite with WAL mode handles concurrent reads; the dream pipeline serialises writes.
+
+```bash
+cd deploy/solo
+cp .env.example .env   # fill in MORI_BIFROST_BASE_URL + API key
+docker compose up -d
+```
+
+Optional: set `LITESTREAM_GCS_BUCKET` in `.env` to enable continuous replication to GCS. If unset the Litestream sidecar idles silently — the stack runs cleanly either way.
+
+### Team / multi-pod — PostgreSQL (`deploy/team/`)
+
+Use when you need concurrent dream runs from multiple pods, PITR backups, or Postgres-native tooling.
+
+```bash
+cd deploy/team
+cp .env.example .env   # fill in POSTGRES_PASSWORD, MORI_DATABASE_URL, etc.
+docker compose up -d
+```
+
+`MORI_DATABASE_URL=postgresql://mori:<pw>@pgbouncer:5433/mori` selects the Postgres backend at runtime. pgBouncer runs in session mode (`statement_cache_size=0` required for asyncpg). WAL-G archiving activates when `WALG_GS_PREFIX` is set; otherwise the sidecar idles.
+
+**Migrating from SQLite to Postgres:**
+```bash
+# 1. Export
+python -m mori_advisor.cli.export --db /data/mori-advisor/memories.db --output /tmp/export.jsonl
+
+# 2. Import
+MORI_DATABASE_URL=postgresql://... python -m mori_advisor.cli.import_ /tmp/export.jsonl
+
+# 3. Verify counts, then flip MORI_DATABASE_URL in .env and restart
+```
+
+Full migration guide and rollback procedure: [docs/reference/team-configuration.md](team-configuration.md).
 
 ---
 
@@ -239,9 +283,11 @@ produced it. Export via `mori-memory_export_all`.
 retrieval. Configure the eviction queue review cadence to match your data
 retention policy.
 
-**Data classification** — the memory store is a SQLite file at a known path
-(`/data/mori-advisor/memories.db`). Apply your organisation's standard controls —
-encryption at rest, backup policy, access controls — directly to that file.
+**Data classification** — the memory store is either a SQLite file
+(`/data/mori-advisor/memories.db`) or a PostgreSQL database. Apply your
+organisation's standard controls to the appropriate layer — file permissions
+and Litestream backup for SQLite; `pg_crypto` column encryption and WAL-G
+for PostgreSQL.
 
 **Memory poisoning** — persistent memory can be corrupted by malicious or
 low-quality inputs. Apply input validation at the event ingestion layer and
