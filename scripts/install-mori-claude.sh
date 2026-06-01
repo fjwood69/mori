@@ -241,19 +241,14 @@ merge_json() {
         # Detect a mori hook command
         def is_mori_cmd: . // "" | test("mori-ship-event|/api/events/raw|/api/precompact|mori-post-compact-brief");
 
-        # Per-event hook merge: hooks are wrapped as {"hooks":[{"type":"command","command":"..."}]}
-        # Update existing mori entry in-place, or prepend a new wrapped entry
+        # Per-event hook merge: strip all mori hooks (flat or wrapped), prepend fresh wrapped entry
         def upsert_hook(cmd):
-          if . == null then [{"hooks": [{"type": "command", "command": cmd}]}]
-          elif any(.[]; .hooks? // [] | any(.[]; .command? | is_mori_cmd)) then
-            map(if (.hooks? // [] | any(.[]; .command? | is_mori_cmd))
-                then .hooks = (.hooks | map(if (.command? | is_mori_cmd) then .command = cmd else . end))
-                else . end)
-          elif any(.[]; .command? | is_mori_cmd) then
-            map(if (.command? | is_mori_cmd) then {"hooks": [{"type": "command", "command": cmd}]} else . end)
-          else
-            [{"hooks": [{"type": "command", "command": cmd}]}] + .
-          end;
+          (if . == null then [] else . end)
+          | map(select(
+              (.hooks? // [] | any(.[]; .command? | is_mori_cmd) | not) and
+              (.command? | is_mori_cmd | not)
+            ))
+          | [{"hooks": [{"type": "command", "command": cmd}]}] + .;
 
         # mcpServers.mori — include x-api-key header if key provided
         .mcpServers.mori = ({"type": "http", "url": $mori_url} +

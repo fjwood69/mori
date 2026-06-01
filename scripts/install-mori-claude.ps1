@@ -122,15 +122,16 @@ function Merge-MoriSettings {
         $cmd = $events[$name]
         $list = @()
         if ($existing.hooks.PSObject.Properties.Name -contains $name) {
-            $list = @($existing.hooks.$name)
+            # Strip all existing mori hooks (flat format or wrapped format) — replace, don't update in-place
+            $list = @($existing.hooks.$name | Where-Object {
+                $isFlatMori = ($_.type -eq "command" -and (Test-MoriHookCommand ($_.command)))
+                $isWrappedMori = ($_.PSObject.Properties.Name -contains "hooks") -and
+                                 (@($_.hooks) | Where-Object { Test-MoriHookCommand ($_.command) }).Count -gt 0
+                -not ($isFlatMori -or $isWrappedMori)
+            })
         }
-        $updated = $false
-        foreach ($entry in $list) {
-            if (Update-HookEntry -Entry $entry -NewCommand $cmd) { $updated = $true }
-        }
-        if (-not $updated) {
-            $list = @([PSCustomObject]@{ hooks = @([PSCustomObject]@{ type = "command"; command = $cmd }) }) + $list
-        }
+        # Prepend fresh wrapped-format entry
+        $list = @([PSCustomObject]@{ hooks = @([PSCustomObject]@{ type = "command"; command = $cmd }) }) + $list
         $existing.hooks | Add-Member -NotePropertyName $name -NotePropertyValue $list -Force
     }
 
