@@ -173,3 +173,118 @@ pip install asyncpg>=0.29.0
 ```
 
 Or uncomment the line in `requirements.txt` before building your image.
+
+---
+
+## Warm standby replica (streaming replication)
+
+For a zero-downtime warm standby, set up Postgres streaming replication from the
+primary to a secondary host. The replica handles `pg_dump` backups without
+touching the primary, and can be promoted in under a minute if the primary fails.
+
+### Prerequisites
+
+- Postgres 16 on both hosts
+- `wal_level=replica` and `max_wal_senders>=2` on the primary (defaults in postgres:16)
+- Network connectivity between hosts (Tailscale recommended)
+
+### 1. Create the replication role on the primary
+
+Use base64 to safely pass passwords with special characters over SSH:
+
+```bash
+REPLPW=<password>
+REPLPW_B64=$(printf '%s' "${REPLPW}" | base64 -w0)
+ssh <primary-host> "
+  PW=\$(echo '${REPLPW_B64}' | base64 -d)
+  sudo podman exec mori-pg psql -U mori -d mori \
+    -c \"CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD '\${PW}'\"
+"
+```
+
+### 2. Allow the replica in pg_hba.conf
+
+```bash
+ssh <primary-host> "sudo sh -c \
+  'echo \"host replication replicator <replica-ip>/32 scram-sha-256\" \
+  >> /data/mori-advisor/pgdata/pg_hba.conf'"
+ssh <primary-host> "sudo podman exec mori-pg psql -U mori -d mori -c 'SELECT pg_reload_conf();'"
+```
+
+### 3. Seed the replica with pg_basebackup
+
+On the replica host (rootless Podman — set directory ownership first):
+
+```bash
+# Give the container's postgres user (uid 999) ownership via the user namespace
+sudo chown <replica-user>:<replica-user> /data/mori-replicate
+sudo chown <replica-user>:<replica-user> /data/mori-replicate/pgdata
+podman unshare chown 999:999 /data/mori-replicate/pgdata
+
+# Seed — -R writes standby.signal + primary_conninfo with password embedded
+REPLPW=<password>
+podman run --rm --network=host \
+  -v /data/mori-replicate/pgdata:/var/lib/postgresql/data:Z \
+  -e PGPASSWORD="${REPLPW}" \
+  docker.io/postgres:16 \
+  pg_basebackup -h <primary-ip> -p 5432 -U replicator \
+    -D /var/lib/postgresql/data -Fp -Xs -P -R
+```
+
+`-R` embeds the password into `postgresql.auto.conf` automatically — no manual
+patch needed.
+
+### 4. Start the replica
+
+Use a non-default port (5435) to keep 5432 free for local test deployments:
+
+```bash
+podman run -d \
+  --name mori-pg-replica \
+  --network=host \
+  --restart=unless-stopped \
+  -v /data/mori-replicate/pgdata:/var/lib/postgresql/data:Z \
+  docker.io/postgres:16 \
+  postgres -c port=5435
+```
+
+### 5. Verify
+
+```bash
+# Replica logs — look for "started streaming WAL from primary"
+podman logs mori-pg-replica 2>&1 | tail -10
+
+# Primary side — should show replica client_addr, state=streaming, lag_bytes=0
+ssh <primary-host> "sudo podman exec mori-pg psql -U mori -d mori -c \
+  'SELECT client_addr, state, pg_wal_lsn_diff(sent_lsn, replay_lsn) AS lag_bytes \
+   FROM pg_stat_replication;'"
+
+# Row count match
+podman exec mori-pg-replica psql -p 5435 -U mori -d mori \
+  -c 'SELECT COUNT(*) FROM memories;'
+```
+
+### Failover
+
+```bash
+# Promote replica to primary
+podman exec mori-pg-replica psql -p 5435 -U mori -d mori \
+  -c 'SELECT pg_promote();'
+
+# Confirm (should return f)
+podman exec mori-pg-replica psql -p 5435 -U mori -d mori \
+  -c 'SELECT pg_is_in_recovery();'
+
+# Update MORI_DATABASE_URL to point at the promoted replica
+```
+
+### Monitoring replication lag
+
+```bash
+# From the replica
+podman exec mori-pg-replica psql -p 5435 -U mori -d mori \
+  -c "SELECT now() - pg_last_xact_replay_timestamp() AS replication_delay;"
+```
+
+Healthy lag is under a few seconds on a quiet database. Lag above 1MB or 60s
+warrants investigation.
