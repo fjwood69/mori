@@ -354,13 +354,13 @@ class PostgresStore(BaseStore):
                     result_tier = tier
                 # Preserve existing protection flags and domains (JSONB → Python objects from asyncpg)
                 protect = existing.get("protected", False)
-                protect_domains_raw = existing.get("protected_domains", [])
+                protect_domains_raw = json.dumps(existing.get("protected_domains", []))
             else:
                 merged_ids = sess_ids
                 merged_clients = clients
                 result_tier = tier
                 protect = False
-                protect_domains_raw = []
+                protect_domains_raw = json.dumps([])
 
             # Single atomic upsert — no TOCTOU race (matches SQLite ON CONFLICT DO UPDATE)
             await conn.execute(
