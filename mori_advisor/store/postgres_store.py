@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS pending_writes (
     proposed_by         TEXT NOT NULL DEFAULT '',
     status              TEXT NOT NULL DEFAULT 'pending',
     reviewed_at         TIMESTAMPTZ,
-    reviewed_by         TEXT NOT NULL DEFAULT '',
+    reviewed_by         TEXT,
     review_note         TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_pending_writes_status ON pending_writes (status);
