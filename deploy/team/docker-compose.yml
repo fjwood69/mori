@@ -1,0 +1,169 @@
+# Mori — Team deployment (PostgreSQL + pgBouncer + WAL-G)
+#
+# Use this for multi-pod or team deployments with concurrent dream runs,
+# PITR backups, or Postgres-native tooling.
+#
+# Quickstart:
+#   1. cp .env.example .env  — fill in POSTGRES_PASSWORD, MORI_DATABASE_URL, etc.
+#   2. docker compose up -d
+#   3. Run the migration — see docs/reference/team-configuration.md
+#   4. curl http://localhost:8968/health
+#
+# Backups (WAL-G → GCS):
+#   Set WALG_GS_PREFIX in .env. If unset the wal-g-cron sidecar idles silently
+#   and archive_command is a no-op — Postgres runs normally without archiving.
+
+services:
+  postgres:
+    # Custom image: postgres:16 + WAL-G + wal-archive wrapper script.
+    # archive_command calls /usr/local/bin/wal-archive which no-ops when
+    # WALG_GS_PREFIX is unset, so the stack runs cleanly without GCS config.
+    build: ./backup
+    container_name: mori-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mori
+      POSTGRES_USER: mori
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      WALG_GS_PREFIX: ${WALG_GS_PREFIX:-}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=/usr/local/bin/wal-archive %p
+      - -c
+      - archive_timeout=60
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mori -d mori"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: mori-pgbouncer
+    restart: unless-stopped
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: mori
+      DB_USER: mori
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POOL_MODE: session
+      MAX_CLIENT_CONN: 100
+      DEFAULT_POOL_SIZE: 20
+    ports:
+      - "5433:5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # WAL-G base-backup cron — daily at midnight, retains 7 full backups.
+  # Optional: set WALG_GS_PREFIX to activate. If unset, idles silently.
+  wal-g-cron:
+    build: ./backup
+    container_name: mori-walg-cron
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: mori
+      PGPASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      PGDATABASE: mori
+      PGDATA: /var/lib/postgresql/data
+      WALG_GS_PREFIX: ${WALG_GS_PREFIX:-}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}
+    volumes:
+      - pg-data:/var/lib/postgresql/data:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      if [ -z "$$WALG_GS_PREFIX" ]; then
+        echo "WALG_GS_PREFIX not set — WAL-G backup sidecar idling"
+        exec sleep infinity
+      fi
+      echo "WAL-G backup active — prefix: $$WALG_GS_PREFIX"
+      wal-g backup-push $$PGDATA
+      while true; do
+        NOW=$$(date +%s)
+        MIDNIGHT=$$(( ( (NOW / 86400) + 1 ) * 86400 ))
+        sleep $$(( MIDNIGHT - NOW ))
+        wal-g backup-push $$PGDATA
+        wal-g delete retain FULL 7 --confirm
+      done
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  mori-advisor:
+    image: ghcr.io/fjwood69/mori:latest
+    container_name: mori-advisor
+    restart: unless-stopped
+    ports:
+      - "8968:8968"
+    volumes:
+      - mori-data:/data/mori-advisor
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      pgbouncer:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8968/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  mori-ingestion:
+    image: ghcr.io/fjwood69/mori:latest
+    container_name: mori-ingestion
+    restart: unless-stopped
+    ports:
+      - "8969:8969"
+    volumes:
+      - mori-data:/data/mori-advisor
+    env_file:
+      - path: .env
+        required: false
+    command: ["python", "-m", "mori_advisor.ingestion_server"]
+    depends_on:
+      mori-advisor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8969/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  dream-cron:
+    image: alpine:latest
+    container_name: mori-dream-cron
+    restart: unless-stopped
+    depends_on:
+      mori-advisor:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl
+        INTERVAL=$${MORI_DREAM_INTERVAL:-60}
+        while true; do
+          sleep $$(( INTERVAL * 60 ))
+          curl -sf -X POST http://mori-advisor:8968/api/dream/run && \
+            echo "dream completed" || echo "dream skipped (no new events)"
+        done
+
+volumes:
+  pg-data:
+  mori-data:

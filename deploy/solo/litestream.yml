@@ -1,0 +1,20 @@
+# Litestream replication config for Mori solo deployment.
+#
+# Set LITESTREAM_GCS_BUCKET in .env to activate. If unset, the sidecar
+# starts but does nothing (see docker-compose.yml entrypoint guard).
+#
+# GCS auth: set GOOGLE_APPLICATION_CREDENTIALS to a service account key path,
+# or mount Application Default Credentials into the container.
+
+dbs:
+  - path: /data/mori-advisor/memories.db
+    replicas:
+      - type: gcs
+        bucket: ${LITESTREAM_GCS_BUCKET}
+        path: mori-advisor/memories.db
+        # Sync every 10s — increase to reduce GCS API costs at the expense
+        # of replication lag.
+        sync-interval: 10s
+        # Full snapshot every 6 hours so restores don't need to replay
+        # too many WAL frames.
+        snapshot-interval: 6h
