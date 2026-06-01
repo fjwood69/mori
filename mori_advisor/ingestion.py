@@ -136,6 +136,7 @@ class IngestionPipeline:
         self.model_override = model_override
         if store is None:
             from mori_advisor.store.sqlite_store import SQLiteStore
+
             store = SQLiteStore(self.db_path)
         self._store = store
 
@@ -866,6 +867,7 @@ class IngestionPipeline:
         DEPRECATED: use store.get_ingestion_status(limit) directly.
         """
         from mori_advisor.store.sqlite_store import SQLiteStore
+
         return SQLiteStore(db_path).get_ingestion_status(limit=min(limit, 100))
 
     @staticmethod

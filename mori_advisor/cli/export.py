@@ -65,7 +65,9 @@ def _export_table(
     return len(rows)
 
 
-def run_export(db_path: Path, output_path: Path, since: str | None, include_all: bool, dry_run: bool) -> None:
+def run_export(
+    db_path: Path, output_path: Path, since: str | None, include_all: bool, dry_run: bool
+) -> None:
     if not db_path.exists():
         print(f"ERROR: database not found: {db_path}", file=sys.stderr)
         sys.exit(1)
@@ -84,8 +86,13 @@ def run_export(db_path: Path, output_path: Path, since: str | None, include_all:
     if dry_run:
         print("DRY RUN — counting rows only, no file written")
         for table in (
-            "dreamer_config", "dream_state", "memories",
-            "memory_versions", "pending_writes", "eviction_queue", "ingestion_log",
+            "dreamer_config",
+            "dream_state",
+            "memories",
+            "memory_versions",
+            "pending_writes",
+            "eviction_queue",
+            "ingestion_log",
         ):
             if _table_exists(conn, table):
                 n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -156,8 +163,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Export mori SQLite DB to JSONL")
     parser.add_argument("--db", help="Path to memories.db", default=None)
     parser.add_argument("--output", default="/tmp/mori-export.jsonl", help="Output JSONL path")
-    parser.add_argument("--since", help="ISO date cutoff for session_events (default: 90 days ago)", default=None)
-    parser.add_argument("--all", dest="include_all", action="store_true", help="Include all session_events")
+    parser.add_argument(
+        "--since", help="ISO date cutoff for session_events (default: 90 days ago)", default=None
+    )
+    parser.add_argument(
+        "--all", dest="include_all", action="store_true", help="Include all session_events"
+    )
     parser.add_argument("--dry-run", action="store_true", help="Count rows only, no file written")
     args = parser.parse_args()
 

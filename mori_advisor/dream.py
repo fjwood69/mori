@@ -62,6 +62,7 @@ class DreamPipeline:
 
         if store is None:
             from mori_advisor.store.sqlite_store import SQLiteStore
+
             store = SQLiteStore(db_path)
         self.store = store
 
@@ -187,9 +188,7 @@ class DreamPipeline:
             max_id = max(e["id"] for e in events)
             self._set_watermark(max_id, _conn=txn_conn)
 
-            pruned = self.store.prune_events(
-                max(0, max_id - self.retention_buffer), _conn=txn_conn
-            )
+            pruned = self.store.prune_events(max(0, max_id - self.retention_buffer), _conn=txn_conn)
             logger.info(
                 "Pruned %s events older than id %s", pruned, max(0, max_id - self.retention_buffer)
             )

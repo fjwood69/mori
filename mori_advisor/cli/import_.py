@@ -32,9 +32,19 @@ from pathlib import Path
 
 # Columns that are TIMESTAMPTZ in Postgres — must be datetime objects, not strings
 _TIMESTAMP_COLS: set[str] = {
-    "created_at", "updated_at", "last_retrieved_at", "freshness_checked_at",
-    "changed_at", "proposed_at", "reviewed_at", "reviewed_at", "detected_at",
-    "ingested_at", "resolved_at", "timestamp", "ts",
+    "created_at",
+    "updated_at",
+    "last_retrieved_at",
+    "freshness_checked_at",
+    "changed_at",
+    "proposed_at",
+    "reviewed_at",
+    "reviewed_at",
+    "detected_at",
+    "ingested_at",
+    "resolved_at",
+    "timestamp",
+    "ts",
 }
 
 # Columns that are BOOLEAN in Postgres — SQLite stores 0/1 as int
@@ -71,10 +81,18 @@ def _coerce_record(record: dict) -> dict:
             out[k] = v
     return out
 
+
 KNOWN_TABLES = {
-    "dreamer_config", "dream_state", "memories", "memory_versions",
-    "pending_writes", "eviction_queue", "ingestion_log", "session_events",
-    "msg_log", "delegate_tasks",
+    "dreamer_config",
+    "dream_state",
+    "memories",
+    "memory_versions",
+    "pending_writes",
+    "eviction_queue",
+    "ingestion_log",
+    "session_events",
+    "msg_log",
+    "delegate_tasks",
 }
 
 
@@ -86,6 +104,7 @@ def _parse_args():
 
 
 # ── SQLite import ─────────────────────────────────────────────────────────────
+
 
 def _sqlite_import(jsonl_path: Path, db_path: Path, dry_run: bool) -> None:
     conn = sqlite3.connect(str(db_path), timeout=30)
@@ -148,6 +167,7 @@ def _sqlite_import(jsonl_path: Path, db_path: Path, dry_run: bool) -> None:
 
 # ── Postgres import ───────────────────────────────────────────────────────────
 
+
 async def _pg_import(jsonl_path: Path, dsn: str, dry_run: bool) -> None:
     import asyncpg
 
@@ -181,7 +201,7 @@ async def _pg_import(jsonl_path: Path, dsn: str, dry_run: bool) -> None:
 
             record = _coerce_record(record)
             cols = list(record.keys())
-            placeholders = ",".join(f"${i+1}" for i in range(len(cols)))
+            placeholders = ",".join(f"${i + 1}" for i in range(len(cols)))
             col_list = ",".join(f'"{c}"' for c in cols)
             try:
                 await conn.execute(
