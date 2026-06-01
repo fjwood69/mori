@@ -49,7 +49,7 @@ function Write-Utf8File {
 function Test-MoriHookCommand {
     param([string]$Command)
     if ([string]::IsNullOrWhiteSpace($Command)) { return $false }
-    return ($Command -like "*mori-ship-event*" -or $Command -like "*/api/events/raw*" -or $Command -like "*/api/precompact*")
+    return ($Command -like "*mori-ship-event*" -or $Command -like "*/api/events/raw*" -or $Command -like "*/api/precompact*" -or $Command -like "*mori-post-compact-brief*")
 }
 
 function Get-MoriShipperCommands {
@@ -80,11 +80,13 @@ function Update-HookEntry {
 }
 
 function Merge-MoriSettings {
-    param([string]$Path, [string]$ShipperPath, [string]$Url, [string]$Client, [string]$Key)
+    param([string]$Path, [string]$ShipperPath, [string]$BriefPath, [string]$Url, [string]$Client, [string]$Key)
     $cmds = Get-MoriShipperCommands -ShipperPath $ShipperPath -Url $Url -Client $Client -Key $Key
+    $briefCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$BriefPath`""
     $events = @{
         PostToolUse = $cmds.raw; PostToolUseFailure = $cmds.raw
         UserPromptSubmit = $cmds.raw; Stop = $cmds.raw; PreCompact = $cmds.precompact
+        PostCompact = $briefCmd
     }
 
     if (Test-Path $Path) {
@@ -318,13 +320,15 @@ $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $ClaudeDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { "$env:USERPROFILE\.claude" }
 $ShipperSrc = Join-Path $PSScriptRoot "mori-ship-event.ps1"
 $ShipperDst = Join-Path $ClaudeDir "mori-ship-event.ps1"
+$BriefSrc   = Join-Path $PSScriptRoot "mori-post-compact-brief.ps1"
+$BriefDst   = Join-Path $ClaudeDir "mori-post-compact-brief.ps1"
 
 function Install-ForTarget {
     param([string]$ConfigPath, [string]$SkillsDir, [string]$Label)
 
     Write-Host "`n[$Label] Installing to $ConfigPath..." -ForegroundColor Yellow
 
-    Write-Host "  [1/3] Deploying event shipper..." -ForegroundColor Yellow
+    Write-Host "  [1/3] Deploying event shipper and hooks..." -ForegroundColor Yellow
     New-Item -ItemType Directory -Force -Path $ClaudeDir | Out-Null
     if (Test-Path $ShipperSrc) {
         Copy-Item $ShipperSrc $ShipperDst -Force
@@ -332,10 +336,16 @@ function Install-ForTarget {
     } else {
         Write-Host "    Warning: mori-ship-event.ps1 not found alongside installer — hooks will not work." -ForegroundColor Yellow
     }
+    if (Test-Path $BriefSrc) {
+        Copy-Item $BriefSrc $BriefDst -Force
+        Write-Host "    Deployed mori-post-compact-brief.ps1 to $ClaudeDir" -ForegroundColor Cyan
+    } else {
+        Write-Host "    Warning: mori-post-compact-brief.ps1 not found — PostCompact hook will not work." -ForegroundColor Yellow
+    }
 
     Write-Host "  [2/3] Merging MCP config, hooks, and permissions..." -ForegroundColor Yellow
     try {
-        Merge-MoriSettings -Path $ConfigPath -ShipperPath $ShipperDst -Url $MoriUrl -Client $ClientName -Key $ApiKey
+        Merge-MoriSettings -Path $ConfigPath -ShipperPath $ShipperDst -BriefPath $BriefDst -Url $MoriUrl -Client $ClientName -Key $ApiKey
     } catch { Write-Host "    Error merging settings: $_" -ForegroundColor Red }
 
     Write-Host "  [3/3] Deploying skills..." -ForegroundColor Yellow

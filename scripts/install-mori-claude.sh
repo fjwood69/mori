@@ -215,6 +215,10 @@ SHIPPER_DST="${CLAUDEDIR}/mori-ship-event.sh"
 RAW_CMD="\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
 COMPACT_CMD="\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode precompact"
 
+BRIEF_SRC="${SCRIPT_DIR}/mori-post-compact-brief.sh"
+BRIEF_DST="${CLAUDEDIR}/mori-post-compact-brief.sh"
+BRIEF_CMD="\"${BRIEF_DST}\""
+
 merge_json() {
   local config_path="$1"
   local tmp
@@ -230,10 +234,11 @@ merge_json() {
         --arg mori_url "$MORI_URL/mcp" \
         --arg raw "$RAW_CMD" \
         --arg compact "$COMPACT_CMD" \
+        --arg brief "$BRIEF_CMD" \
         --argjson allow "$allow_tools_json" \
         '
         # Detect a mori hook command
-        def is_mori_cmd: . // "" | test("mori-ship-event|/api/events/raw|/api/precompact");
+        def is_mori_cmd: . // "" | test("mori-ship-event|/api/events/raw|/api/precompact|mori-post-compact-brief");
 
         # Per-event hook merge: update existing mori entry in-place, or prepend new one
         def upsert_hook(cmd):
@@ -253,6 +258,7 @@ merge_json() {
         .hooks.UserPromptSubmit   = (.hooks.UserPromptSubmit   | upsert_hook($raw)) |
         .hooks.Stop               = (.hooks.Stop               | upsert_hook($raw)) |
         .hooks.PreCompact         = (.hooks.PreCompact         | upsert_hook($compact)) |
+        .hooks.PostCompact        = (.hooks.PostCompact        | upsert_hook($brief)) |
 
         # permissions.allow — additive, no duplicates
         .permissions.allow = ((.permissions.allow // []) + $allow | unique)
@@ -299,7 +305,8 @@ generate_config_json() {
     "PostToolUseFailure": [{"type": "command", "command": "${RAW_CMD}"}],
     "UserPromptSubmit": [{"type": "command", "command": "${RAW_CMD}"}],
     "Stop": [{"type": "command", "command": "${RAW_CMD}"}],
-    "PreCompact": [{"type": "command", "command": "${COMPACT_CMD}"}]
+    "PreCompact": [{"type": "command", "command": "${COMPACT_CMD}"}],
+    "PostCompact": [{"type": "command", "command": "${BRIEF_CMD}"}]
   },
   "permissions": {
     "allow": ${allow_json}
@@ -374,6 +381,12 @@ deploy_shipper() {
     echo "    Deployed mori-ship-event.sh to ${target_dir}"
   else
     echo "    Warning: mori-ship-event.sh not found alongside installer — hooks will not work."
+  fi
+  if [ -f "$BRIEF_SRC" ]; then
+    cp "$BRIEF_SRC" "$BRIEF_DST" && chmod +x "$BRIEF_DST"
+    echo "    Deployed mori-post-compact-brief.sh to ${target_dir}"
+  else
+    echo "    Warning: mori-post-compact-brief.sh not found — PostCompact hook will not work."
   fi
 }
 

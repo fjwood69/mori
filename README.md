@@ -248,11 +248,14 @@ Key environment variables:
 | `MORI_MODEL` | `moonshotai/kimi-k2.6` | Advisor + consult model |
 | `MORI_DREAM_MODEL` | falls back to `MORI_MODEL` | Dream + ingest distillation model |
 | `MORI_FAST_MODEL` | `deepseek/deepseek-v4-flash` | Contradiction scan + freshness checks |
+| `MORI_API_KEYS` | — | Named client API keys: `name:secret,name:secret,...` — see [Authentication](docs/reference/configuration.md#authentication) |
 | `MORI_TRUSTED_DREAMERS` | — | Comma-separated trusted hostnames |
 | `MORI_DREAM_INTERVAL` | `60` | Dream cron interval (minutes) |
 | `MORI_STANDARDS_DIR` | — | Path to team standards `.md` files |
 | `MORI_MSG_HEADLESS_ENABLED` | `false` | Spawn headless Claude for incoming tasks |
 | `MORI_MSG_HEADLESS_TRUSTED` | — | Comma-separated hostnames allowed to trigger headless CC |
+
+**Authentication:** Set `MORI_API_KEYS` to give each client a named key. Without it the server starts in open mode (fine for private Tailscale networks; always set keys for shared or internet-accessible deployments). Generate secrets with `python3 -c "import secrets; print(secrets.token_hex(32))"`. Full details: [docs/reference/configuration.md → Authentication](docs/reference/configuration.md#authentication).
 
 ---
 

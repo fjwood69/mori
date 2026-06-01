@@ -24,6 +24,7 @@
 | `MORI_BIFROST_TIMEOUT` | `300` | API timeout in seconds |
 | `MORI_MSG_HEADLESS_ENABLED` | `false` | Spawn headless `claude` process for incoming `task` messages |
 | `MORI_MSG_HEADLESS_TRUSTED` | `""` | Comma-separated hostnames allowed to trigger headless CC |
+| `MORI_POST_COMPACT_BRIEF` | `true` | Set to `false` to suppress the PostCompact re-grounding prompt |
 
 ## Authentication
 
@@ -101,6 +102,21 @@ dream-cron sidecar). For Podman/systemd deployments, set via the dream timer.
 | Solo | 240 (4 hours) | Few events per session, low risk of losing context |
 | 1–4 people | 60 (1 hour) | More events, catches cold restarts and short sessions |
 | 5–10 people | 30 minutes | High event density, any session could be the last before the server goes down |
+
+## PostCompact hook
+
+The `mori-post-compact-brief.sh` hook fires after every context compression. It
+outputs a `systemMessage` prompting the agent to run `/brief`, re-establishing
+session context (NATS messages, pending mori-msg items, state from before compaction).
+
+Enabled by default. Disable with:
+
+```bash
+export MORI_POST_COMPACT_BRIEF=false
+```
+
+The hook is deployed alongside other Mori hooks by `install-mori-claude.sh` /
+`install-mori-claude.ps1`.
 
 ## Ports
 

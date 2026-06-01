@@ -58,10 +58,11 @@ Core infrastructure hardening. No new features until the foundation is solid.
 
 ---
 
-## v2.1 — Planned
+## v2.1 — In progress
 
 Team features and resilience. Requires v2.0 foundation.
 
+- `/brief --post-compact` — dedicated flag to pull the compact summary and re-ground in one step; PostCompact hook ships in v2.1.0 and prompts for plain `/brief` in the interim
 - Dashboard UI — consumes REST API, lightweight memory management interface
 - Multi-project `/brief` — `--project mori --project bifrost`
 - Memory namespacing — personal vs shared, team namespace, COIN identity scoping for enterprise

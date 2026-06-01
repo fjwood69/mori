@@ -15,7 +15,9 @@ Loads shared memories and team standards into context at the start of every sess
 - Team standards count with category breakdown (e.g. "5 standards loaded — coding=2, security=2, ethos=1")
 - Dream pipeline state (watermark, backlog)
 
-**Usage:** Runs automatically at session start. `/brief` to re-run.
+**Usage:** Runs automatically at session start. `/brief` to re-run manually — including after context compression (PostCompact hook prompts you to run `/brief` when this happens).
+
+**After context compression:** Run `/brief` to re-ground. A dedicated `/brief --post-compact` flag is planned for v2.1 to pull the compact summary and re-ground in one step; plain `/brief` is the correct interim approach.
 
 **Project-scoped loading:**
 
