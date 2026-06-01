@@ -21,4 +21,4 @@ pillow>=10.0.0
 
 # ── Optional: PostgreSQL backend ───────────────────────────────────────
 # Required only when MORI_DATABASE_URL=postgresql://... is set.
-# asyncpg>=0.29.0
+asyncpg>=0.29.0
