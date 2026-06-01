@@ -1261,7 +1261,7 @@ async def dream_run(dry_run: bool = False) -> str:
         dry_run: Preview what would be produced without writing anything.
     """
     try:
-        memories = dream_pipeline.run(dry_run=dry_run)
+        memories = await dream_pipeline.run(dry_run=dry_run)
         if dry_run:
             if not memories:
                 return "No memories would be produced from the current events."
@@ -2067,10 +2067,7 @@ async def precompact(request: Request) -> JSONResponse:  # noqa: C901
             stop_reason=event.stop_reason,
         )
 
-        # Run dream pipeline synchronously. SQLite connections are thread-bound
-        # so this must run on the main thread. PreCompact fires once per
-        # compaction so blocking briefly is acceptable.
-        result = dream_pipeline.run()
+        result = await dream_pipeline.run()
         memories_count = len(result) if result else 0
         logger.info(
             "PreCompact: dreamed session %s (event_id=%s, memories=%s)",
@@ -2094,13 +2091,9 @@ async def precompact(request: Request) -> JSONResponse:  # noqa: C901
 
 @mcp.custom_route("/api/dream/run", methods=["GET", "POST"])
 async def dream_trigger(request: Request) -> JSONResponse:
-    """Cron-triggerable dream run. Calls dream_pipeline.run() synchronously.
-
-    GET or POST. No auth required (only reachable via Tailscale).
-    Logs the result and returns summary.
-    """
+    """Cron-triggerable dream run."""
     try:
-        result = dream_pipeline.run()
+        result = await dream_pipeline.run()
         count = len(result) if result else 0
         logger.info("Cron dream: %s memories written", count)
         return JSONResponse({"status": "ok", "memories": count})
