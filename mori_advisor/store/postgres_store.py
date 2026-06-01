@@ -243,11 +243,16 @@ class PostgresStore(BaseStore):
         import asyncpg
 
         if self.pool is None:
+            # ssl=False: asyncpg's SSL probe path triggers a getaddrinfo code
+            # branch that fails in some environments (systemd-resolved stub +
+            # asyncio thread executor). Postgres on private networks does not
+            # need TLS; enable explicitly via ?sslmode=require in the DSN if needed.
             self.pool = await asyncpg.create_pool(
                 self.dsn,
                 min_size=2,
                 max_size=10,
                 statement_cache_size=0,  # required for pgBouncer session mode
+                ssl=False,
             )
 
     def _ensure_pool(self):
@@ -261,8 +266,12 @@ class PostgresStore(BaseStore):
     async def bootstrap(self) -> None:
         await self.connect()
         async with self.pool.acquire() as conn:
-            await conn.execute(_DDL)
-        logger.info("PostgresStore bootstrap complete")
+            in_recovery = await conn.fetchval("SELECT pg_is_in_recovery()")
+            if in_recovery:
+                logger.info("PostgresStore connected to read-only standby — skipping DDL")
+            else:
+                await conn.execute(_DDL)
+                logger.info("PostgresStore bootstrap complete")
 
     async def ping(self) -> None:
         self._ensure_pool()
