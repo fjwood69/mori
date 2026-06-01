@@ -1,14 +1,14 @@
 #!/bin/bash
-# Pre-commit hook: run ruff check on staged Python files.
+# Pre-commit hook: run ruff check + ruff format on staged Python files.
 # Set up with: git config core.hooksPath .githooks
 
 set -e
 
-# Collect staged Python files
 py_files=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
 
 if [ -z "$py_files" ]; then
     exit 0
 fi
 
-exec ruff check $py_files
+ruff check $py_files
+ruff format --check $py_files

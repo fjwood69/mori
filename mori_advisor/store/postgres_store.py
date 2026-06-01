@@ -71,7 +71,7 @@ async def _retry(coro_fn, *args, **kwargs):
             # asyncpg raises asyncpg.exceptions.SerializationError
             if "40001" in str(e) or "serialization" in str(e).lower():
                 last_exc = e
-                await asyncio.sleep(_RETRY_DELAY_BASE * (2 ** attempt))
+                await asyncio.sleep(_RETRY_DELAY_BASE * (2**attempt))
                 continue
             raise
     raise last_exc
@@ -241,6 +241,7 @@ class PostgresStore(BaseStore):
     async def connect(self) -> None:
         """Create the connection pool. Called by bootstrap() and health probes."""
         import asyncpg
+
         if self.pool is None:
             self.pool = await asyncpg.create_pool(
                 self.dsn,
@@ -283,16 +284,30 @@ class PostgresStore(BaseStore):
 
     # ── Memory CRUD ────────────────────────────────────────────────────────
 
-    async def write(self, name=None, title="", description="", type="project",
-                    tier="working", body="", tags=None, origin_session_id=None,
-                    origin_session_ids=None, origin_clients=None, client=None,
-                    _skip_protection=False, _conn=None) -> str:
+    async def write(
+        self,
+        name=None,
+        title="",
+        description="",
+        type="project",
+        tier="working",
+        body="",
+        tags=None,
+        origin_session_id=None,
+        origin_session_ids=None,
+        origin_clients=None,
+        client=None,
+        _skip_protection=False,
+        _conn=None,
+    ) -> str:
         self._ensure_pool()
         from mori_advisor.memory_store import _slugify
+
         if not name and title:
             name = _slugify(title)
         elif not name:
             import time
+
             name = f"memory-{int(time.time())}"
 
         tags_v = _tags_json(tags)
@@ -313,8 +328,16 @@ class PostgresStore(BaseStore):
                        body=$6, tags=$7::jsonb, origin_session_ids=$8::jsonb,
                        origin_clients=$9::jsonb, updated_at=$10
                        WHERE name=$1""",
-                    name, title, description, type, tier, body,
-                    tags_v, sess_ids, clients, now,
+                    name,
+                    title,
+                    description,
+                    type,
+                    tier,
+                    body,
+                    tags_v,
+                    sess_ids,
+                    clients,
+                    now,
                 )
             else:
                 await conn.execute(
@@ -322,8 +345,17 @@ class PostgresStore(BaseStore):
                        (name, title, description, type, tier, body, tags,
                         origin_session_id, origin_session_ids, origin_clients, created_at, updated_at)
                        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::jsonb,$10::jsonb,$11,$11)""",
-                    name, title, description, type, tier, body,
-                    tags_v, origin_session_id, sess_ids, clients, now,
+                    name,
+                    title,
+                    description,
+                    type,
+                    tier,
+                    body,
+                    tags_v,
+                    origin_session_id,
+                    sess_ids,
+                    clients,
+                    now,
                 )
             return f"Memory '{name}' written"
 
@@ -335,14 +367,13 @@ class PostgresStore(BaseStore):
     async def read(self, name: str) -> str:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM memories WHERE name = $1", name
-            )
+            row = await conn.fetchrow("SELECT * FROM memories WHERE name = $1", name)
             if not row:
                 return f"Memory '{name}' not found"
             await conn.execute(
                 "UPDATE memories SET retrieval_count = retrieval_count + 1, last_retrieved_at = $2 WHERE name = $1",
-                name, _now_utc(),
+                name,
+                _now_utc(),
             )
         r = dict(row)
         tags = json.loads(r.get("tags") or "[]")
@@ -356,8 +387,7 @@ class PostgresStore(BaseStore):
         ]
         return "\n".join(lines)
 
-    async def list(self, type_filter=None, tag=None, session=None,
-                   client=None, limit=50) -> str:
+    async def list(self, type_filter=None, tag=None, session=None, client=None, limit=50) -> str:
         self._ensure_pool()
         clauses = []
         params: list[Any] = []
@@ -391,8 +421,9 @@ class PostgresStore(BaseStore):
         lines = [f"- **{r['name']}** ({r['type']}/{r['tier']}) — {r['title']}" for r in rows]
         return f"{len(rows)} memories:\n" + "\n".join(lines)
 
-    async def search(self, query=None, type_filter=None, tag=None, client=None,
-                     since=None, limit=10) -> str:
+    async def search(
+        self, query=None, type_filter=None, tag=None, client=None, since=None, limit=10
+    ) -> str:
         self._ensure_pool()
         clauses = []
         params: list[Any] = []
@@ -479,12 +510,16 @@ class PostgresStore(BaseStore):
             if len(parts) < 3:
                 continue
             import yaml
+
             meta = yaml.safe_load(parts[1])
             body = parts[2].lstrip("\n")
             await self.write(
-                name=meta.get("name"), title=meta.get("title", ""),
-                type=meta.get("type", "project"), tier=meta.get("tier", "working"),
-                tags=meta.get("tags", []), body=body,
+                name=meta.get("name"),
+                title=meta.get("title", ""),
+                type=meta.get("type", "project"),
+                tier=meta.get("tier", "working"),
+                tags=meta.get("tags", []),
+                body=body,
             )
             imported += 1
         return f"Imported {imported} memories from {source_dir}"
@@ -517,11 +552,14 @@ class PostgresStore(BaseStore):
             rows = await conn.fetch(
                 "SELECT version_num, changed_at, changed_by, diff FROM memory_versions "
                 "WHERE memory_name = $1 ORDER BY version_num DESC LIMIT $2",
-                name, limit,
+                name,
+                limit,
             )
         if not rows:
             return f"No history for '{name}'"
-        lines = [f"v{r['version_num']} ({r['changed_at']}) by {r['changed_by'] or '—'}" for r in rows]
+        lines = [
+            f"v{r['version_num']} ({r['changed_at']}) by {r['changed_by'] or '—'}" for r in rows
+        ]
         return "\n".join(lines)
 
     async def diff(self, name: str, from_version: int, to_version: int) -> str:
@@ -530,7 +568,9 @@ class PostgresStore(BaseStore):
             rows = await conn.fetch(
                 "SELECT version_num, diff FROM memory_versions "
                 "WHERE memory_name = $1 AND version_num IN ($2, $3)",
-                name, from_version, to_version,
+                name,
+                from_version,
+                to_version,
             )
         if not rows:
             return f"No versions found for '{name}'"
@@ -541,14 +581,21 @@ class PostgresStore(BaseStore):
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM memory_versions WHERE id = $1 AND memory_name = $2",
-                version_id, name,
+                version_id,
+                name,
             )
             if not row:
                 return f"Version {version_id} not found for '{name}'"
             await conn.execute(
                 "UPDATE memories SET title=$2, description=$3, type=$4, tier=$5, body=$6, tags=$7::jsonb, updated_at=$8 WHERE name=$1",
-                name, row["title"], row["description"], row["type"], row["tier"],
-                row["body"], row["tags"], _now_utc(),
+                name,
+                row["title"],
+                row["description"],
+                row["type"],
+                row["tier"],
+                row["body"],
+                row["tags"],
+                _now_utc(),
             )
         return f"'{name}' rolled back to version {version_id}"
 
@@ -562,7 +609,9 @@ class PostgresStore(BaseStore):
     async def pending_count(self) -> int:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
-            return await conn.fetchval("SELECT COUNT(*) FROM pending_writes WHERE status = 'pending'")
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending'"
+            )
 
     async def eviction_count(self) -> int:
         self._ensure_pool()
@@ -581,7 +630,10 @@ class PostgresStore(BaseStore):
             )
         if not rows:
             return f"No {status} writes."
-        lines = [f"[{r['id']}] {r['proposed_name']} — {r['proposed_title']} (by {r['proposed_by']})" for r in rows]
+        lines = [
+            f"[{r['id']}] {r['proposed_name']} — {r['proposed_title']} (by {r['proposed_by']})"
+            for r in rows
+        ]
         return "\n".join(lines)
 
     async def approve(self, write_id: int, note: str = "", reviewer: str = "") -> str:
@@ -591,14 +643,22 @@ class PostgresStore(BaseStore):
             if not row:
                 return f"Pending write {write_id} not found"
             await self.write(
-                name=row["proposed_name"], title=row["proposed_title"],
-                description=row["description"], type=row["type"], tier=row["tier"],
-                body=row["body"], tags=json.loads(row["tags"] or "[]"),
-                _skip_protection=True, _conn=conn,
+                name=row["proposed_name"],
+                title=row["proposed_title"],
+                description=row["description"],
+                type=row["type"],
+                tier=row["tier"],
+                body=row["body"],
+                tags=json.loads(row["tags"] or "[]"),
+                _skip_protection=True,
+                _conn=conn,
             )
             await conn.execute(
                 "UPDATE pending_writes SET status='approved', reviewer_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
-                write_id, note, reviewer, _now_utc(),
+                write_id,
+                note,
+                reviewer,
+                _now_utc(),
             )
         return f"Pending write {write_id} approved and committed"
 
@@ -607,7 +667,10 @@ class PostgresStore(BaseStore):
         async with self.pool.acquire() as conn:
             await conn.execute(
                 "UPDATE pending_writes SET status='rejected', reviewer_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
-                write_id, note, reviewer, _now_utc(),
+                write_id,
+                note,
+                reviewer,
+                _now_utc(),
             )
         return f"Pending write {write_id} rejected"
 
@@ -617,7 +680,8 @@ class PostgresStore(BaseStore):
         async with self.pool.acquire() as conn:
             await conn.execute(
                 "UPDATE memories SET protected=TRUE, protected_domains=$2::jsonb WHERE name=$1",
-                name, domains_v,
+                name,
+                domains_v,
             )
         return f"Memory '{name}' protected"
 
@@ -682,10 +746,21 @@ class PostgresStore(BaseStore):
 
     # ── Session / dream ────────────────────────────────────────────────────
 
-    async def append_event(self, session_id, event_name, client="", tool_name=None,
-                           tool_input=None, tool_response=None, tool_error=None,
-                           model=None, cwd=None, transcript_path=None,
-                           prompt=None, stop_reason=None) -> int:
+    async def append_event(
+        self,
+        session_id,
+        event_name,
+        client="",
+        tool_name=None,
+        tool_input=None,
+        tool_response=None,
+        tool_error=None,
+        model=None,
+        cwd=None,
+        transcript_path=None,
+        prompt=None,
+        stop_reason=None,
+    ) -> int:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -693,9 +768,19 @@ class PostgresStore(BaseStore):
                    (session_id, event_name, client, timestamp, tool_name, tool_input,
                     tool_response, tool_error, model, cwd, transcript_path, prompt, stop_reason)
                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id""",
-                session_id, event_name, client, _now_utc(),
-                tool_name, tool_input, tool_response, tool_error,
-                model, cwd, transcript_path, prompt, stop_reason,
+                session_id,
+                event_name,
+                client,
+                _now_utc(),
+                tool_name,
+                tool_input,
+                tool_response,
+                tool_error,
+                model,
+                cwd,
+                transcript_path,
+                prompt,
+                stop_reason,
             )
         return row["id"]
 
@@ -706,8 +791,9 @@ class PostgresStore(BaseStore):
             tool_input=json.dumps(data) if data else None,
         )
 
-    async def read_events(self, session_id=None, since_event_id=None, since=None,
-                          client=None, limit=None) -> list:
+    async def read_events(
+        self, session_id=None, since_event_id=None, since=None, client=None, limit=None
+    ) -> list:
         self._ensure_pool()
         clauses = []
         params: list[Any] = []
@@ -768,7 +854,9 @@ class PostgresStore(BaseStore):
             await conn.execute(
                 "INSERT INTO dream_state (key, value, updated_at) VALUES ($1,$2,$3) "
                 "ON CONFLICT (key) DO UPDATE SET value=$2, updated_at=$3",
-                key, value, _now_utc(),
+                key,
+                value,
+                _now_utc(),
             )
 
         if _conn:
@@ -786,9 +874,7 @@ class PostgresStore(BaseStore):
         self._ensure_pool()
 
         async def _do(conn):
-            result = await conn.execute(
-                "DELETE FROM session_events WHERE id < $1", before_event_id
-            )
+            result = await conn.execute("DELETE FROM session_events WHERE id < $1", before_event_id)
             return int(result.split()[-1])
 
         if _conn:
@@ -821,9 +907,19 @@ class PostgresStore(BaseStore):
             )
         return row is not None
 
-    async def log_ingestion(self, source_path, source_hash, memories_written=0,
-                            model="", focus="all", tier="working", tags=None,
-                            dry_run=False, error_count=0, status="committed") -> None:
+    async def log_ingestion(
+        self,
+        source_path,
+        source_hash,
+        memories_written=0,
+        model="",
+        focus="all",
+        tier="working",
+        tags=None,
+        dry_run=False,
+        error_count=0,
+        status="committed",
+    ) -> None:
         self._ensure_pool()
         tags_v = _tags_json(tags)
         async with self.pool.acquire() as conn:
@@ -832,8 +928,17 @@ class PostgresStore(BaseStore):
                    (source_path, source_hash, memories_written, model, focus, tier,
                     tags, dry_run, error_count, status, ingested_at)
                    VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11)""",
-                source_path, source_hash, memories_written, model, focus, tier,
-                tags_v, dry_run, error_count, status, _now_utc(),
+                source_path,
+                source_hash,
+                memories_written,
+                model,
+                focus,
+                tier,
+                tags_v,
+                dry_run,
+                error_count,
+                status,
+                _now_utc(),
             )
 
     async def get_ingestion_status(self, limit: int = 20) -> str:
@@ -870,7 +975,14 @@ class PostgresStore(BaseStore):
             await conn.execute(
                 """INSERT INTO msg_log (id, from_host, to_host, type, ts, body, reply_to, status)
                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING""",
-                msg.id, msg.from_agent, msg.to, msg.type, ts, msg.body, msg.reply_to, status,
+                msg.id,
+                msg.from_agent,
+                msg.to,
+                msg.type,
+                ts,
+                msg.body,
+                msg.reply_to,
+                status,
             )
 
     async def set_message_status(self, msg_id: str, status: str) -> None:
@@ -878,8 +990,9 @@ class PostgresStore(BaseStore):
         async with self.pool.acquire() as conn:
             await conn.execute("UPDATE msg_log SET status=$2 WHERE id=$1", msg_id, status)
 
-    async def get_pending_messages(self, hostname, types=None, from_host=None,
-                                   unacked=False, include_broadcast=True) -> list:
+    async def get_pending_messages(
+        self, hostname, types=None, from_host=None, unacked=False, include_broadcast=True
+    ) -> list:
         self._ensure_pool()
         clauses = []
         params: list[Any] = []
@@ -936,8 +1049,12 @@ class PostgresStore(BaseStore):
                    ORDER BY updated_at DESC"""
             )
         return [
-            {"name": r["name"], "title": r["title"],
-             "tags": json.loads(r["tags"] or "[]"), "description": r["description"]}
+            {
+                "name": r["name"],
+                "title": r["title"],
+                "tags": json.loads(r["tags"] or "[]"),
+                "description": r["description"],
+            }
             for r in rows
         ]
 
@@ -954,10 +1071,16 @@ class PostgresStore(BaseStore):
                    ORDER BY last_retrieved_at ASC""",
                 str(days),
             )
-        return [{"name": r["name"], "title": r["title"], "type": r["type"],
-                 "last_retrieved_at": str(r["last_retrieved_at"]),
-                 "retrieval_count": r["retrieval_count"]}
-                for r in rows]
+        return [
+            {
+                "name": r["name"],
+                "title": r["title"],
+                "type": r["type"],
+                "last_retrieved_at": str(r["last_retrieved_at"]),
+                "retrieval_count": r["retrieval_count"],
+            }
+            for r in rows
+        ]
 
     async def get_superseded_memories(self) -> list:
         self._ensure_pool()
@@ -966,9 +1089,15 @@ class PostgresStore(BaseStore):
                 "SELECT name, title, superseded_by, updated_at FROM memories "
                 "WHERE superseded_by IS NOT NULL AND superseded_by != '' ORDER BY updated_at DESC"
             )
-        return [{"name": r["name"], "title": r["title"],
-                 "superseded_by": r["superseded_by"], "updated_at": str(r["updated_at"])}
-                for r in rows]
+        return [
+            {
+                "name": r["name"],
+                "title": r["title"],
+                "superseded_by": r["superseded_by"],
+                "updated_at": str(r["updated_at"]),
+            }
+            for r in rows
+        ]
 
     async def get_eviction_summary(self) -> list:
         self._ensure_pool()
@@ -977,6 +1106,13 @@ class PostgresStore(BaseStore):
                 "SELECT id, memory_name, reason, detail, detected_at FROM eviction_queue "
                 "WHERE resolved = FALSE ORDER BY detected_at DESC"
             )
-        return [{"id": r["id"], "memory_name": r["memory_name"], "reason": r["reason"],
-                 "detail": r["detail"], "detected_at": str(r["detected_at"])}
-                for r in rows]
+        return [
+            {
+                "id": r["id"],
+                "memory_name": r["memory_name"],
+                "reason": r["reason"],
+                "detail": r["detail"],
+                "detected_at": str(r["detected_at"]),
+            }
+            for r in rows
+        ]

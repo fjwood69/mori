@@ -169,7 +169,9 @@ init_metrics()
 mcp = FastMCP(MCP_SERVER_NAME)
 bifrost = BifrostClient(base_url=BIFROST_BASE_URL, timeout=BIFROST_TIMEOUT)
 session_log = store._log if hasattr(store, "_log") else SessionLog(db_path=DATA_DIR / "memories.db")
-memory_store = store._mem if hasattr(store, "_mem") else MemoryStore(db_path=DATA_DIR / "memories.db")
+memory_store = (
+    store._mem if hasattr(store, "_mem") else MemoryStore(db_path=DATA_DIR / "memories.db")
+)
 
 dream_pipeline = DreamPipeline(
     db_path=DATA_DIR / "memories.db",
@@ -467,7 +469,7 @@ async def brief(
                 proj = "general"
                 for t in row.get("tags", []):
                     if t.startswith("project-"):
-                        proj = t[len("project-"):]
+                        proj = t[len("project-") :]
                         break
                 projects.setdefault(proj, []).append(f"{row['name']}: {row['title']}")
             parts.append("\n**Unresolved goals:**")
@@ -1903,6 +1905,7 @@ async def smoke_test(request: Request) -> JSONResponse:
     # 2. db_write — integrity check + write-lock test (SQLite only)
     try:
         import sqlite3 as _sql
+
         _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=5)
         _c.execute("PRAGMA journal_mode=WAL")
         integrity = _c.execute("PRAGMA integrity_check").fetchone()[0]

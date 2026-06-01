@@ -89,28 +89,52 @@ class SQLiteStore(BaseStore):
 
     # ── Memory CRUD ────────────────────────────────────────────────────────
 
-    def write(self, name=None, title="", description="", type="project", tier="working",
-              body="", tags=None, origin_session_id=None, origin_session_ids=None,
-              origin_clients=None, client=None, _skip_protection=False,
-              _conn=None) -> str:
+    def write(
+        self,
+        name=None,
+        title="",
+        description="",
+        type="project",
+        tier="working",
+        body="",
+        tags=None,
+        origin_session_id=None,
+        origin_session_ids=None,
+        origin_clients=None,
+        client=None,
+        _skip_protection=False,
+        _conn=None,
+    ) -> str:
         return self._mem.write(
-            name=name, title=title, description=description, type=type, tier=tier,
-            body=body, tags=tags, origin_session_id=origin_session_id,
-            origin_session_ids=origin_session_ids, origin_clients=origin_clients,
-            client=client, _skip_protection=_skip_protection, _conn=_conn,
+            name=name,
+            title=title,
+            description=description,
+            type=type,
+            tier=tier,
+            body=body,
+            tags=tags,
+            origin_session_id=origin_session_id,
+            origin_session_ids=origin_session_ids,
+            origin_clients=origin_clients,
+            client=client,
+            _skip_protection=_skip_protection,
+            _conn=_conn,
         )
 
     def read(self, name: str) -> str:
         return self._mem.read(name)
 
     def list(self, type_filter=None, tag=None, session=None, client=None, limit=50) -> str:
-        return self._mem.list(type_filter=type_filter, tag=tag, session=session,
-                              client=client, limit=limit)
+        return self._mem.list(
+            type_filter=type_filter, tag=tag, session=session, client=client, limit=limit
+        )
 
-    def search(self, query=None, type_filter=None, tag=None, client=None,
-               since=None, limit=10) -> str:
-        return self._mem.search(query=query, type_filter=type_filter, tag=tag,
-                                client=client, since=since, limit=limit)
+    def search(
+        self, query=None, type_filter=None, tag=None, client=None, since=None, limit=10
+    ) -> str:
+        return self._mem.search(
+            query=query, type_filter=type_filter, tag=tag, client=client, since=since, limit=limit
+        )
 
     def delete(self, name: str) -> str:
         return self._mem.delete(name)
@@ -187,28 +211,52 @@ class SQLiteStore(BaseStore):
 
     # ── Session / dream ────────────────────────────────────────────────────
 
-    def append_event(self, session_id, event_name, client="", tool_name=None,
-                     tool_input=None, tool_response=None, tool_error=None,
-                     model=None, cwd=None, transcript_path=None, prompt=None,
-                     stop_reason=None) -> int:
+    def append_event(
+        self,
+        session_id,
+        event_name,
+        client="",
+        tool_name=None,
+        tool_input=None,
+        tool_response=None,
+        tool_error=None,
+        model=None,
+        cwd=None,
+        transcript_path=None,
+        prompt=None,
+        stop_reason=None,
+    ) -> int:
         return self._log.append_event(
-            session_id=session_id, event_name=event_name, client=client,
-            tool_name=tool_name, tool_input=tool_input, tool_response=tool_response,
-            tool_error=tool_error, model=model, cwd=cwd, transcript_path=transcript_path,
-            prompt=prompt, stop_reason=stop_reason,
+            session_id=session_id,
+            event_name=event_name,
+            client=client,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_response=tool_response,
+            tool_error=tool_error,
+            model=model,
+            cwd=cwd,
+            transcript_path=transcript_path,
+            prompt=prompt,
+            stop_reason=stop_reason,
         )
 
     def append_event_dict(self, session_id: str, event_type: str, data=None) -> None:
         return self._log.append_event_dict(session_id, event_type, data=data)
 
-    def read_events(self, session_id=None, since_event_id=None, since=None,
-                    client=None, limit=None) -> list:
-        return self._log.read_events(session_id=session_id, since_event_id=since_event_id,
-                                     since=since, client=client, limit=limit)
+    def read_events(
+        self, session_id=None, since_event_id=None, since=None, client=None, limit=None
+    ) -> list:
+        return self._log.read_events(
+            session_id=session_id,
+            since_event_id=since_event_id,
+            since=since,
+            client=client,
+            limit=limit,
+        )
 
     def read_events_grouped(self, since_event_id=None, group_limit=5) -> list:
-        return self._log.read_events_grouped(since_event_id=since_event_id,
-                                             group_limit=group_limit)
+        return self._log.read_events_grouped(since_event_id=since_event_id, group_limit=group_limit)
 
     def get_dream_state(self, key: str, default=None):
         return self._log.get_dream_state(key, default=default)
@@ -241,9 +289,19 @@ class SQLiteStore(BaseStore):
         finally:
             conn.close()
 
-    def log_ingestion(self, source_path, source_hash, memories_written=0,
-                      model="", focus="all", tier="working", tags=None,
-                      dry_run=False, error_count=0, status="committed") -> None:
+    def log_ingestion(
+        self,
+        source_path,
+        source_hash,
+        memories_written=0,
+        model="",
+        focus="all",
+        tier="working",
+        tags=None,
+        dry_run=False,
+        error_count=0,
+        status="committed",
+    ) -> None:
         """Record an ingestion run in the ingestion_log table."""
         tags_json = json.dumps(tags or [])
         conn = self._mem._get_conn()
@@ -255,8 +313,18 @@ class SQLiteStore(BaseStore):
                      focus, tier, tags, dry_run, error_count, status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (source_path, source_hash, memories_written, model,
-                 focus, tier, tags_json, 1 if dry_run else 0, error_count, status),
+                (
+                    source_path,
+                    source_hash,
+                    memories_written,
+                    model,
+                    focus,
+                    tier,
+                    tags_json,
+                    1 if dry_run else 0,
+                    error_count,
+                    status,
+                ),
             )
             conn.commit()
         finally:
@@ -282,8 +350,10 @@ class SQLiteStore(BaseStore):
         if not rows:
             return "No ingestion runs recorded."
 
-        lines = ["| Source | When | Memories | Model | Focus | Tier | Status |",
-                 "|--------|------|----------|-------|-------|------|--------|"]
+        lines = [
+            "| Source | When | Memories | Model | Focus | Tier | Status |",
+            "|--------|------|----------|-------|-------|------|--------|",
+        ]
         for row in rows:
             path, ts, mems, model, focus, tier, dry_run, errors, status = row
             src = Path(path).name if path else "?"
@@ -303,10 +373,16 @@ class SQLiteStore(BaseStore):
     def set_message_status(self, msg_id: str, status: str) -> None:
         return self._msg.set_status(msg_id, status)
 
-    def get_pending_messages(self, hostname, types=None, from_host=None,
-                             unacked=False, include_broadcast=True) -> list:
-        return self._msg.get_pending(hostname, types=types, from_host=from_host,
-                                     unacked=unacked, include_broadcast=include_broadcast)
+    def get_pending_messages(
+        self, hostname, types=None, from_host=None, unacked=False, include_broadcast=True
+    ) -> list:
+        return self._msg.get_pending(
+            hostname,
+            types=types,
+            from_host=from_host,
+            unacked=unacked,
+            include_broadcast=include_broadcast,
+        )
 
     def get_message_thread(self, root_id: str) -> list:
         return self._msg.get_thread(root_id)
@@ -331,7 +407,8 @@ class SQLiteStore(BaseStore):
             ).fetchall()
             return [
                 {
-                    "name": r[0], "title": r[1],
+                    "name": r[0],
+                    "title": r[1],
                     "tags": self._mem._parse_tags(r[2]),
                     "description": r[3],
                 }
@@ -356,9 +433,16 @@ class SQLiteStore(BaseStore):
                 """,
                 (f"-{days} days",),
             ).fetchall()
-            return [{"name": r[0], "title": r[1], "type": r[2],
-                     "last_retrieved_at": r[3], "retrieval_count": r[4]}
-                    for r in rows]
+            return [
+                {
+                    "name": r[0],
+                    "title": r[1],
+                    "type": r[2],
+                    "last_retrieved_at": r[3],
+                    "retrieval_count": r[4],
+                }
+                for r in rows
+            ]
         finally:
             conn.close()
 
@@ -374,8 +458,10 @@ class SQLiteStore(BaseStore):
                 ORDER BY updated_at DESC
                 """,
             ).fetchall()
-            return [{"name": r[0], "title": r[1], "superseded_by": r[2], "updated_at": r[3]}
-                    for r in rows]
+            return [
+                {"name": r[0], "title": r[1], "superseded_by": r[2], "updated_at": r[3]}
+                for r in rows
+            ]
         finally:
             conn.close()
 
@@ -391,8 +477,15 @@ class SQLiteStore(BaseStore):
                 ORDER BY detected_at DESC
                 """,
             ).fetchall()
-            return [{"id": r[0], "memory_name": r[1], "reason": r[2],
-                     "detail": r[3], "detected_at": r[4]}
-                    for r in rows]
+            return [
+                {
+                    "id": r[0],
+                    "memory_name": r[1],
+                    "reason": r[2],
+                    "detail": r[3],
+                    "detected_at": r[4],
+                }
+                for r in rows
+            ]
         finally:
             conn.close()

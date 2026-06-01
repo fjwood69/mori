@@ -29,9 +29,11 @@ def get_store(db_path: str | Path | None = None) -> BaseStore:
     url = os.environ.get("MORI_DATABASE_URL", "").strip()
     if url.startswith(("postgresql://", "postgres://")):
         from .postgres_store import PostgresStore
+
         return PostgresStore(url)
 
     from .sqlite_store import SQLiteStore
+
     if db_path is None:
         data_dir = os.environ.get("MORI_ADVISOR_DATA", "/data/mori-advisor")
         db_path = Path(data_dir) / "memories.db"

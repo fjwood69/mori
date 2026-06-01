@@ -114,6 +114,7 @@ def run_contradiction_scan(
             if db_path is None:
                 import os
                 from pathlib import Path as _Path
+
                 data_dir = os.environ.get("MORI_ADVISOR_DATA", "/data/mori-advisor")
                 db_path = _Path(data_dir) / "memories.db"
             write_conn = sqlite3.connect(str(db_path), timeout=30)

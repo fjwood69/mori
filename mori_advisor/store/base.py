@@ -52,10 +52,22 @@ class BaseStore(ABC):
     # ── Memory CRUD ────────────────────────────────────────────────────────
 
     @abstractmethod
-    def write(self, name=None, title="", description="", type="project", tier="working",
-              body="", tags=None, origin_session_id=None, origin_session_ids=None,
-              origin_clients=None, client=None, _skip_protection=False,
-              _conn=None) -> str: ...
+    def write(
+        self,
+        name=None,
+        title="",
+        description="",
+        type="project",
+        tier="working",
+        body="",
+        tags=None,
+        origin_session_id=None,
+        origin_session_ids=None,
+        origin_clients=None,
+        client=None,
+        _skip_protection=False,
+        _conn=None,
+    ) -> str: ...
 
     @abstractmethod
     def read(self, name: str) -> str: ...
@@ -64,8 +76,9 @@ class BaseStore(ABC):
     def list(self, type_filter=None, tag=None, session=None, client=None, limit=50) -> str: ...
 
     @abstractmethod
-    def search(self, query=None, type_filter=None, tag=None, client=None,
-               since=None, limit=10) -> str: ...
+    def search(
+        self, query=None, type_filter=None, tag=None, client=None, since=None, limit=10
+    ) -> str: ...
 
     @abstractmethod
     def delete(self, name: str) -> str: ...
@@ -143,17 +156,29 @@ class BaseStore(ABC):
     # ── Session / dream ────────────────────────────────────────────────────
 
     @abstractmethod
-    def append_event(self, session_id, event_name, client="", tool_name=None,
-                     tool_input=None, tool_response=None, tool_error=None,
-                     model=None, cwd=None, transcript_path=None, prompt=None,
-                     stop_reason=None) -> int: ...
+    def append_event(
+        self,
+        session_id,
+        event_name,
+        client="",
+        tool_name=None,
+        tool_input=None,
+        tool_response=None,
+        tool_error=None,
+        model=None,
+        cwd=None,
+        transcript_path=None,
+        prompt=None,
+        stop_reason=None,
+    ) -> int: ...
 
     @abstractmethod
     def append_event_dict(self, session_id: str, event_type: str, data=None) -> None: ...
 
     @abstractmethod
-    def read_events(self, session_id=None, since_event_id=None, since=None,
-                    client=None, limit=None) -> list: ...
+    def read_events(
+        self, session_id=None, since_event_id=None, since=None, client=None, limit=None
+    ) -> list: ...
 
     @abstractmethod
     def read_events_grouped(self, since_event_id=None, group_limit=5) -> list: ...
@@ -179,9 +204,19 @@ class BaseStore(ABC):
     def is_ingested_by_hash(self, file_hash: str, status_filter=None) -> bool: ...
 
     @abstractmethod
-    def log_ingestion(self, source_path, source_hash, memories_written=0,
-                      model="", focus="all", tier="working", tags=None,
-                      dry_run=False, error_count=0, status="committed") -> None: ...
+    def log_ingestion(
+        self,
+        source_path,
+        source_hash,
+        memories_written=0,
+        model="",
+        focus="all",
+        tier="working",
+        tags=None,
+        dry_run=False,
+        error_count=0,
+        status="committed",
+    ) -> None: ...
 
     @abstractmethod
     def get_ingestion_status(self, limit: int = 20) -> str: ...
@@ -195,8 +230,9 @@ class BaseStore(ABC):
     def set_message_status(self, msg_id: str, status: str) -> None: ...
 
     @abstractmethod
-    def get_pending_messages(self, hostname, types=None, from_host=None,
-                             unacked=False, include_broadcast=True) -> list: ...
+    def get_pending_messages(
+        self, hostname, types=None, from_host=None, unacked=False, include_broadcast=True
+    ) -> list: ...
 
     @abstractmethod
     def get_message_thread(self, root_id: str) -> list: ...
