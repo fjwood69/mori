@@ -15,7 +15,8 @@
 | `MORI_BIFROST_FAST_VK` | `mori-fast-local` | Bifrost virtual key name for fast calls |
 | `MORI_MCP_SERVER_NAME` | `mori` | MCP tool prefix |
 | `MORI_ADVISOR_DATA` | `/data/mori-advisor` | SQLite DB location |
-| `MORI_ADVISOR_API_KEY` | — | Event capture auth (empty = no auth) |
+| `MORI_API_KEYS` | — | Named API keys: `name:secret,name:secret,...` — see [Authentication](#authentication) |
+| `MORI_ADVISOR_API_KEY` | — | Legacy single key (backward compat — prefer `MORI_API_KEYS`) |
 | `MORI_TRUSTED_DREAMERS` | — | Comma-separated hostnames for write approval bypass |
 | `MORI_STANDARDS_DIR` | — | Path to team standards .md directory |
 | `MORI_SKILLS_DIR` | — | Path to slash command skill files (for /update) |
@@ -23,6 +24,68 @@
 | `MORI_BIFROST_TIMEOUT` | `300` | API timeout in seconds |
 | `MORI_MSG_HEADLESS_ENABLED` | `false` | Spawn headless `claude` process for incoming `task` messages |
 | `MORI_MSG_HEADLESS_TRUSTED` | `""` | Comma-separated hostnames allowed to trigger headless CC |
+
+## Authentication
+
+Mori uses named API keys — one per client. Keys are validated at the transport
+layer before any MCP tool or HTTP endpoint is reached.
+
+### Setting keys
+
+```bash
+# In your server .env
+MORI_API_KEYS=nuc15pro:ab5f...,twiggy:c3d4...,ci-runner:e5f6...
+```
+
+Each entry is `name:secret` where:
+- `name` is a human-readable label used in logs and audit trail
+- `secret` is a 32-byte hex string (64 chars)
+
+Generate a secret:
+```bash
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Or use the MCP tool (requires an existing valid key to call):
+```
+mori-key_generate name="newclient"
+```
+
+The output line goes into `MORI_API_KEYS` on the server. The secret goes into
+the client's MCP config as `X-Api-Key`.
+
+### Open mode
+
+If neither `MORI_API_KEYS` nor `MORI_ADVISOR_API_KEY` is set, the server starts
+in **open mode** — any client on the network can connect. A warning is logged at
+startup. Open mode is acceptable on a private Tailscale-only network; always set
+keys for team or internet-accessible deployments.
+
+### Open paths
+
+The following endpoints are always accessible without a key (standard probe convention):
+
+| Path | Purpose |
+|------|---------|
+| `/health` | Liveness probe |
+| `/ready` | Readiness probe |
+| `/metrics` | Prometheus scrape |
+
+### Backward compatibility
+
+If `MORI_ADVISOR_API_KEY` is set and `MORI_API_KEYS` is not, the single key is
+loaded as `{"legacy": <key>}`. Existing deployments continue working without
+config changes. Migrate to named keys when adding more than one client.
+
+### Migration from single key
+
+1. Generate a named key for each client: `mori-key_generate name="myhost"`
+2. Add all keys to server `.env`: `MORI_API_KEYS=myhost:<key>,...`
+3. Update each client's MCP config with its key
+4. Restart server
+5. Remove `MORI_ADVISOR_API_KEY` from `.env`
+
+---
 
 ## Dream interval
 

@@ -1,5 +1,40 @@
 # Changelog
 
+## v2.1.0 — Named API key authentication
+
+### New: per-client named API keys
+
+Mori now authenticates every request at the transport layer — MCP tools, event
+endpoints, and the dream trigger — using named API keys. Previously only 4 HTTP
+endpoints were protected by a single shared key; the entire MCP surface was open.
+
+**Key format:** `MORI_API_KEYS=name:secret,name:secret,...`
+
+Each client gets its own named key. The name appears in logs and audit trail.
+Secrets are 32-byte hex strings generated via `python3 -c "import secrets; print(secrets.token_hex(32))"` or the new `mori-key_generate` MCP tool.
+
+**New modules:**
+- `mori_advisor/auth.py` — key loading, `check_key()` with `hmac.compare_digest`, `generate_key()`
+- `mori_advisor/middleware.py` — Starlette `BaseHTTPMiddleware`; applied via `mcp.run(middleware=[...])`
+
+**Open paths** (always accessible, no key required): `/health`, `/ready`, `/metrics`
+
+**Open mode:** if no keys are configured, the server starts with a warning and
+accepts all connections — preserves backward compatibility for Tailscale-only
+deployments.
+
+**Backward compat:** existing `MORI_ADVISOR_API_KEY` deployments continue working
+without config changes — the single key is loaded as `{"legacy": <key>}`.
+
+**New MCP tool:** `mori-key_generate name="clientname"` — generates a secret and
+returns the line to add to `MORI_API_KEYS`.
+
+**Smoke test:** `/api/smoke` now includes an `auth` check showing configured client names.
+
+**Migration:** see [docs/reference/configuration.md — Authentication](docs/reference/configuration.md#authentication).
+
+---
+
 ## v2.0.0 — Dual-backend store (SQLite + PostgreSQL)
 
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/f4fee0826da3ab8b234f8677fa8f96f37ce07e88/docs/assets/header-blank.svg)
