@@ -30,7 +30,7 @@ show_help() {
   echo "  --client <name>       Client name for event tagging (default: hostname)"
   echo "  -f, --force           Skip health check prompt on failure"
   echo "  --doctor              Run connectivity/config checks only (no changes)"
-  echo "  --upgrade-skills      Refresh mori-* skills from repo skills/*.skill.md"
+  echo "  --upgrade-skills      Refresh mori skills from repo skills/ subdirectories"
   echo "  -h, --help            Show this help"
   echo ""
   echo "Post-install: Reload Cursor window (Developer: Reload Window)."

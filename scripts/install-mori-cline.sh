@@ -249,10 +249,12 @@ SKILLS_DIR="$CLINE_CONFIG_DIR/skills"
 SOURCE_SKILLS_DIR="$MORI_REPO_ROOT/skills"
 
 if [ -d "$SOURCE_SKILLS_DIR" ]; then
-  for file in "$SOURCE_SKILLS_DIR"/*.skill.md; do
-    [ -e "$file" ] || continue
-    filename=$(basename "$file")
-    base_skill="${filename%.skill.md}"
+  for skill_subdir in "$SOURCE_SKILLS_DIR"/*/; do
+    [ -d "$skill_subdir" ] || continue
+    skill_file="${skill_subdir}SKILL.md"
+    [ -f "$skill_file" ] || continue
+
+    base_skill=$(basename "$skill_subdir")
 
     name=""
     desc=""
@@ -268,24 +270,24 @@ if [ -d "$SOURCE_SKILLS_DIR" ]; then
       else
         content+="$line"$'\n'
       fi
-    done < "$file"
+    done < "$skill_file"
 
     [ -z "$name" ] && name="$base_skill"
     name=$(echo "$name" | xargs)
     desc=$(echo "$desc" | xargs)
 
-    local skill_folder="$SKILLS_DIR/mori-$name"
+    skill_folder="$SKILLS_DIR/$name"
     mkdir -p "$skill_folder"
 
     cat << SKILLEOF > "$skill_folder/SKILL.md"
 ---
-name: mori-$name
+name: $name
 description: "${desc//\"/\\\"}"
 ---
 
 $(echo -n "$content" | sed -e 's/[[:space:]]*$//')
 SKILLEOF
-    echo "  Deployed skill: mori-$name"
+    echo "  Deployed skill: $name"
   done
 else
   echo "  Warning: Source skills folder not found at $SOURCE_SKILLS_DIR — skipping."
