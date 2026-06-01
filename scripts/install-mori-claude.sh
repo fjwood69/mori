@@ -331,10 +331,13 @@ deploy_skills() {
     return
   fi
 
-  for file in "$source_skills_dir"/*.skill.md; do
-    [ -e "$file" ] || continue
-    filename=$(basename "$file")
-    base_skill="${filename%.skill.md}"
+  for skill_subdir in "$source_skills_dir"/*/; do
+    [ -d "$skill_subdir" ] || continue
+    local skill_file="${skill_subdir}SKILL.md"
+    [ -f "$skill_file" ] || continue
+
+    local base_skill
+    base_skill=$(basename "$skill_subdir")
 
     local name="" desc="" content=""
     while IFS= read -r line || [ -n "$line" ]; do
@@ -342,29 +345,31 @@ deploy_skills() {
         name="${BASH_REMATCH[1]}"
       elif [[ "$line" =~ ^-[[:space:]]+description:[[:space:]]*(.*)$ ]]; then
         desc="${BASH_REMATCH[1]}"
+      elif [[ -z "$name" && -z "$desc" ]] && [[ "$line" =~ ^---$ ]]; then
+        : # skip frontmatter delimiters before name/desc parsed
       elif [[ -z "$line" && -z "$name" && -z "$desc" ]]; then
         :
       else
         content+="$line"$'\n'
       fi
-    done < "$file"
+    done < "$skill_file"
 
     [ -z "$name" ] && name="$base_skill"
     name=$(echo "$name" | xargs)
     desc=$(echo "$desc" | xargs)
 
-    local skill_folder="$skills_dir/mori-$name"
+    local skill_folder="$skills_dir/$name"
     local skill_out="$skill_folder/SKILL.md"
 
     if [ -f "$skill_out" ] && [ "$UPGRADE_SKILLS" = "false" ]; then
-      echo "  Skipped existing skill: mori-$name (use --upgrade-skills to refresh)"
+      echo "  Skipped existing skill: $name (use --upgrade-skills to refresh)"
       continue
     fi
 
     mkdir -p "$skill_folder"
     cat > "$skill_out" <<SKILLEOF
 ---
-name: mori-$name
+name: $name
 description: "${desc//\"/\\\"}"
 ---
 
@@ -372,9 +377,9 @@ $(echo -n "$content" | sed -e 's/[[:space:]]*$//')
 SKILLEOF
 
     if [ -f "$skill_out" ] && [ "$UPGRADE_SKILLS" = "true" ]; then
-      echo "  Overwrote existing skill: mori-$name → $skill_folder"
+      echo "  Overwrote existing skill: $name → $skill_folder"
     else
-      echo "  Deployed skill: mori-$name → $skill_folder"
+      echo "  Deployed skill: $name → $skill_folder"
     fi
   done
 }
