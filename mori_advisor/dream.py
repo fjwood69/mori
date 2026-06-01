@@ -7,11 +7,13 @@ entirely inside the container — no host filesystem access needed.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
 import sqlite3
 import subprocess
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -21,6 +23,24 @@ from mori_advisor.session_log import SessionLog
 from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
 
 logger = logging.getLogger(__name__)
+
+
+async def _a(val):
+    """Await val if it's a coroutine (Postgres), pass through if sync (SQLite)."""
+    return await val if inspect.isawaitable(val) else val
+
+
+@asynccontextmanager
+async def _begin_txn(store):
+    """Async-safe transaction wrapper for both SQLiteStore (sync) and PostgresStore (async)."""
+    ctx = store.begin_transaction()
+    if hasattr(ctx, "__aenter__"):
+        async with ctx as conn:
+            yield conn
+    else:
+        with ctx as conn:
+            yield conn
+
 
 DREAM_SYSTEM_PROMPT = """You are the Dreamer. Distill session noise into durable memory for the team. If you suspect a pattern but can't confirm it, record it as LOW confidence rather than silently dropping it.
 
@@ -107,7 +127,7 @@ class DreamPipeline:
         ]
         return "\n".join(lines)
 
-    def run(self, dry_run: bool = False) -> list[dict]:
+    async def run(self, dry_run: bool = False) -> list[dict]:
         """Execute the full dream pipeline.
 
         Args:
@@ -117,8 +137,8 @@ class DreamPipeline:
         Returns:
             List of memory dicts that were (or would be) written.
         """
-        last_id = self._get_watermark()
-        events = self.session_log.read_events(since_event_id=last_id, limit=500)
+        last_id = await self._get_watermark()
+        events = await _a(self.session_log.read_events(since_event_id=last_id, limit=500))
         if not events:
             logger.info("No new events since id %s. Nothing to do.", last_id)
             return []
@@ -151,7 +171,7 @@ class DreamPipeline:
         # Begin DEFERRED transaction — if we crash between writing memories
         # and advancing the watermark, the transaction rolls back and the
         # next run re-processes events cleanly (no duplicates).
-        with self.store.begin_transaction() as txn_conn:
+        async with _begin_txn(self.store) as txn_conn:
             written = 0
             errors = 0
             for mem in memories:
@@ -170,7 +190,7 @@ class DreamPipeline:
 
                 name = self._path_to_name(path)
                 try:
-                    self._write_memory(
+                    await self._write_memory(
                         mem,
                         name,
                         action,
@@ -186,9 +206,11 @@ class DreamPipeline:
                     errors += 1
 
             max_id = max(e["id"] for e in events)
-            self._set_watermark(max_id, _conn=txn_conn)
+            await self._set_watermark(max_id, _conn=txn_conn)
 
-            pruned = self.store.prune_events(max(0, max_id - self.retention_buffer), _conn=txn_conn)
+            pruned = await _a(
+                self.store.prune_events(max(0, max_id - self.retention_buffer), _conn=txn_conn)
+            )
             logger.info(
                 "Pruned %s events older than id %s", pruned, max(0, max_id - self.retention_buffer)
             )
@@ -218,14 +240,16 @@ class DreamPipeline:
 
     # ── Internal helpers ─────────────────────────────────────────────────
 
-    def _get_watermark(self) -> int:
-        val = self.store.get_dream_state("last_dreamed_event_id", "0")
+    async def _get_watermark(self) -> int:
+        val = await _a(self.store.get_dream_state("last_dreamed_event_id", "0"))
         return int(val) if val else 0
 
-    def _set_watermark(self, event_id: int, _conn=None) -> None:
-        self.store.set_dream_state("last_dreamed_event_id", str(event_id), _conn=_conn)
-        self.store.set_dream_state(
-            "last_dreamed_at", datetime.now(timezone.utc).isoformat(), _conn=_conn
+    async def _set_watermark(self, event_id: int, _conn=None) -> None:
+        await _a(self.store.set_dream_state("last_dreamed_event_id", str(event_id), _conn=_conn))
+        await _a(
+            self.store.set_dream_state(
+                "last_dreamed_at", datetime.now(timezone.utc).isoformat(), _conn=_conn
+            )
         )
 
     def _format_events(self, events: list[dict]) -> str:
@@ -339,7 +363,7 @@ class DreamPipeline:
                     return name
         return None
 
-    def _write_memory(
+    async def _write_memory(
         self,
         mem: dict,
         name: str,
@@ -355,18 +379,20 @@ class DreamPipeline:
         if project:
             tags.append(f"project:{project}")
 
-        self.store.write(
-            name=name,
-            title=path.replace(".md", "").replace("/", " — "),
-            description=mem.get("reason", ""),
-            type=self._infer_type(path),
-            tier="working",
-            body=body,
-            tags=tags,
-            origin_session_ids=batch_session_ids,
-            origin_clients=batch_clients,
-            _skip_protection=True,
-            _conn=_conn,
+        await _a(
+            self.store.write(
+                name=name,
+                title=path.replace(".md", "").replace("/", " — "),
+                description=mem.get("reason", ""),
+                type=self._infer_type(path),
+                tier="working",
+                body=body,
+                tags=tags,
+                origin_session_ids=batch_session_ids,
+                origin_clients=batch_clients,
+                _skip_protection=True,
+                _conn=_conn,
+            )
         )
         return f"{action} {name}"
 
