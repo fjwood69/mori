@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
+from mori_advisor.auth import configured_clients, generate_key, init_auth
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.dream import DreamPipeline
 from mori_advisor.ingestion import IngestionPipeline
@@ -50,9 +51,6 @@ TRUSTED_DREAMERS = (
     if os.environ.get("MORI_TRUSTED_DREAMERS")
     else []
 )
-
-# Event capture auth
-EVENTS_API_KEY = os.environ.get("MORI_ADVISOR_API_KEY", "")
 
 # Standards directory
 STANDARDS_DIR = os.environ.get("MORI_STANDARDS_DIR", "")
@@ -607,9 +605,19 @@ async def standards_reload() -> str:
     Only trusted dreamers can call this. After reload, call
     memory_list with type_filter=standard to see what's available.
     """
-    if TRUSTED_DREAMERS and "trusted" not in str(TRUSTED_DREAMERS).lower():
-        logger.info("Standards reload requested — trusted dreamer check bypassed in dev mode")
     return import_standards()
+
+
+@mcp.tool()
+async def key_generate(name: str) -> str:
+    """Generate a new API key secret for a named client.
+
+    The output line should be added to MORI_API_KEYS in the server's .env,
+    and the secret stored on the client side (e.g. in ~/.claude/.secrets).
+    The server must be restarted to pick up new keys.
+    """
+    secret = generate_key()
+    return f"Add to server MORI_API_KEYS: {name}:{secret}"
 
 
 # ── Pensieve tool ─────────────────────────────────────────────────────────
@@ -1717,12 +1725,6 @@ class EventLogEntry(BaseModel):
     stop_reason: str | None = None
 
 
-def _check_auth(request: Request) -> bool:
-    if not EVENTS_API_KEY:
-        return True
-    return request.headers.get("X-Api-Key", "") == EVENTS_API_KEY
-
-
 def _get_client_from_request(request: Request) -> str:
     return request.query_params.get("client", "")
 
@@ -1756,9 +1758,6 @@ def _map_hook_payload(raw: dict, client_override: str = "") -> EventLogEntry:
 @mcp.custom_route("/api/events", methods=["POST"])
 async def log_event(request: Request) -> JSONResponse:
     """Receive a lifecycle event from a hook and persist it."""
-    if not _check_auth(request):
-        return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
-
     try:
         raw = await request.body()
         body = json.loads(raw.decode("utf-8", errors="replace"))
@@ -1830,9 +1829,6 @@ async def _nats_publish_git_push(payload: dict) -> None:
 @mcp.custom_route("/api/events/raw", methods=["POST"])
 async def log_event_raw(request: Request) -> JSONResponse:
     """Accept raw CC hook stdin JSON and map to structured event."""
-    if not _check_auth(request):
-        return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
-
     try:
         raw = await request.body()
         body = json.loads(raw.decode("utf-8", errors="replace"))
@@ -1884,9 +1880,6 @@ async def events_health(request: Request) -> JSONResponse:
 @mcp.custom_route("/api/smoke", methods=["GET"])
 async def smoke_test(request: Request) -> JSONResponse:
     """End-to-end smoke test — verifies DB, event pipeline, dream watermark, NATS, ingestion."""
-    if not _check_auth(request):
-        return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
-
     import urllib.request as _urllib
 
     checks: dict = {}
@@ -1992,6 +1985,14 @@ async def smoke_test(request: Request) -> JSONResponse:
         checks["msg_daemon"] = {"status": "failed", "error": str(e)}
         degraded = True
 
+    # 9. auth — configuration status
+    clients = configured_clients()
+    checks["auth"] = (
+        {"status": "ok", "clients": clients}
+        if clients
+        else {"status": "warn", "detail": "No API keys configured — server is open"}
+    )
+
     overall = "failed" if critical_failed else ("degraded" if degraded else "ok")
     return JSONResponse(
         {"status": overall, "checks": checks},
@@ -2000,7 +2001,7 @@ async def smoke_test(request: Request) -> JSONResponse:
 
 
 @mcp.custom_route("/api/precompact", methods=["POST"])
-async def precompact(request: Request) -> JSONResponse:
+async def precompact(request: Request) -> JSONResponse:  # noqa: C901
     """PreCompact hook: log the event and immediately run dream pipeline synchronously.
 
     This endpoint is designed for the PreCompact lifecycle hook which fires before
@@ -2010,9 +2011,6 @@ async def precompact(request: Request) -> JSONResponse:
     The dream pipeline runs synchronously — SQLite connections are thread-bound.
     PreCompact fires once per long session so blocking briefly is acceptable.
     """
-    if not _check_auth(request):
-        return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
-
     try:
         body = await request.json()
         if not body:
@@ -2172,4 +2170,15 @@ if __name__ == "__main__":
         logger.info("Standards directory: %s", STANDARDS_DIR)
         result = import_standards()
         logger.info(result)
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=8968, log_level="info")
+    init_auth()
+    from starlette.middleware import Middleware
+
+    from mori_advisor.middleware import ApiKeyMiddleware
+
+    mcp.run(
+        transport="streamable-http",
+        host="0.0.0.0",
+        port=8968,
+        log_level="info",
+        middleware=[Middleware(ApiKeyMiddleware)],
+    )
