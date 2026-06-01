@@ -16,17 +16,16 @@ from mori_advisor.auth import check_key
 
 logger = logging.getLogger(__name__)
 
-OPEN_PATHS = {
-    "/health",
-    "/ready",
-    "/metrics",
-    "/",
-    # OAuth 2.1 discovery endpoints — CC MCP HTTP client probes these before connecting
-    "/register",
-    "/.well-known/oauth-protected-resource",
+OPEN_PATHS = {"/health", "/ready", "/metrics", "/", "/mcp"}
+
+# Return 404 for OAuth discovery so CC stops treating mori as an OAuth server
+# and falls back to using the X-Api-Key header directly
+OAUTH_PATHS = {
     "/.well-known/oauth-authorization-server",
     "/.well-known/openid-configuration",
+    "/.well-known/oauth-protected-resource",
     "/.well-known/oauth-protected-resource/mcp",
+    "/register",
 }
 
 
@@ -34,6 +33,12 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path in OPEN_PATHS:
             return await call_next(request)
+
+        if request.url.path in OAUTH_PATHS:
+            return JSONResponse(
+                {"error": "Not an OAuth server — use X-Api-Key header"},
+                status_code=404,
+            )
 
         provided = request.headers.get("x-api-key")
         client_name = check_key(provided)
