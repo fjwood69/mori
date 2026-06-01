@@ -1,5 +1,49 @@
 # Changelog
 
+## v2.0.0 — Dual-backend store (SQLite + PostgreSQL)
+
+![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/f4fee0826da3ab8b234f8677fa8f96f37ce07e88/docs/assets/header-blank.svg)
+
+### New: pluggable persistence layer — SQLite (solo) or PostgreSQL (team)
+
+Mori now supports PostgreSQL as a drop-in replacement for SQLite, selected at
+runtime via `MORI_DATABASE_URL`. SQLite remains the default — zero breaking
+change for existing deployments.
+
+**Why this matters:** solo deployments stay on SQLite (no deps, no ops). Team
+deployments with concurrent dream runs, PITR backups, or multi-pod write
+contention activate PostgreSQL by setting one environment variable.
+
+**New modules:**
+- `mori_advisor/store/` — `BaseStore` ABC, `SQLiteStore` (delegation wrapper over
+  existing `MemoryStore` / `SessionLog` / `MsgStore`), `PostgresStore` (asyncpg pool)
+- `mori_advisor/store/__init__.py` — `get_store()` factory, selects backend from env
+- `mori_advisor/cli/export.py` — dump SQLite to JSONL (dependency-safe order, WAL flush)
+- `mori_advisor/cli/import_.py` — load JSONL into either backend (idempotent, type-coerced)
+
+**All callers updated:** `main.py`, `dream.py`, `ingestion.py`, `ingestion_server.py`,
+`utils.py` — store layer injected via `store=` kwarg, `db_path=` fallbacks preserved.
+
+**PostgreSQL notes:**
+- asyncpg pool, `statement_cache_size=0` (pgBouncer session mode compatible)
+- JSONB for tag arrays, TIMESTAMPTZ for all timestamps
+- Serialization errors (SQLSTATE 40001) retried up to 3× with exponential backoff
+- `asyncpg` is optional — not required for SQLite deployments
+
+**Deploy directory restructured:**
+- `deploy/solo/` — SQLite posture (Docker Compose, replaces `deploy/homelab/` for Docker users)
+- `deploy/team/` — PostgreSQL + pgBouncer (Docker Compose, WAL-G documented)
+- `deploy/homelab/` — retained for backward compatibility (raw Podman + systemd units)
+
+**Migration:** export from SQLite, import to Postgres, verify counts match, flip
+`MORI_DATABASE_URL`. Rollback: remove the variable, restart — SQLite file untouched.
+See [docs/reference/team-configuration.md](docs/reference/team-configuration.md).
+
+**UAT results:** 68/68 memories, 5006/5006 session events verified across both
+backends on NUC before tagging.
+
+---
+
 ## v1.1.0 — Inter-agent messaging (mori-msg)
 
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/f4fee0826da3ab8b234f8677fa8f96f37ce07e88/docs/assets/header-blank.svg)

@@ -1,0 +1,101 @@
+# Mori — Solo deployment (SQLite backend)
+#
+# Use this for single-user or single-pod deployments.
+# SQLite is the default — no MORI_DATABASE_URL needed.
+# For multi-pod or Postgres, see deploy/team/docker-compose.yml.
+#
+# Quickstart:
+#   1. cp .env.example .env  — fill in MORI_BIFROST_BASE_URL + API key
+#   2. docker compose up -d
+#   3. curl http://localhost:8968/health
+#
+# Backups (Litestream → GCS):
+#   Set LITESTREAM_GCS_BUCKET in .env. If unset the sidecar idles silently.
+
+services:
+  mori-advisor:
+    image: ghcr.io/fjwood69/mori:latest
+    container_name: mori-advisor
+    restart: unless-stopped
+    ports:
+      - "8968:8968"
+    volumes:
+      - mori-data:/data/mori-advisor
+    env_file:
+      - path: .env
+        required: false
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8968/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  mori-ingestion:
+    image: ghcr.io/fjwood69/mori:latest
+    container_name: mori-ingestion
+    restart: unless-stopped
+    ports:
+      - "8969:8969"
+    volumes:
+      - mori-data:/data/mori-advisor
+    env_file:
+      - path: .env
+        required: false
+    command: ["python", "-m", "mori_advisor.ingestion_server"]
+    depends_on:
+      mori-advisor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8969/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  dream-cron:
+    image: alpine:latest
+    container_name: mori-dream-cron
+    restart: unless-stopped
+    depends_on:
+      mori-advisor:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl
+        INTERVAL=$${MORI_DREAM_INTERVAL:-60}
+        while true; do
+          sleep $$(( INTERVAL * 60 ))
+          curl -sf -X POST http://mori-advisor:8968/api/dream/run && \
+            echo "dream completed" || echo "dream skipped (no new events)"
+        done
+
+  # Litestream — continuous SQLite replication to GCS (or S3/Azure/SFTP).
+  # Optional: set LITESTREAM_GCS_BUCKET to activate. If unset, idles silently.
+  litestream:
+    image: litestream/litestream:latest
+    container_name: mori-litestream
+    restart: unless-stopped
+    volumes:
+      - mori-data:/data/mori-advisor
+      - ./litestream.yml:/etc/litestream.yml:ro
+    env_file:
+      - path: .env
+        required: false
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      if [ -z "$$LITESTREAM_GCS_BUCKET" ]; then
+        echo "LITESTREAM_GCS_BUCKET not set — backup sidecar idling"
+        exec sleep infinity
+      fi
+      exec litestream replicate -config /etc/litestream.yml
+    depends_on:
+      mori-advisor:
+        condition: service_healthy
+
+volumes:
+  mori-data:
