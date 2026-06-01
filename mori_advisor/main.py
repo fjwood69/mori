@@ -1886,35 +1886,48 @@ async def smoke_test(request: Request) -> JSONResponse:
     critical_failed = False
     degraded = False
 
+    async def _a(val):
+        """Await val if it's a coroutine (Postgres store), else return as-is (SQLite store)."""
+        import inspect
+
+        return await val if inspect.isawaitable(val) else val
+
     # 1. db_read — store readable
     try:
-        store.ping()
-        mem_count = store.count()
+        await _a(store.ping())
+        mem_count = await _a(store.count())
         checks["db_read"] = {"status": "ok", "memory_count": mem_count}
     except Exception as e:
         checks["db_read"] = {"status": "failed", "error": str(e)}
         critical_failed = True
 
-    # 2. db_write — integrity check + write-lock test (SQLite only)
-    try:
-        import sqlite3 as _sql
+    # 2. db_write — integrity check + write-lock test (SQLite only; skipped for Postgres)
+    _db_path = DATA_DIR / "memories.db"
+    if _db_path.exists():
+        try:
+            import sqlite3 as _sql
 
-        _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=5)
-        _c.execute("PRAGMA journal_mode=WAL")
-        integrity = _c.execute("PRAGMA integrity_check").fetchone()[0]
-        if integrity != "ok":
-            raise RuntimeError(f"integrity_check returned: {integrity}")
-        _c.execute("BEGIN IMMEDIATE")
-        _c.execute("ROLLBACK")
-        _c.close()
-        checks["db_write"] = {"status": "ok"}
-    except Exception as e:
-        checks["db_write"] = {"status": "failed", "error": str(e)}
-        critical_failed = True
+            _c = _sql.connect(str(_db_path), timeout=5)
+            _c.execute("PRAGMA journal_mode=WAL")
+            integrity = _c.execute("PRAGMA integrity_check").fetchone()[0]
+            if integrity != "ok":
+                raise RuntimeError(f"integrity_check returned: {integrity}")
+            _c.execute("BEGIN IMMEDIATE")
+            _c.execute("ROLLBACK")
+            _c.close()
+            checks["db_write"] = {"status": "ok"}
+        except Exception as e:
+            checks["db_write"] = {"status": "failed", "error": str(e)}
+            critical_failed = True
+    else:
+        checks["db_write"] = {
+            "status": "skipped",
+            "detail": "Postgres backend — SQLite integrity check not applicable",
+        }
 
     # 3. event_log — session log accessible
     try:
-        total = session_log.count_events()
+        total = await _a(session_log.count_events())
         checks["event_log"] = {"status": "ok", "total_events": total}
     except Exception as e:
         checks["event_log"] = {"status": "failed", "error": str(e)}
@@ -1922,13 +1935,15 @@ async def smoke_test(request: Request) -> JSONResponse:
 
     # 4. event_roundtrip — direct internal append, verify count increments
     try:
-        before = session_log.count_events()
-        session_log.append_event(
-            session_id="smoke-test-probe",
-            event_name="SmokeTest",
-            client="smoke",
+        before = await _a(session_log.count_events())
+        await _a(
+            session_log.append_event(
+                session_id="smoke-test-probe",
+                event_name="SmokeTest",
+                client="smoke",
+            )
         )
-        after = session_log.count_events()
+        after = await _a(session_log.count_events())
         if after != before + 1:
             raise RuntimeError(f"count did not increment: {before} → {after}")
         checks["event_roundtrip"] = {"status": "ok", "before": before, "after": after}
@@ -1938,18 +1953,13 @@ async def smoke_test(request: Request) -> JSONResponse:
 
     # 5. dream_watermark — pipeline state accessible
     try:
-        _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=5)
-        _c.execute("PRAGMA journal_mode=WAL")
-        wm_row = _c.execute(
-            "SELECT value FROM dream_state WHERE key = 'last_dreamed_event_id'"
-        ).fetchone()
-        watermark = int(wm_row[0]) if wm_row else 0
-        max_id = _c.execute("SELECT MAX(id) FROM session_events").fetchone()[0] or 0
-        _c.close()
+        wm_val = await _a(store.get_dream_state("last_dreamed_event_id", default="0"))
+        watermark = int(wm_val) if wm_val else 0
+        total_events = await _a(session_log.count_events())
         checks["dream_watermark"] = {
             "status": "ok",
             "watermark": watermark,
-            "undreamed": max_id - watermark,
+            "undreamed": max(0, total_events - watermark),
         }
     except Exception as e:
         checks["dream_watermark"] = {"status": "failed", "error": str(e)}
