@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.1.6 — Fix Postgres dream transaction poisoning
+
+Fix: PostgresStore.write() uses SELECT-then-INSERT, which causes
+`UniqueViolationError` when the dream model produces duplicate memory names.
+One error poisons the entire transaction, losing all 12+ memories and the
+watermark update.
+
+Replaced with `INSERT ... ON CONFLICT (name) DO UPDATE` — matching SQLite's
+atomic upsert. Also adds origin array merging, canonical tier preservation,
+and protection flag preservation on update.
+
 ## v2.1.0 — Named API key authentication + PostCompact re-grounding
 
 ### New: PostCompact re-grounding hook
