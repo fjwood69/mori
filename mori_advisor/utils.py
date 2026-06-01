@@ -75,8 +75,9 @@ UNRELATED = they cover completely different topics."""
 
 def run_contradiction_scan(
     new_memories: list[dict],
-    db_path: str | Path,
-    consult_fn,
+    db_path: str | Path | None = None,
+    consult_fn=None,
+    store=None,
 ) -> int:
     """Check new memories against existing canonical ones for contradictions.
 
@@ -89,21 +90,36 @@ def run_contradiction_scan(
 
     Args:
         new_memories: List of memory dicts (must have 'name', 'title', 'body').
-        db_path: Path to the SQLite database.
+        db_path: Path to the SQLite database (legacy; use store= instead).
         consult_fn: Callable with signature (system, user, vk, max_tokens, temperature)
                     that returns the model's text response.
+        store: BaseStore instance (SQLiteStore only; PostgresStore deferred).
 
     Returns:
         Count of supersessions detected.
     """
+    if store is not None:
+        try:
+            write_conn = store.get_conn()
+        except NotImplementedError:
+            write_conn = None
+    else:
+        write_conn = None
+
+    own_conn = write_conn is None
     superseded_count = 0
-    write_conn = None
 
     try:
-        write_conn = sqlite3.connect(str(db_path), timeout=30)
-        write_conn.execute("PRAGMA journal_mode=WAL")
-        write_conn.execute("PRAGMA synchronous=NORMAL")
-        write_conn.execute("PRAGMA busy_timeout=30000")
+        if own_conn:
+            if db_path is None:
+                import os
+                from pathlib import Path as _Path
+                data_dir = os.environ.get("MORI_ADVISOR_DATA", "/data/mori-advisor")
+                db_path = _Path(data_dir) / "memories.db"
+            write_conn = sqlite3.connect(str(db_path), timeout=30)
+            write_conn.execute("PRAGMA journal_mode=WAL")
+            write_conn.execute("PRAGMA synchronous=NORMAL")
+            write_conn.execute("PRAGMA busy_timeout=30000")
 
         for mem in new_memories:
             name = mem.get("name") or mem.get("path", "")
@@ -167,7 +183,7 @@ def run_contradiction_scan(
                 except Exception as e:
                     logger.debug("Contradiction check failed %s vs %s: %s", name, cand_name, e)
     finally:
-        if write_conn:
+        if own_conn and write_conn:
             write_conn.close()
 
     return superseded_count

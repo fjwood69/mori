@@ -18,3 +18,7 @@ prometheus-client>=0.21.0
 pypdf>=3.0.0
 pillow>=10.0.0
 # gitpython>=3.1.0        # Git history ingestion (optional — uses subprocess otherwise)
+
+# ── Optional: PostgreSQL backend ───────────────────────────────────────
+# Required only when MORI_DATABASE_URL=postgresql://... is set.
+# asyncpg>=0.29.0

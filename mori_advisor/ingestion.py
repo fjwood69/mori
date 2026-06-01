@@ -129,12 +129,17 @@ class IngestionPipeline:
         memory_store: MemoryStore,
         max_cost: float = 5.00,
         model_override: str | None = None,
+        store=None,
     ):
         self.db_path = Path(db_path)
         self.client = bifrost_client
         self.memory_store = memory_store
         self.max_cost = max_cost
         self.model_override = model_override
+        if store is None:
+            from mori_advisor.store.sqlite_store import SQLiteStore
+            store = SQLiteStore(self.db_path)
+        self._store = store
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -621,32 +626,11 @@ class IngestionPipeline:
     # ── Dedup ──────────────────────────────────────────────────────────────
 
     def _is_ingested_by_hash(self, file_hash: str, status_filter: str | None = None) -> bool:
-        """Check whether a source hash has already been ingested.
-
-        Args:
-            file_hash: SHA256 hash to check.
-            status_filter: If "committed", only checks committed entries
-                          (preview/dry-run/failed don't block re-ingestion).
-        """
-        conn = self.memory_store._get_conn()
+        """Check whether a source hash has already been ingested."""
         try:
-            if status_filter == "committed":
-                cur = conn.execute(
-                    "SELECT COUNT(*) FROM ingestion_log "
-                    "WHERE source_hash = ? AND dry_run = 0 AND "
-                    "(status IS NULL OR status = 'committed')",
-                    (file_hash,),
-                )
-            else:
-                cur = conn.execute(
-                    "SELECT COUNT(*) FROM ingestion_log WHERE source_hash = ? AND dry_run = 0",
-                    (file_hash,),
-                )
-            return cur.fetchone()[0] > 0
-        except sqlite3.Error:
+            return self._store.is_ingested_by_hash(file_hash, status_filter=status_filter)
+        except Exception:
             return False
-        finally:
-            conn.close()
 
     def _hash_bytes(self, data: bytes) -> str:
         """Compute SHA256 hash of raw bytes."""
@@ -842,30 +826,20 @@ class IngestionPipeline:
         status: str = "committed",
     ) -> None:
         """Record ingestion — shared by filesystem and content modes."""
-        tags_json = json.dumps(tags or [])
-        conn = self.memory_store._get_conn()
         try:
-            conn.execute(
-                "INSERT INTO ingestion_log "
-                "(source_path, source_hash, memories_written, model, focus, tier, tags, dry_run, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    source_path,
-                    source_hash,
-                    memories_written,
-                    "kimi-k2.6",
-                    focus,
-                    tier,
-                    tags_json,
-                    1 if dry_run else 0,
-                    status,
-                ),
+            self._store.log_ingestion(
+                source_path=source_path,
+                source_hash=source_hash,
+                memories_written=memories_written,
+                model="kimi-k2.6",
+                focus=focus,
+                tier=tier,
+                tags=tags,
+                dry_run=dry_run,
+                status=status,
             )
-            conn.commit()
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.warning("Failed to record ingestion: %s", e)
-        finally:
-            conn.close()
 
     # ── Contradiction scan ─────────────────────────────────────────────────
 
@@ -889,40 +863,12 @@ class IngestionPipeline:
 
     @staticmethod
     def get_status(db_path: Path, limit: int = 20) -> str:
-        """Query ingestion_log and return a formatted status table."""
-        import sqlite3 as _sqlite3
+        """Query ingestion_log and return a formatted status table.
 
-        conn = _sqlite3.connect(str(db_path), timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            cur = conn.execute(
-                "SELECT source_path, ingested_at, memories_written, model, focus, "
-                "tier, dry_run, error_count, status "
-                "FROM ingestion_log "
-                "ORDER BY ingested_at DESC LIMIT ?",
-                (min(limit, 100),),
-            )
-            rows = cur.fetchall()
-        except _sqlite3.Error as e:
-            return f"Ingestion log query failed: {e}"
-        finally:
-            conn.close()
-
-        if not rows:
-            return "No ingestion runs recorded."
-
-        lines = [
-            "| Source | Date | Memories | Model | Focus | Tier | Status |\n"
-            "|---|---|---|---|---|---|---|"
-        ]
-        for source_path, dt, count, model, focus, tier, dry_run, errors, status in rows:
-            status_str = status or ("dry-run" if dry_run else ("errors" if errors else "committed"))
-            src_short = Path(source_path).name[:40]
-            lines.append(
-                f"| {src_short} | {dt[:16]} | {count} | {model} | {focus} | {tier} | {status_str} |"
-            )
-
-        return "\n".join(lines)
+        DEPRECATED: use store.get_ingestion_status(limit) directly.
+        """
+        from mori_advisor.store.sqlite_store import SQLiteStore
+        return SQLiteStore(db_path).get_ingestion_status(limit=min(limit, 100))
 
     @staticmethod
     def preview(

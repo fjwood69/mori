@@ -52,33 +52,22 @@ class DreamPipeline:
         trusted_dreamers: list[str] | None = None,
         retention_buffer: int = 5000,
         nats_url: str | None = None,
+        store=None,
     ):
         self.db_path = Path(db_path)
         self.client = bifrost_client
-        self.session_log = SessionLog(db_path)
-        self.memory_store = MemoryStore(db_path)
         self.trusted_dreamers = trusted_dreamers or []
         self.retention_buffer = retention_buffer
         self.nats_url = nats_url
 
-    # ── Transaction support ──────────────────────────────────────────────
+        if store is None:
+            from mori_advisor.store.sqlite_store import SQLiteStore
+            store = SQLiteStore(db_path)
+        self.store = store
 
-    def _begin_transaction(self) -> sqlite3.Connection:
-        """Open a dedicated connection and begin a transaction.
-
-        Uses BEGIN DEFERRED so DDL-free operations (reads + writes
-        against already-initialised schema) don't contend with other
-        connections. Schema bootstrapping runs separately at startup.
-        Returns the connection, which the caller must commit/rollback.
-        """
-        import sqlite3 as _sqlite3
-
-        conn = _sqlite3.connect(str(self.db_path), timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("BEGIN DEFERRED")
-        return conn
+        # Keep legacy aliases for any callers that reference them directly
+        self.session_log = store._log if hasattr(store, "_log") else SessionLog(db_path)
+        self.memory_store = store._mem if hasattr(store, "_mem") else MemoryStore(db_path)
 
     # ── Public API ───────────────────────────────────────────────────────
 
@@ -158,11 +147,10 @@ class DreamPipeline:
         batch_clients = list(dict.fromkeys(e.get("client") for e in events if e.get("client")))
         batch_project = self._extract_project_from_events(events)
 
-        # Begin IMMEDIATE transaction — if we crash between writing memories
+        # Begin DEFERRED transaction — if we crash between writing memories
         # and advancing the watermark, the transaction rolls back and the
         # next run re-processes events cleanly (no duplicates).
-        txn_conn = self._begin_transaction()
-        try:
+        with self.store.begin_transaction() as txn_conn:
             written = 0
             errors = 0
             for mem in memories:
@@ -199,19 +187,12 @@ class DreamPipeline:
             max_id = max(e["id"] for e in events)
             self._set_watermark(max_id, _conn=txn_conn)
 
-            pruned = self.session_log.prune_events(
+            pruned = self.store.prune_events(
                 max(0, max_id - self.retention_buffer), _conn=txn_conn
             )
             logger.info(
                 "Pruned %s events older than id %s", pruned, max(0, max_id - self.retention_buffer)
             )
-
-            txn_conn.commit()
-        except Exception:
-            txn_conn.rollback()
-            raise
-        finally:
-            txn_conn.close()
 
         # Contradiction scan runs AFTER the transaction commits.
         # It calls the LLM (potentially slow) and must not hold the DB lock.
@@ -239,12 +220,12 @@ class DreamPipeline:
     # ── Internal helpers ─────────────────────────────────────────────────
 
     def _get_watermark(self) -> int:
-        val = self.session_log.get_dream_state("last_dreamed_event_id", "0")
+        val = self.store.get_dream_state("last_dreamed_event_id", "0")
         return int(val) if val else 0
 
-    def _set_watermark(self, event_id: int, _conn: sqlite3.Connection | None = None) -> None:
-        self.session_log.set_dream_state("last_dreamed_event_id", str(event_id), _conn=_conn)
-        self.session_log.set_dream_state(
+    def _set_watermark(self, event_id: int, _conn=None) -> None:
+        self.store.set_dream_state("last_dreamed_event_id", str(event_id), _conn=_conn)
+        self.store.set_dream_state(
             "last_dreamed_at", datetime.now(timezone.utc).isoformat(), _conn=_conn
         )
 
@@ -375,7 +356,7 @@ class DreamPipeline:
         if project:
             tags.append(f"project:{project}")
 
-        self.memory_store.write(
+        self.store.write(
             name=name,
             title=path.replace(".md", "").replace("/", " — "),
             description=mem.get("reason", ""),
@@ -450,4 +431,5 @@ class DreamPipeline:
             new_memories=new_memories,
             db_path=self.db_path,
             consult_fn=consult_fn,
+            store=self.store,
         )

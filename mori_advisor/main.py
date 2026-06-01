@@ -159,28 +159,31 @@ MAX_TOTAL_FILE_SIZE = 200 * 1024  # 200KB total
 # ── Global state ─────────────────────────────────────────────────────────
 
 # Bootstrap schema before any connections are created
-MemoryStore.bootstrap_schema(db_path=DATA_DIR / "memories.db")
-SessionLog.bootstrap_schema(db_path=DATA_DIR / "memories.db")
+from mori_advisor.store import get_store as _get_store
+store = _get_store(DATA_DIR / "memories.db")
+store.bootstrap()
 
 # Initialise OpenTelemetry metrics
 init_metrics()
 
 mcp = FastMCP(MCP_SERVER_NAME)
 bifrost = BifrostClient(base_url=BIFROST_BASE_URL, timeout=BIFROST_TIMEOUT)
-session_log = SessionLog(db_path=DATA_DIR / "memories.db")
-memory_store = MemoryStore(db_path=DATA_DIR / "memories.db")
+session_log = store._log if hasattr(store, "_log") else SessionLog(db_path=DATA_DIR / "memories.db")
+memory_store = store._mem if hasattr(store, "_mem") else MemoryStore(db_path=DATA_DIR / "memories.db")
 
 dream_pipeline = DreamPipeline(
     db_path=DATA_DIR / "memories.db",
     bifrost_client=bifrost,
     trusted_dreamers=TRUSTED_DREAMERS,
     nats_url=NATS_URL,
+    store=store,
 )
 
 ingestion_pipeline = IngestionPipeline(
     db_path=DATA_DIR / "memories.db",
     bifrost_client=bifrost,
     memory_store=memory_store,
+    store=store,
 )
 
 
@@ -421,13 +424,7 @@ async def brief(
 
     # Eviction queue warning
     try:
-        import sqlite3 as _sql
-
-        _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=10)
-        _c.execute("PRAGMA journal_mode=WAL")
-        cur = _c.execute("SELECT COUNT(*) FROM eviction_queue WHERE resolved = 0")
-        unresolved = cur.fetchone()[0]
-        _c.close()
+        unresolved = store.eviction_count()
         if unresolved > 0:
             parts.append(
                 f"**⚠ Eviction queue:** {unresolved} unresolved item(s) — "
@@ -463,31 +460,16 @@ async def brief(
 
     # Goals summary — show unresolved requirements per project
     try:
-        import sqlite3 as _sql
-
-        _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=10)
-        _c.execute("PRAGMA journal_mode=WAL")
-        cur = _c.execute(
-            """
-            SELECT name, title, tags FROM memories
-            WHERE type = 'requirement'
-              AND tags NOT LIKE '%"status-done"%'
-            ORDER BY name ASC
-            LIMIT 20
-            """
-        )
-        rows = cur.fetchall()
-        _c.close()
-        if rows:
+        goal_rows = store.get_unresolved_goals()
+        if goal_rows:
             projects: dict[str, list[str]] = {}
-            for name, title, tags_raw in rows:
-                tags = memory_store._parse_tags(tags_raw)
+            for row in goal_rows:
                 proj = "general"
-                for t in tags:
+                for t in row.get("tags", []):
                     if t.startswith("project-"):
-                        proj = t[len("project-") :]
+                        proj = t[len("project-"):]
                         break
-                projects.setdefault(proj, []).append(f"{name}: {title}")
+                projects.setdefault(proj, []).append(f"{row['name']}: {row['title']}")
             parts.append("\n**Unresolved goals:**")
             for proj, items in sorted(projects.items()):
                 parts.append(f"  {proj}: {len(items)} unresolved")
@@ -1074,8 +1056,8 @@ async def msg_recv(
         from .msg_store import MsgStore
 
         hostname = socket.gethostname()
-        store = MsgStore(db_path=DATA_DIR / "msg.db")
-        rows = store.get_pending(
+        _msg_store = MsgStore(db_path=DATA_DIR / "msg.db")
+        rows = _msg_store.get_pending(
             hostname=hostname,
             types=types,
             from_host=from_agent or None,
@@ -1111,8 +1093,8 @@ async def msg_thread(id: str) -> str:
     try:
         from .msg_store import MsgStore
 
-        store = MsgStore(db_path=DATA_DIR / "msg.db")
-        thread = store.get_thread(id)
+        _msg_store = MsgStore(db_path=DATA_DIR / "msg.db")
+        thread = _msg_store.get_thread(id)
         if not thread:
             return f"No message found with id={id}"
 
@@ -1388,6 +1370,7 @@ async def memory_req(
         tag: Arbitrary tag filter (overrides project/status if provided).
         limit: Max results (default 50).
     """
+    _conn = store.get_conn()
     import sqlite3
 
     sql = "SELECT name, title, tags, description, body FROM memories WHERE type = 'requirement'"
@@ -1408,7 +1391,6 @@ async def memory_req(
     params.append(min(limit, 100))
 
     try:
-        _conn = memory_store._get_conn()
         cur = _conn.execute(sql, params)
         rows = cur.fetchall()
     except sqlite3.Error as e:
@@ -1424,7 +1406,7 @@ async def memory_req(
     ]
     status_counts: dict[str, int] = {}
     for name, title, tags_raw, desc, body in rows:
-        tags = memory_store._parse_tags(tags_raw)
+        tags = store.parse_tags(tags_raw)
         status_val = "unknown"
         project_val = ""
         priority = ""
@@ -1579,7 +1561,7 @@ async def memory_review(
     # 2. Stale canonical
     parts.append("\n## Stale Canonical Memories")
     try:
-        _conn = memory_store._get_conn()
+        _conn = store.get_conn()
         cur = _conn.execute(
             "SELECT name, title, freshness_status, freshness_checked_at FROM memories "
             "WHERE freshness_status IN ('stale', 'no') ORDER BY freshness_checked_at DESC"
@@ -1597,17 +1579,11 @@ async def memory_review(
     # 3. Superseded
     parts.append("\n## Superseded Memories")
     try:
-        _conn = memory_store._get_conn()
-        cur = _conn.execute(
-            "SELECT m1.name, m1.title, m1.superseded_by, m1.updated_at FROM memories m1 "
-            "WHERE m1.superseded_by IS NOT NULL ORDER BY m1.updated_at DESC"
-        )
-        rows = cur.fetchall()
-        _conn.close()
-        if rows:
-            for name, title, superseded_by, updated_at in rows:
+        superseded_rows = store.get_superseded_memories()
+        if superseded_rows:
+            for row in superseded_rows:
                 parts.append(
-                    f"- **{name}**: {title} → superseded by {superseded_by} ({updated_at})"
+                    f"- **{row['name']}**: {row['title']} → superseded by {row['superseded_by']} ({row['updated_at']})"
                 )
         else:
             parts.append("No superseded memories.")
@@ -1617,7 +1593,7 @@ async def memory_review(
     # 4. Eviction queue summary
     parts.append("\n## Eviction Queue")
     try:
-        _conn = memory_store._get_conn()
+        _conn = store.get_conn()
         cur = _conn.execute(
             "SELECT reason, COUNT(*), SUM(CASE WHEN resolved THEN 1 ELSE 0 END) "
             "FROM eviction_queue GROUP BY reason"
@@ -1909,26 +1885,24 @@ async def smoke_test(request: Request) -> JSONResponse:
     if not _check_auth(request):
         return JSONResponse({"status": "error", "error": "unauthorized"}, status_code=401)
 
-    import sqlite3 as _sql
     import urllib.request as _urllib
 
     checks: dict = {}
     critical_failed = False
     degraded = False
 
-    # 1. db_read — SQLite readable
+    # 1. db_read — store readable
     try:
-        _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=5)
-        _c.execute("PRAGMA journal_mode=WAL")
-        mem_count = _c.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-        _c.close()
+        store.ping()
+        mem_count = store.count()
         checks["db_read"] = {"status": "ok", "memory_count": mem_count}
     except Exception as e:
         checks["db_read"] = {"status": "failed", "error": str(e)}
         critical_failed = True
 
-    # 2. db_write — integrity check + write-lock test, no data written
+    # 2. db_write — integrity check + write-lock test (SQLite only)
     try:
+        import sqlite3 as _sql
         _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=5)
         _c.execute("PRAGMA journal_mode=WAL")
         integrity = _c.execute("PRAGMA integrity_check").fetchone()[0]
@@ -2117,13 +2091,8 @@ async def health(request: Request) -> JSONResponse:
 @mcp.custom_route("/ready", methods=["GET"])
 async def readiness(request: Request) -> JSONResponse:
     """Readiness probe. Returns 200 if the database is accessible."""
-    import sqlite3 as _sql
-
     try:
-        _c = _sql.connect(str(DATA_DIR / "memories.db"), timeout=5)
-        _c.execute("PRAGMA journal_mode=WAL")
-        _c.execute("SELECT 1")
-        _c.close()
+        store.ping()
         return JSONResponse({"status": "ok", "db": "connected"})
     except Exception as e:
         return JSONResponse({"status": "error", "db": str(e)}, status_code=503)
