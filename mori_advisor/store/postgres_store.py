@@ -326,46 +326,76 @@ class PostgresStore(BaseStore):
 
         async def _do(conn):
             existing = await conn.fetchrow(
-                "SELECT id, protected, protected_domains FROM memories WHERE name = $1", name
+                "SELECT id, protected, protected_domains, tier, origin_session_ids, origin_clients FROM memories WHERE name = $1",
+                name,
             )
             if existing and existing["protected"] and not _skip_protection:
                 return f"Memory '{name}' is protected — use _skip_protection=True to override"
 
+            # Compute merged origin arrays for upsert (mirrors SQLite's memory_store.py)
             if existing:
-                await conn.execute(
-                    """UPDATE memories SET title=$2, description=$3, type=$4, tier=$5,
-                       body=$6, tags=$7::jsonb, origin_session_ids=$8::jsonb,
-                       origin_clients=$9::jsonb, updated_at=$10
-                       WHERE name=$1""",
-                    name,
-                    title,
-                    description,
-                    type,
-                    tier,
-                    body,
-                    tags_v,
-                    sess_ids,
-                    clients,
-                    now,
+                merged_ids = json.dumps(
+                    sorted(
+                        set(
+                            json.loads(sess_ids)
+                            + (json.loads(existing["origin_session_ids"] or "[]"))
+                        )
+                    )
                 )
+                merged_clients = json.dumps(
+                    sorted(
+                        set(json.loads(clients) + (json.loads(existing["origin_clients"] or "[]")))
+                    )
+                )
+                # Don't downgrade canonical tier
+                if existing.get("tier") == "canonical":
+                    result_tier = "canonical"
+                else:
+                    result_tier = tier
+                # Preserve existing protection flags and domains (JSONB → Python objects from asyncpg)
+                protect = existing.get("protected", False)
+                protect_domains_raw = existing.get("protected_domains", [])
             else:
-                await conn.execute(
-                    """INSERT INTO memories
-                       (name, title, description, type, tier, body, tags,
-                        origin_session_id, origin_session_ids, origin_clients, created_at, updated_at)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::jsonb,$10::jsonb,$11,$11)""",
-                    name,
-                    title,
-                    description,
-                    type,
-                    tier,
-                    body,
-                    tags_v,
-                    origin_session_id,
-                    sess_ids,
-                    clients,
-                    now,
-                )
+                merged_ids = sess_ids
+                merged_clients = clients
+                result_tier = tier
+                protect = False
+                protect_domains_raw = []
+
+            # Single atomic upsert — no TOCTOU race (matches SQLite ON CONFLICT DO UPDATE)
+            await conn.execute(
+                """INSERT INTO memories
+                   (name, title, description, type, tier, body, tags,
+                    origin_session_id, origin_session_ids, origin_clients,
+                    protected, protected_domains, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::jsonb,$10::jsonb,$11,$12::jsonb,$13,$13)
+                   ON CONFLICT (name) DO UPDATE SET
+                       title               = EXCLUDED.title,
+                       description         = EXCLUDED.description,
+                       type                = EXCLUDED.type,
+                       tier                = EXCLUDED.tier,
+                       body                = EXCLUDED.body,
+                       tags                = EXCLUDED.tags,
+                       origin_session_id   = COALESCE(EXCLUDED.origin_session_id, memories.origin_session_id),
+                       origin_session_ids  = EXCLUDED.origin_session_ids,
+                       origin_clients      = EXCLUDED.origin_clients,
+                       protected           = EXCLUDED.protected,
+                       protected_domains   = EXCLUDED.protected_domains,
+                       updated_at          = EXCLUDED.updated_at""",
+                name,
+                title,
+                description,
+                type,
+                result_tier,
+                body,
+                tags_v,
+                origin_session_id,
+                merged_ids,
+                merged_clients,
+                protect,
+                protect_domains_raw,
+                now,
+            )
             return f"Memory '{name}' written"
 
         if _conn:
