@@ -73,7 +73,7 @@ RELATED = they discuss related topics but don't contradict each other.
 UNRELATED = they cover completely different topics."""
 
 
-def run_contradiction_scan(
+async def run_contradiction_scan(
     new_memories: list[dict],
     db_path: str | Path | None = None,
     consult_fn=None,
@@ -85,19 +85,90 @@ def run_contradiction_scan(
     overlapping name prefixes and runs a lightweight LLM check for
     SUPERSEDES/RELATED/UNRELATED.
 
-    Opens its own connection for writes — does NOT participate in any
-    caller transaction, so LLM calls don't hold the DB lock.
-
     Args:
         new_memories: List of memory dicts (must have 'name', 'title', 'body').
         db_path: Path to the SQLite database (legacy; use store= instead).
         consult_fn: Callable with signature (system, user, vk, max_tokens, temperature)
                     that returns the model's text response.
-        store: BaseStore instance (SQLiteStore only; PostgresStore deferred).
+        store: BaseStore instance (SQLiteStore or PostgresStore).
 
     Returns:
         Count of supersessions detected.
     """
+    from mori_advisor.store.postgres_store import PostgresStore
+
+    if isinstance(store, PostgresStore):
+        superseded_count = 0
+        async with store.begin_transaction() as conn:
+            for mem in new_memories:
+                name = mem.get("name") or mem.get("path", "")
+                if not name:
+                    continue
+
+                if "/" in name:
+                    name = name.replace("/", "-").replace("_", "-")
+
+                prefix = name.split("-")[0] if "-" in name else name
+
+                try:
+                    candidates = await conn.fetch(
+                        """
+                        SELECT name, title, body FROM memories
+                        WHERE tier = 'canonical'
+                          AND superseded_by IS NULL
+                          AND (name LIKE $1 OR name LIKE $2 OR tags::text LIKE $3)
+                        LIMIT 5
+                        """,
+                        f"{prefix}%",
+                        f"%-{prefix}%",
+                        f'%"{prefix}"%',
+                    )
+                except Exception as e:
+                    logger.debug("Failed to query candidates in Postgres: %s", e)
+                    continue
+
+                for cand in candidates:
+                    cand_name = cand["name"]
+                    cand_title = cand["title"]
+                    cand_body = cand["body"]
+                    if not cand_body:
+                        continue
+
+                    try:
+                        prompt = CONTRADICTION_SCAN_PROMPT.format(
+                            new_title=mem.get("title", name),
+                            new_body=mem.get("body", "")[:2000],
+                            existing_title=cand_title,
+                            existing_body=cand_body[:2000],
+                        )
+                        response = consult_fn(
+                            system=prompt,
+                            user=f"new: {name}\nexisting: {cand_name}",
+                            vk="fast",
+                            max_tokens=16,
+                            temperature=0.0,
+                        )
+                        verdict = (response or "").strip().upper()
+                        if verdict == "SUPERSEDES":
+                            await conn.execute(
+                                "UPDATE memories SET superseded_by = $1, updated_at = NOW() "
+                                "WHERE name = $2",
+                                name,
+                                cand_name,
+                            )
+                            await conn.execute(
+                                "INSERT INTO eviction_queue (memory_name, reason, detail) "
+                                "VALUES ($1, 'superseded', $2)",
+                                cand_name,
+                                f"Superseded by '{name}'",
+                            )
+                            superseded_count += 1
+                            logger.info("Superseded %s with %s (Postgres)", cand_name, name)
+                    except Exception as e:
+                        logger.debug("Contradiction check failed %s vs %s: %s", name, cand_name, e)
+        return superseded_count
+
+    # Fallback/SQLite path
     if store is not None:
         try:
             write_conn = store.get_conn()

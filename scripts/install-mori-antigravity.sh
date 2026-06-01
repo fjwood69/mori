@@ -32,6 +32,7 @@ show_help() {
 }
 
 # Parse options
+ARGS="$*"
 while [[ $# -gt 0 ]]; do
   case $1 in
     --url)
@@ -79,7 +80,7 @@ echo "--- Mori Antigravity Bridge Setup Wizard ---"
 # Step-by-step interactive inputs if not specified in arguments
 # Check if options were passed to decide on wizard mode
 HEADLESS=false
-if [[ "$*" == *"--url"* ]] || [[ "$*" == *"--client"* ]]; then
+if [[ "$ARGS" == *"--url"* ]] || [[ "$ARGS" == *"--client"* ]]; then
   HEADLESS=true
 fi
 
@@ -130,8 +131,8 @@ fi
 echo ""
 echo "Setting up Mori Antigravity Bridge..."
 
-APP_DATA_DIR="$HOME/.gemini/antigravity-ide"
-CONFIG_DIR="$HOME/.gemini/config"
+APP_DATA_DIR="$HOME/.gemini/antigravity"
+CONFIG_DIR="$HOME/.gemini/antigravity"
 PLUGINS_DIR="$CONFIG_DIR/plugins/mori-bridge"
 SKILLS_TARGET_DIR="$PLUGINS_DIR/skills"
 
@@ -196,7 +197,6 @@ UPGRADE_FLAG=""
 python3 "$INSTALL_PY" deploy-skills \
   --source "$MORI_REPO_ROOT/skills" \
   --dest "$SKILLS_TARGET_DIR" \
-  --prefix "mori-" \
   $UPGRADE_FLAG
 
 echo ""

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,12 @@ from mori_advisor.parsers.text_parser import parse_directory as parse_text_direc
 from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
 
 logger = logging.getLogger(__name__)
+
+
+async def _a(val):
+    """Await val if it's a coroutine (Postgres), pass through if sync (SQLite)."""
+    return await val if inspect.isawaitable(val) else val
+
 
 # Token estimation: text uses ~4 chars/token, images use a flat overhead
 CHARS_PER_TOKEN = 4
@@ -142,7 +149,7 @@ class IngestionPipeline:
 
     # ── Public API ─────────────────────────────────────────────────────────
 
-    def ingest(
+    async def ingest(
         self,
         sources: list[str],
         source_type: str = "auto",
@@ -165,7 +172,7 @@ class IngestionPipeline:
             tags: Extra tags to apply to produced memories.
             since: Time filter for transcripts/git (e.g. "30d").
             dry_run: If True, calls the LLM but does not write memories.
-            preview: If True, parse-only — no LLM calls, no writes.
+            preview: If True, parse-only — no LLM calls, no DB writes.
             force: If True, re-ingest even if previously ingested.
 
         Returns:
@@ -186,7 +193,7 @@ class IngestionPipeline:
         for path in source_paths:
             try:
                 # Dedup check
-                if not force and self._is_ingested_by_hash(
+                if not force and await self._is_ingested_by_hash(
                     self._hash_file(path), status_filter="committed"
                 ):
                     logger.info("Skipping already-ingested source: %s", path)
@@ -235,8 +242,8 @@ class IngestionPipeline:
 
                 # Write memories (unless dry run)
                 if not dry_run and batch_memories:
-                    self._write_memories(batch_memories, tier, all_tags)
-                    self._record_ingestion(
+                    await self._write_memories(batch_memories, tier, all_tags)
+                    await self._record_ingestion(
                         path,
                         len(batch_memories),
                         focus,
@@ -249,7 +256,7 @@ class IngestionPipeline:
                 # Contradiction scan (unless dry run)
                 if not dry_run and batch_memories:
                     try:
-                        self._contradiction_scan(batch_memories)
+                        await self._contradiction_scan(batch_memories)
                     except Exception as e:
                         logger.warning("Contradiction scan failed: %s", e)
 
@@ -275,7 +282,7 @@ class IngestionPipeline:
             "preview": preview,
         }
 
-    def ingest_content(
+    async def ingest_content(
         self,
         files: list[dict],
         focus: str = "all",
@@ -347,7 +354,7 @@ class IngestionPipeline:
             uri = f"content:{name}"
 
             # Dedup check (committed entries only — preview/failed don't block)
-            if not force and self._is_ingested_by_hash(file_hash, status_filter="committed"):
+            if not force and await self._is_ingested_by_hash(file_hash, status_filter="committed"):
                 logger.info("Skipping already-ingested content: %s", name)
                 continue
 
@@ -381,7 +388,9 @@ class IngestionPipeline:
         # Run through shared pipeline
         all_tags = tags or []
         focus_guidance = FOCUS_GUIDANCE.get(focus, "")
-        result = self._run_pipeline(jobs, focus_guidance, tier, all_tags, dry_run, preview, force)
+        result = await self._run_pipeline(
+            jobs, focus_guidance, tier, all_tags, dry_run, preview, force
+        )
 
         if errors:
             result["error_details"] = (result.get("error_details") or []) + errors
@@ -391,7 +400,7 @@ class IngestionPipeline:
 
     # ── Shared pipeline execution engine ─────────────────────────────────────
 
-    def _run_pipeline(
+    async def _run_pipeline(
         self,
         jobs: list[IngestionJob],
         focus_guidance: str,
@@ -417,7 +426,7 @@ class IngestionPipeline:
         for job in jobs:
             try:
                 # Dedup check
-                if not force and self._is_ingested_by_hash(
+                if not force and await self._is_ingested_by_hash(
                     job.file_hash, status_filter="committed"
                 ):
                     logger.info("Skipping already-ingested: %s", job.source_uri)
@@ -464,8 +473,8 @@ class IngestionPipeline:
 
                 # Write (unless dry run)
                 if not dry_run and batch_memories:
-                    self._write_memories(batch_memories, tier, tags)
-                    self._record_ingestion_by_fields(
+                    await self._write_memories(batch_memories, tier, tags)
+                    await self._record_ingestion_by_fields(
                         source_path=job.source_uri,
                         source_hash=job.file_hash,
                         memories_written=len(batch_memories),
@@ -479,7 +488,7 @@ class IngestionPipeline:
                 # Contradiction scan (unless dry run)
                 if not dry_run and batch_memories:
                     try:
-                        self._contradiction_scan(batch_memories)
+                        await self._contradiction_scan(batch_memories)
                     except Exception as e:
                         logger.warning("Contradiction scan failed: %s", e)
 
@@ -624,10 +633,10 @@ class IngestionPipeline:
 
     # ── Dedup ──────────────────────────────────────────────────────────────
 
-    def _is_ingested_by_hash(self, file_hash: str, status_filter: str | None = None) -> bool:
+    async def _is_ingested_by_hash(self, file_hash: str, status_filter: str | None = None) -> bool:
         """Check whether a source hash has already been ingested."""
         try:
-            return self._store.is_ingested_by_hash(file_hash, status_filter=status_filter)
+            return await _a(self._store.is_ingested_by_hash(file_hash, status_filter=status_filter))
         except Exception:
             return False
 
@@ -732,7 +741,7 @@ class IngestionPipeline:
 
     # ── Memory writing ─────────────────────────────────────────────────────
 
-    def _write_memories(self, memories: list[dict], tier: str, tags: list[str]) -> None:
+    async def _write_memories(self, memories: list[dict], tier: str, tags: list[str]) -> None:
         """Write memory candidates to the store."""
         for mem in memories:
             if not isinstance(mem, dict):
@@ -750,14 +759,16 @@ class IngestionPipeline:
             if mem.get("tags"):
                 mem_tags.extend(mem["tags"])
 
-            self.memory_store.write(
-                name=name,
-                title=mem.get("title", name),
-                description=mem.get("description", ""),
-                type=self._infer_type(name, mem),
-                tier=mem.get("tier", tier),
-                body=mem.get("body", ""),
-                tags=mem_tags,
+            await _a(
+                self.memory_store.write(
+                    name=name,
+                    title=mem.get("title", name),
+                    description=mem.get("description", ""),
+                    type=self._infer_type(name, mem),
+                    tier=mem.get("tier", tier),
+                    body=mem.get("body", ""),
+                    tags=mem_tags,
+                )
             )
 
     def _derive_name(self, mem: dict) -> str:
@@ -790,7 +801,7 @@ class IngestionPipeline:
 
     # ── Ingestion log ──────────────────────────────────────────────────────
 
-    def _record_ingestion(
+    async def _record_ingestion(
         self,
         source_path: Path,
         memories_written: int,
@@ -802,7 +813,7 @@ class IngestionPipeline:
     ) -> None:
         """Record an ingestion run in the log."""
         file_hash = self._hash_file(source_path)
-        self._record_ingestion_by_fields(
+        await self._record_ingestion_by_fields(
             source_path=str(source_path),
             source_hash=file_hash,
             memories_written=memories_written,
@@ -813,7 +824,7 @@ class IngestionPipeline:
             status=status,
         )
 
-    def _record_ingestion_by_fields(
+    async def _record_ingestion_by_fields(
         self,
         source_path: str,
         source_hash: str,
@@ -826,23 +837,25 @@ class IngestionPipeline:
     ) -> None:
         """Record ingestion — shared by filesystem and content modes."""
         try:
-            self._store.log_ingestion(
-                source_path=source_path,
-                source_hash=source_hash,
-                memories_written=memories_written,
-                model="kimi-k2.6",
-                focus=focus,
-                tier=tier,
-                tags=tags,
-                dry_run=dry_run,
-                status=status,
+            await _a(
+                self._store.log_ingestion(
+                    source_path=source_path,
+                    source_hash=source_hash,
+                    memories_written=memories_written,
+                    model="kimi-k2.6",
+                    focus=focus,
+                    tier=tier,
+                    tags=tags,
+                    dry_run=dry_run,
+                    status=status,
+                )
             )
         except Exception as e:
             logger.warning("Failed to record ingestion: %s", e)
 
     # ── Contradiction scan ─────────────────────────────────────────────────
 
-    def _contradiction_scan(self, new_memories: list[dict]) -> int:
+    async def _contradiction_scan(self, new_memories: list[dict]) -> int:
         def consult_fn(system, user, vk, max_tokens, temperature):
             return self.client.consult(
                 system=system,
@@ -852,10 +865,11 @@ class IngestionPipeline:
                 temperature=temperature,
             )
 
-        return run_contradiction_scan(
+        return await run_contradiction_scan(
             new_memories=new_memories,
             db_path=self.db_path,
             consult_fn=consult_fn,
+            store=self._store,
         )
 
     # ── Status / Preview ───────────────────────────────────────────────────

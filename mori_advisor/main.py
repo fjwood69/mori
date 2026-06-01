@@ -26,7 +26,6 @@ from mori_advisor.auth import configured_clients, generate_key, init_auth
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.dream import DreamPipeline
 from mori_advisor.ingestion import IngestionPipeline
-from mori_advisor.memory_store import MemoryStore
 from mori_advisor.metrics import (
     events_counter,
     eviction_queue_gauge,
@@ -34,7 +33,6 @@ from mori_advisor.metrics import (
     memories_gauge,
     pending_writes_gauge,
 )
-from mori_advisor.session_log import SessionLog
 from mori_advisor.store import get_store as _get_store
 
 logger = logging.getLogger(__name__)
@@ -176,10 +174,8 @@ async def _lifespan(server):
 
 mcp = FastMCP(MCP_SERVER_NAME, lifespan=_lifespan)
 bifrost = BifrostClient(base_url=BIFROST_BASE_URL, timeout=BIFROST_TIMEOUT)
-session_log = store._log if hasattr(store, "_log") else SessionLog(db_path=DATA_DIR / "memories.db")
-memory_store = (
-    store._mem if hasattr(store, "_mem") else MemoryStore(db_path=DATA_DIR / "memories.db")
-)
+session_log = store._log if hasattr(store, "_log") else store
+memory_store = store._mem if hasattr(store, "_mem") else store
 
 dream_pipeline = DreamPipeline(
     db_path=DATA_DIR / "memories.db",
@@ -490,8 +486,8 @@ async def brief(
     try:
         from mori_advisor.dream import DreamPipeline
 
-        dp = DreamPipeline(db_path=DATA_DIR / "memories.db", bifrost_client=bifrost)
-        status = dp.get_status()
+        dp = DreamPipeline(db_path=DATA_DIR / "memories.db", bifrost_client=bifrost, store=store)
+        status = await dp.get_status()
         parts.append(f"**Dream state:** {status}")
     except Exception:
         pass
@@ -1175,7 +1171,7 @@ async def mori_ingest(
         return f"Invalid tier '{tier}'. Must be working, canonical, or ephemeral."
 
     try:
-        result = ingestion_pipeline.ingest(
+        result = await ingestion_pipeline.ingest(
             sources=source,
             source_type=type,
             focus=focus,
@@ -1219,7 +1215,10 @@ async def mori_ingest_status(limit: int = 20) -> str:
     Args:
         limit: Maximum entries to show (default 20).
     """
-    return IngestionPipeline.get_status(DATA_DIR / "memories.db", limit=limit)
+    import inspect
+
+    res = store.get_ingestion_status(limit=limit)
+    return await res if inspect.isawaitable(res) else res
 
 
 @mcp.tool()
@@ -1284,7 +1283,7 @@ async def dream_status() -> str:
 
     Returns the same info as the old mori-dream --status command.
     """
-    return dream_pipeline.get_status()
+    return await dream_pipeline.get_status()
 
 
 # ── Memory CRUD tools ────────────────────────────────────────────────────
@@ -1986,9 +1985,11 @@ async def smoke_test(request: Request) -> JSONResponse:
 
     # 6. NATS — degraded only
     try:
+        import asyncio
+
         import nats as _nats
 
-        _nc = await _nats.connect(NATS_URL)
+        _nc = await asyncio.wait_for(_nats.connect(NATS_URL), timeout=2.0)
         await _nc.drain()
         checks["nats"] = {"status": "ok"}
     except Exception as e:

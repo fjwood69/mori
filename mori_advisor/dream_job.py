@@ -45,11 +45,21 @@ else:
 logger = logging.getLogger("dream-job")
 
 
-def main():
+async def async_main():
+    import inspect
+
     from mori_advisor.bifrost_client import BifrostClient
     from mori_advisor.dream import DreamPipeline
+    from mori_advisor.store import get_store
 
     bifrost = BifrostClient()
+    store = get_store(DB_PATH)
+
+    # We must ensure the store is connected/bootstrapped on async run
+    bootstrap_res = store.bootstrap()
+    if inspect.isawaitable(bootstrap_res):
+        await bootstrap_res
+
     pipeline = DreamPipeline(
         db_path=DB_PATH,
         bifrost_client=bifrost,
@@ -59,14 +69,15 @@ def main():
             else []
         ),
         nats_url=os.environ.get("MORI_NATS_URL") or None,
+        store=store,
     )
 
     logger.info("Dream job started")
-    status_before = pipeline.get_status()
+    status_before = await pipeline.get_status()
     logger.info("Pre-run status: %s", status_before.replace("\n", " | "))
 
     try:
-        memories = pipeline.run(dry_run=False)
+        memories = await pipeline.run(dry_run=False)
         if memories:
             logger.info("Dream complete: %s memories written", len(memories))
         else:
@@ -75,9 +86,15 @@ def main():
         logger.error("Dream job failed: %s", e, exc_info=True)
         sys.exit(1)
 
-    status_after = pipeline.get_status()
+    status_after = await pipeline.get_status()
     logger.info("Post-run status: %s", status_after.replace("\n", " | "))
     logger.info("Dream job finished")
+
+
+def main():
+    import asyncio
+
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":
