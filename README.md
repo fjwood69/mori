@@ -237,6 +237,7 @@ the default pod stack). See [docs/reference/msg.md](docs/reference/msg.md) for f
 **Configuration reference** → [docs/reference/configuration.md](docs/reference/configuration.md)
 **Recommended models** → [docs/reference/models.md](docs/reference/models.md)
 **For teams** → [docs/for-teams.md](docs/for-teams.md)
+**Team configuration reference** → [docs/reference/team-configuration.md](docs/reference/team-configuration.md)
 
 Key environment variables:
 
