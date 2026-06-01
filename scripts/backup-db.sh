@@ -10,9 +10,7 @@
 #   - A `mori-pg` podman container running on the host (rootful)
 #   - gsutil available on the host (/snap/bin/gsutil or in PATH)
 #
-# GCS lifecycle policy (preferred retention mechanism) requires
-# storage.legacyBucketOwner on the bucket. If not available, the script
-# retains the last KEEP pg dumps via gsutil ls + rm.
+# Retention: 14-day auto-delete via GCS lifecycle policy on the bucket.
 
 set -euo pipefail
 
@@ -20,8 +18,6 @@ BUCKET="${MORI_BACKUP_BUCKET:-moku-advisor-backups-moku-genai}"
 DATA_DIR="${MORI_ADVISOR_DATA:-/data/mori-advisor}"
 TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
 TMPFILE="/tmp/mori-backup-${TIMESTAMP}"
-KEEP=14
-
 trap 'rm -f "${TMPFILE}" "${TMPFILE}.gz" 2>/dev/null || true' EXIT
 
 # GCE metadata server access token
@@ -60,12 +56,7 @@ if echo "${MORI_DATABASE_URL}" | grep -q '^postgresql'; then
   gcs_upload "${TMPFILE}.gz" "${REMOTE_NAME}"
   echo "OK: ${REMOTE_NAME} uploaded ($(du -h "${TMPFILE}.gz" | cut -f1))"
 
-  # Retain last KEEP pg dumps; prune older (lexicographic = chronological for timestamped names)
-  OLD=$(gsutil ls "gs://${BUCKET}/mori-pg-*.sql.gz" 2>/dev/null | sort | head -n "-${KEEP}" || true)
-  if [ -n "$OLD" ]; then
-    echo "$OLD" | xargs gsutil rm
-    echo "Pruned old pg dumps (kept last ${KEEP})"
-  fi
+  # Retention handled by GCS lifecycle policy (14-day auto-delete on bucket)
 
 else
   # ── SQLite backup (solo deployments) ──────────────────────────────────
