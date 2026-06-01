@@ -13,7 +13,6 @@ import asyncio
 import base64
 import logging
 import os
-import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -27,6 +26,7 @@ from starlette.requests import Request
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.ingestion import IngestionPipeline
 from mori_advisor.memory_store import MemoryStore
+from mori_advisor.store import get_store
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,8 @@ class JobStatus:
 
 # ── Global state ──────────────────────────────────────────────────────────
 
-MemoryStore.bootstrap_schema(db_path=DATA_DIR / "memories.db")
+store = get_store(DATA_DIR / "memories.db")
+store.bootstrap()
 bifrost = BifrostClient(base_url=BIFROST_BASE_URL, timeout=BIFROST_TIMEOUT)
 memory_store = MemoryStore(db_path=DATA_DIR / "memories.db")
 pipeline = IngestionPipeline(
@@ -127,9 +128,7 @@ async def _worker() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global job_queue
-    conn = sqlite3.connect(str(DATA_DIR / "memories.db"), timeout=5)
-    conn.execute("SELECT 1")
-    conn.close()
+    store.ping()
     job_queue = asyncio.Queue()
     asyncio.create_task(_worker())
     yield
@@ -146,9 +145,7 @@ async def health():
 @app.get("/ready")
 async def ready():
     try:
-        conn = sqlite3.connect(str(DATA_DIR / "memories.db"), timeout=5)
-        conn.execute("SELECT 1")
-        conn.close()
+        store.ping()
         return {"status": "ok"}
     except Exception as e:
         return JSONResponse(status_code=503, content={"status": "error", "detail": str(e)})
