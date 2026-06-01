@@ -10,9 +10,11 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -157,14 +159,22 @@ MAX_TOTAL_FILE_SIZE = 200 * 1024  # 200KB total
 
 # ── Global state ─────────────────────────────────────────────────────────
 
-# Bootstrap schema before any connections are created
 store = _get_store(DATA_DIR / "memories.db")
-store.bootstrap()
 
 # Initialise OpenTelemetry metrics
 init_metrics()
 
-mcp = FastMCP(MCP_SERVER_NAME)
+
+@asynccontextmanager
+async def _lifespan(server):
+    """Bootstrap the store on startup (async-safe for both SQLite and Postgres)."""
+    result = store.bootstrap()
+    if inspect.isawaitable(result):
+        await result
+    yield
+
+
+mcp = FastMCP(MCP_SERVER_NAME, lifespan=_lifespan)
 bifrost = BifrostClient(base_url=BIFROST_BASE_URL, timeout=BIFROST_TIMEOUT)
 session_log = store._log if hasattr(store, "_log") else SessionLog(db_path=DATA_DIR / "memories.db")
 memory_store = (
@@ -1955,11 +1965,20 @@ async def smoke_test(request: Request) -> JSONResponse:
     try:
         wm_val = await _a(store.get_dream_state("last_dreamed_event_id", default="0"))
         watermark = int(wm_val) if wm_val else 0
-        total_events = await _a(session_log.count_events())
+        try:
+            total_events = await _a(session_log.count_events())
+            undreamed = max(0, total_events - watermark)
+        except Exception:
+            total_events = None
+            undreamed = None
         checks["dream_watermark"] = {
             "status": "ok",
             "watermark": watermark,
-            "undreamed": max(0, total_events - watermark),
+            **(
+                {"total_events": total_events, "undreamed": undreamed}
+                if total_events is not None
+                else {}
+            ),
         }
     except Exception as e:
         checks["dream_watermark"] = {"status": "failed", "error": str(e)}
