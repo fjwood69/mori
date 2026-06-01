@@ -232,6 +232,7 @@ merge_json() {
     if command -v jq &>/dev/null; then
       jq \
         --arg mori_url "$MORI_URL/mcp" \
+        --arg api_key "${API_KEY:-}" \
         --arg raw "$RAW_CMD" \
         --arg compact "$COMPACT_CMD" \
         --arg brief "$BRIEF_CMD" \
@@ -240,17 +241,23 @@ merge_json() {
         # Detect a mori hook command
         def is_mori_cmd: . // "" | test("mori-ship-event|/api/events/raw|/api/precompact|mori-post-compact-brief");
 
-        # Per-event hook merge: update existing mori entry in-place, or prepend new one
+        # Per-event hook merge: hooks are wrapped as {"hooks":[{"type":"command","command":"..."}]}
+        # Update existing mori entry in-place, or prepend a new wrapped entry
         def upsert_hook(cmd):
-          if . == null then [{"type": "command", "command": cmd}]
+          if . == null then [{"hooks": [{"type": "command", "command": cmd}]}]
+          elif any(.[]; .hooks? // [] | any(.[]; .command? | is_mori_cmd)) then
+            map(if (.hooks? // [] | any(.[]; .command? | is_mori_cmd))
+                then .hooks = (.hooks | map(if (.command? | is_mori_cmd) then .command = cmd else . end))
+                else . end)
           elif any(.[]; .command? | is_mori_cmd) then
-            map(if (.command? | is_mori_cmd) then .command = cmd else . end)
+            map(if (.command? | is_mori_cmd) then {"hooks": [{"type": "command", "command": cmd}]} else . end)
           else
-            [{"type": "command", "command": cmd}] + .
+            [{"hooks": [{"type": "command", "command": cmd}]}] + .
           end;
 
-        # mcpServers.mori
-        .mcpServers.mori = {"type": "http", "url": $mori_url} |
+        # mcpServers.mori — include x-api-key header if key provided
+        .mcpServers.mori = ({"type": "http", "url": $mori_url} +
+          if $api_key != "" then {"headers": {"x-api-key": $api_key}} else {} end) |
 
         # hooks — per-event merge preserves non-Mori hooks
         .hooks.PostToolUse        = (.hooks.PostToolUse        | upsert_hook($raw)) |
@@ -292,21 +299,26 @@ generate_config_json() {
   done
   allow_json+="]"
 
+  local headers_json=""
+  if [ -n "${API_KEY:-}" ]; then
+    headers_json=", \"headers\": {\"x-api-key\": \"${API_KEY}\"}"
+  fi
+
   cat > "$config_path" <<EOF
 {
   "mcpServers": {
     "mori": {
       "type": "http",
-      "url": "${MORI_URL}/mcp"
+      "url": "${MORI_URL}/mcp"${headers_json}
     }
   },
   "hooks": {
-    "PostToolUse": [{"type": "command", "command": "${RAW_CMD}"}],
-    "PostToolUseFailure": [{"type": "command", "command": "${RAW_CMD}"}],
-    "UserPromptSubmit": [{"type": "command", "command": "${RAW_CMD}"}],
-    "Stop": [{"type": "command", "command": "${RAW_CMD}"}],
-    "PreCompact": [{"type": "command", "command": "${COMPACT_CMD}"}],
-    "PostCompact": [{"type": "command", "command": "${BRIEF_CMD}"}]
+    "PostToolUse":        [{"hooks": [{"type": "command", "command": "${RAW_CMD}"}]}],
+    "PostToolUseFailure": [{"hooks": [{"type": "command", "command": "${RAW_CMD}"}]}],
+    "UserPromptSubmit":   [{"hooks": [{"type": "command", "command": "${RAW_CMD}"}]}],
+    "Stop":               [{"hooks": [{"type": "command", "command": "${RAW_CMD}"}]}],
+    "PreCompact":         [{"hooks": [{"type": "command", "command": "${COMPACT_CMD}"}]}],
+    "PostCompact":        [{"hooks": [{"type": "command", "command": "${BRIEF_CMD}"}]}]
   },
   "permissions": {
     "allow": ${allow_json}

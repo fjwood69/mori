@@ -108,9 +108,11 @@ function Merge-MoriSettings {
     if ($null -eq $existing.mcpServers) {
         $existing | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([PSCustomObject]@{})
     }
-    $existing.mcpServers | Add-Member -NotePropertyName mori -NotePropertyValue ([PSCustomObject]@{
-        type = "http"; url = "$Url/mcp"
-    }) -Force
+    $mcpEntry = [PSCustomObject]@{ type = "http"; url = "$Url/mcp" }
+    if ($Key) {
+        $mcpEntry | Add-Member -NotePropertyName headers -NotePropertyValue ([PSCustomObject]@{ "x-api-key" = $Key })
+    }
+    $existing.mcpServers | Add-Member -NotePropertyName mori -NotePropertyValue $mcpEntry -Force
 
     # hooks — per-event merge, preserves non-Mori hooks
     if ($null -eq $existing.hooks) {
@@ -127,7 +129,7 @@ function Merge-MoriSettings {
             if (Update-HookEntry -Entry $entry -NewCommand $cmd) { $updated = $true }
         }
         if (-not $updated) {
-            $list = @([PSCustomObject]@{ type = "command"; command = $cmd }) + $list
+            $list = @([PSCustomObject]@{ hooks = @([PSCustomObject]@{ type = "command"; command = $cmd }) }) + $list
         }
         $existing.hooks | Add-Member -NotePropertyName $name -NotePropertyValue $list -Force
     }
