@@ -60,26 +60,25 @@ RESPONSE=$(curl -sf --max-time 30 "${AUTH_ARGS[@]}" "$MORI_URL/api/smoke" 2>&1) 
 
 # Parse and display results
 if [ "$PARSER" = "python3" ]; then
-  python3 - <<EOF
-import json, sys
+  export RESPONSE
+  export STRICT
+  python3 - <<'EOF'
+import os, json, sys
 sys.stdout.reconfigure(encoding='utf-8')
 
-data = json.loads('''$RESPONSE''')
+response_text = os.environ.get("RESPONSE", "")
+try:
+    data = json.loads(response_text)
+except Exception as e:
+    print(f"\033[0;31m✗\033[0m Invalid JSON response from server: {e}")
+    print("Response received:")
+    print(response_text)
+    sys.exit(1)
+
 checks = data.get("checks", {})
 overall = data.get("status", "unknown")
 
 RED = "\033[0;31m"; GREEN = "\033[0;32m"; YELLOW = "\033[1;33m"; RESET = "\033[0m"
-
-labels = {
-    "db_read":         "db_read",
-    "db_write":        "db_write",
-    "event_log":       "event_log",
-    "event_roundtrip": "event_roundtrip",
-    "dream_watermark": "dream_watermark",
-    "nats":            "nats",
-    "ingestion":       "ingestion",
-    "msg_daemon":      "msg_daemon",
-}
 
 detail = {
     "db_read":         lambda c: f"{c.get('memory_count','')} memories",
@@ -89,24 +88,25 @@ detail = {
     "msg_daemon":      lambda c: f"{c.get('msg_count','')} messages",
 }
 
-for key, label in labels.items():
-    check = checks.get(key, {})
+for key in sorted(checks.keys()):
+    check = checks[key]
     status = check.get("status", "missing")
     extra = detail.get(key, lambda c: "")(check)
     err = check.get("error", "")
     if status == "ok":
-        print(f"{GREEN}✓{RESET} {label:<20} {extra}")
+        print(f"{GREEN}✓{RESET} {key:<20} {extra}")
     else:
-        print(f"{RED}✗{RESET} {label:<20} {err or 'failed'}")
+        print(f"{RED}✗{RESET} {key:<20} {err or 'failed'}")
 
 print("──────────────────────────────────────────")
 
+strict_val = os.environ.get("STRICT", "0")
 if overall == "ok":
     print(f"{GREEN}Status: OK{RESET} — mori is healthy")
     sys.exit(0)
 elif overall == "degraded":
     print(f"{YELLOW}Status: DEGRADED{RESET} — NATS/ingestion failed (non-critical)")
-    sys.exit(int("$STRICT"))
+    sys.exit(int(strict_val))
 else:
     print(f"{RED}Status: FAILED{RESET} — critical checks failed")
     sys.exit(1)
