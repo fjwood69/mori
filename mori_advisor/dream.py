@@ -420,7 +420,7 @@ class DreamPipeline:
 
         import nats
 
-        hostname = socket.gethostname()
+        hostname = socket.gethostname().split(".")[0]
         message = (
             f"Dream pipeline superseded {superseded_count} memory(ies) on {hostname}. "
             f"Run `/pensieve --eviction-queue` or `memory_review` to review."

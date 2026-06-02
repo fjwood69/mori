@@ -51,7 +51,7 @@ HEADLESS_TRUSTED = {
     h.strip() for h in os.environ.get("MORI_MSG_HEADLESS_TRUSTED", "").split(",") if h.strip()
 }
 
-HOSTNAME = socket.gethostname()
+HOSTNAME = socket.gethostname().split(".")[0]
 CONSUMER_NAME = f"mori-msg-{HOSTNAME}"
 
 # Subjects this daemon cares about

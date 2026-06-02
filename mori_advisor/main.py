@@ -901,7 +901,7 @@ async def nats_pub(message: str, subject: str = "") -> str:
 
         import nats
 
-        hostname = socket.gethostname()
+        hostname = socket.gethostname().split(".")[0]
         subj = subject or f"cc.{hostname}"
         payload = json.dumps(
             {"from": hostname, "text": message, "ts": __import__("time").time(), "type": "msg"}
@@ -1091,7 +1091,7 @@ async def msg_recv(
 
         from .msg_store import MsgStore
 
-        hostname = socket.gethostname()
+        hostname = socket.gethostname().split(".")[0]
         _msg_store = MsgStore(db_path=DATA_DIR / "msg.db")
         rows = _msg_store.get_pending(
             hostname=hostname,
