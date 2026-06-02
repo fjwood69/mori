@@ -707,17 +707,35 @@ class PostgresStore(BaseStore):
 
     # ── Counts / observability ─────────────────────────────────────────────
 
-    async def count(self) -> int:
+    async def count(self, tier: str | None = None, protected: bool | None = None) -> int:
         self._ensure_pool()
-        async with self.pool.acquire() as conn:
-            return await conn.fetchval("SELECT COUNT(*) FROM memories")
+        q = "SELECT COUNT(*) FROM memories WHERE 1=1"
+        params = []
+        param_idx = 1
+        if tier is not None:
+            q += f" AND tier = ${param_idx}"
+            params.append(tier)
+            param_idx += 1
+        if protected is not None:
+            q += f" AND protected = ${param_idx}"
+            params.append(protected)
+            param_idx += 1
 
-    async def pending_count(self) -> int:
-        self._ensure_pool()
         async with self.pool.acquire() as conn:
-            return await conn.fetchval(
-                "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending'"
-            )
+            return await conn.fetchval(q, *params)
+
+    async def pending_count(self, status: str | None = None) -> int:
+        self._ensure_pool()
+        q = "SELECT COUNT(*) FROM pending_writes"
+        params = []
+        if status is not None:
+            q += " WHERE status = $1"
+            params.append(status)
+        else:
+            q += " WHERE status = 'pending'"
+
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(q, *params)
 
     async def eviction_count(self) -> int:
         self._ensure_pool()
@@ -1125,6 +1143,11 @@ class PostgresStore(BaseStore):
             )
         return "\n".join(lines)
 
+    async def count_ingestion(self) -> int:
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval("SELECT COUNT(*) FROM ingestion_log")
+
     # ── Msg ────────────────────────────────────────────────────────────────
 
     async def log_message(self, msg, status: str = "pending") -> None:
@@ -1191,10 +1214,16 @@ class PostgresStore(BaseStore):
             )
         return [dict(root)] + [dict(r) for r in replies]
 
-    async def count_messages(self) -> int:
+    async def count_messages(self, status: str | None = None) -> int:
         self._ensure_pool()
+        q = "SELECT COUNT(*) FROM msg_log"
+        params = []
+        if status is not None:
+            q += " WHERE status = $1"
+            params.append(status)
+
         async with self.pool.acquire() as conn:
-            return await conn.fetchval("SELECT COUNT(*) FROM msg_log")
+            return await conn.fetchval(q, *params)
 
     # ── Ad-hoc query helpers ───────────────────────────────────────────────
 

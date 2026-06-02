@@ -167,11 +167,11 @@ class SQLiteStore(BaseStore):
 
     # ── Counts / observability ─────────────────────────────────────────────
 
-    def count(self) -> int:
-        return self._mem.count()
+    def count(self, tier: str | None = None, protected: bool | None = None) -> int:
+        return self._mem.count(tier=tier, protected=protected)
 
-    def pending_count(self) -> int:
-        return self._mem.pending_count()
+    def pending_count(self, status: str | None = None) -> int:
+        return self._mem.pending_count(status=status)
 
     def eviction_count(self) -> int:
         return self._mem.eviction_count()
@@ -365,6 +365,9 @@ class SQLiteStore(BaseStore):
             )
         return "\n".join(lines)
 
+    def count_ingestion(self) -> int:
+        return self._mem.count_ingestion()
+
     # ── Msg ────────────────────────────────────────────────────────────────
 
     def log_message(self, msg, status: str = "pending") -> None:
@@ -387,8 +390,8 @@ class SQLiteStore(BaseStore):
     def get_message_thread(self, root_id: str) -> list:
         return self._msg.get_thread(root_id)
 
-    def count_messages(self) -> int:
-        return self._msg.count()
+    def count_messages(self, status: str | None = None) -> int:
+        return self._msg.count(status=status)
 
     # ── Ad-hoc query helpers (promoted from main.py) ───────────────────────
 
