@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.1.9 — Fix Postgres brief() interface mismatches
+
+- **`get_memories_by_project`**: Rewrote `PostgresStore.get_memories_by_project()` to return the correct three-key dict (`project_memories`, `global_memories`, `other_projects`) matching the SQLite spec. The previous implementation returned `{name: dict}` which caused a `KeyError('project_memories')` in `brief()`.
+- **`check_freshness`**: Fixed `PostgresStore.check_freshness()` — was calling `await llm_consult(dict(row))` (wrong: sync function, wrong argument shape, wrong return shape). Now fetches all rows first, releases the connection, calls `llm_consult(system=..., user=..., vk="fast", ...)` synchronously per row with a fresh connection for each write, and returns `{checked, fresh, stale, no, errors}`.
+
 ## v2.1.8 — Async Postgres Ingestion & Security Hardening
 
 - **Async Ingestion Pipeline**: Converted `IngestionPipeline` execution flow and ingestion tasks to `async def` and integrated the dynamic `_a()` helper to resolve and await asynchronous `PostgresStore` writes/logs.
