@@ -107,7 +107,7 @@ fi
 
 CONTAINER_IMAGE="${container_image}"
 BIFROST_IMAGE="ghcr.io/fjwood69/bifrost:claude-code-compat"
-RUNTIME_DIR="/run/user/10001"
+RUNTIME_DIR="/run/user/$(id -u mori)"
 
 # Safety net: ensure runtime dir exists (loginctl enable-linger may not
 # have created it yet on first boot)
@@ -274,6 +274,7 @@ echo "Mori-advisor container started."
 
 # Start mori-ingestion container (port 8969) — same image, different entrypoint.
 # Shares /data/mori-advisor bind-mount with mori-advisor (co-location mandatory).
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f mori-ingestion 2>/dev/null; true"
 su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-ingestion \
   --restart=always --network=host --user 0 \
   -v /data/mori-advisor:/data/mori-advisor:Z \

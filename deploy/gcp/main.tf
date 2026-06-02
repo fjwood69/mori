@@ -32,7 +32,7 @@ resource "google_storage_bucket" "mori_data" {
 }
 
 resource "google_storage_bucket" "mori_backups" {
-  name          = "mori-advisor-backups-${var.project_id}"
+  name          = "moku-advisor-backups-${var.project_id}"
   location      = var.region
   storage_class = "STANDARD"
   force_destroy = false
@@ -206,7 +206,7 @@ locals {
 }
 
 resource "google_compute_disk" "mori_data" {
-  name  = "mori-advisor-data"
+  name  = "moku-advisor-data"
   type  = "pd-standard"
   zone  = var.zone
   size  = var.disk_size_gb

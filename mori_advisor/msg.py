@@ -41,7 +41,7 @@ def build_message(
     return MoriMessage.model_validate(
         {
             "id": str(uuid.uuid4()),
-            "from": socket.gethostname(),
+            "from": socket.gethostname().split(".")[0],
             "to": to,
             "type": type,
             "ts": datetime.now(timezone.utc).isoformat(),
