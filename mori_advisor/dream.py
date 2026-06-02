@@ -263,7 +263,8 @@ class DreamPipeline:
 
         parts = []
         for sid, session_events in sessions.items():
-            start_ts = session_events[0].get("timestamp", "?")[:19]
+            _ts = session_events[0].get("timestamp", "?")
+            start_ts = (_ts.isoformat() if hasattr(_ts, "isoformat") else str(_ts))[:19]
             client = session_events[0].get("client", "?")
 
             items = []
