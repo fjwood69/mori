@@ -131,7 +131,17 @@ function Merge-MoriSettings {
             })
         }
         # Prepend fresh wrapped-format entry
-        $list = @([PSCustomObject]@{ hooks = @([PSCustomObject]@{ type = "command"; command = $cmd }) }) + $list
+        $newEntry = if ($name -eq "PostToolUse") {
+            [PSCustomObject]@{
+                matcher = "*"
+                hooks = @([PSCustomObject]@{ type = "command"; command = $cmd })
+            }
+        } else {
+            [PSCustomObject]@{
+                hooks = @([PSCustomObject]@{ type = "command"; command = $cmd })
+            }
+        }
+        $list = @($newEntry) + $list
         $existing.hooks | Add-Member -NotePropertyName $name -NotePropertyValue $list -Force
     }
 

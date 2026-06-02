@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.1.14 — Fix Windows Installer Hook Format & Session-Based Auth
+
+- **Windows Installer Hook Format Fix**: Fixed a bug in `scripts/install-mori-claude.ps1` where the `PostToolUse` event hook was missing the `matcher` field (e.g. `matcher: "*"`), which caused Claude Code to reject the generated configuration. The installer now matches the correct hook wrapping behavior of `install-mori-claude.sh`.
+- **Session-Based Auth Bypass**: Added an in-memory session tracker `_AUTHENTICATED_SESSIONS` to `ApiKeyMiddleware` to bypass API key headers validation for subsequent POST/DELETE requests belonging to successfully pre-authenticated SSE connections (fixing connection handshake `401 Unauthorized` issues on IDE restart).
+
 ## v2.1.13 — Native Prometheus /metrics Exposition
 
 - **Native Prometheus Exposition**: Replaced `/metrics` endpoint implementation with a native Prometheus exposition format (`text/plain; version=0.0.4` / OpenMetrics compatibility) using `prometheus_client` directly, allowing direct scraping by homelab Prometheus instances without an intermediate OTel collector.
