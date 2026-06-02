@@ -28,6 +28,9 @@ OAUTH_PATHS = {
     "/register",
 }
 
+# Track session IDs that have successfully authenticated via API key
+_AUTHENTICATED_SESSIONS: set[str] = set()
+
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -39,6 +42,15 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                 {"error": "Not an OAuth server — use X-Api-Key header"},
                 status_code=404,
             )
+
+        # Allow session-based authentication bypass for active SSE connections (POST/DELETE)
+        session_id = request.headers.get("mcp-session-id")
+        if session_id and session_id in _AUTHENTICATED_SESSIONS:
+            response = await call_next(request)
+            if request.method == "DELETE" and request.url.path == "/mcp":
+                _AUTHENTICATED_SESSIONS.discard(session_id)
+                logger.info("Session %s terminated and removed from authenticated list", session_id)
+            return response
 
         provided = (
             request.headers.get("x-api-key")
@@ -60,4 +72,12 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             )
 
         request.state.mori_client = client_name
-        return await call_next(request)
+        response = await call_next(request)
+
+        # Capture server-issued session ID for subsequent request bypass
+        resp_session_id = response.headers.get("mcp-session-id")
+        if resp_session_id:
+            _AUTHENTICATED_SESSIONS.add(resp_session_id)
+            logger.info("Session %s successfully authenticated for client %s", resp_session_id, client_name)
+
+        return response
