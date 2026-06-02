@@ -1,13 +1,19 @@
 # Changelog
 
+## v2.1.11 — Postgres UAT Dream Run Fixes & Savepoint Isolation
+
+- **Postgres Savepoint Isolation**: Wrapped each `_write_memory()` call in the dream pipeline inside a nested transaction (savepoint) using `async with txn_conn.transaction():` when running on Postgres (`asyncpg`). This prevents individual database write failures (such as unique key constraint violations) from aborting the entire transaction block, ensuring successful memory writes persist and the watermark advances cleanly.
+- **Dream datetime fix**: `dream.py` event grouper was slicing `TIMESTAMPTZ` values returned by asyncpg as `datetime` objects — not strings — causing `dream_run` to crash with `TypeError: 'datetime.datetime' object is not subscriptable`. Fixed to use `.isoformat()` when the value has that method.
+- **Database Seeding Sequence Reset**: Added automatic primary key sequence resetting to `start-uat.sh` immediately following the `pg_dump` seed step. Resets sequences to `COALESCE(max(id), 1)` for `memories`, `memory_versions`, `pending_writes`, `ingestion_log`, `session_events`, and `delegate_tasks` to prevent constraint conflicts on subsequent insertions.
+- **Smoke Test Robustness**: Upgraded `smoke-test.sh` to dynamically report check keys and handle JSON parsing errors robustly, and to gracefully output and skip display for `db_write` (marked as `skipped`) instead of treating it as a test failure when run against the Postgres backend.
+- **APP_PORT**: `mori_advisor/main.py` server port is now configurable via `APP_PORT` env var (defaults to 8968). Enables side-by-side UAT instances without rebuilding the image.
+
 ## v2.1.10 — Antigravity Installer Profile Parity & PostCompact Hook
 
 - **Target Selection**: Added `--target cli/ide/both` (Bash) and `-Target cli/ide/both` (PowerShell) option to installers, directing MCP config (`mcp_config.json`) and hooks (`hooks.json`) to `~/.gemini/antigravity` (CLI), `~/.gemini/antigravity-ide` (IDE), or both. Default in headless mode is `ide` to match the NUC active IDE app data folder.
 - **PostCompact Hook**: Deployed `mori-post-compact-brief` shipper script and registered the `PostCompact` hook in Antigravity's `hooks.json` configuration, matching Claude Code installer capability to trigger automatic re-grounding via `/brief`.
 - **Robust Skill Parsing**: Upgraded the PowerShell skill installer `Deploy-MoriSkills` to support both standard YAML frontmatter blocks (`---`) and bulleted headers (`- name:`).
 - **Symlink Diagnostics**: Upgraded the `--doctor` diagnostics in `mori_antigravity_install.py` and `install-mori-antigravity.ps1` to detect and print remediation instructions when the `~/.gemini/config` symlink points to a mismatching variant.
-- **Dream datetime fix**: `dream.py` event grouper was slicing `TIMESTAMPTZ` values returned by asyncpg as `datetime` objects — not strings — causing `dream_run` to crash with `TypeError: 'datetime.datetime' object is not subscriptable`. Fixed to use `.isoformat()` when the value has that method.
-- **APP_PORT**: `mori_advisor/main.py` server port is now configurable via `APP_PORT` env var (defaults to 8968). Enables side-by-side UAT instances without rebuilding the image.
 
 ## v2.1.9 — Fix Postgres brief() interface mismatches
 
