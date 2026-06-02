@@ -5,6 +5,7 @@ param(
     [string]$MoriUrl = "http://localhost:8968",
     [string]$ApiKey = "",
     [string]$ClientName = "",
+    [string]$Target = "prompt",
     [switch]$Force,
     [switch]$Doctor,
     [switch]$UpgradeSkills
@@ -28,7 +29,7 @@ function Test-MoriHookEntry {
     try {
         if ($null -ne $Entry.command) {
             $cmd = $Entry.command
-            return ($cmd -like "*mori-ship-event*" -or $cmd -like "*/api/events/raw*" -or $cmd -like "*/api/precompact*")
+            return ($cmd -like "*mori-ship-event*" -or $cmd -like "*/api/events/raw*" -or $cmd -like "*/api/precompact*" -or $cmd -like "*mori-post-compact-brief*")
         }
     } catch {}
     return $false
@@ -38,7 +39,15 @@ function Get-MoriShipperCommands {
     param([string]$ShipperPath, [string]$Url, [string]$Client, [string]$Key)
     $apiFlag = if ($Key) { " -ApiKey `"$Key`"" } else { "" }
     $base = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ShipperPath`" -MoriUrl `"$Url`" -Client `"$Client`"${apiFlag}"
-    return @{ raw = "$base -Mode raw"; precompact = "$base -Mode precompact" }
+    
+    $briefPath = Join-Path (Split-Path $ShipperPath -Parent) "mori-post-compact-brief.ps1"
+    $postcompact = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$briefPath`""
+    
+    return @{ 
+        raw = "$base -Mode raw"; 
+        precompact = "$base -Mode precompact";
+        postcompact = $postcompact
+    }
 }
 
 function Merge-McpFile {
@@ -94,7 +103,8 @@ function Merge-MoriHooks {
     $cmds = Get-MoriShipperCommands -ShipperPath $ShipperPath -Url $Url -Client $Client -Key $Key
     $events = @{
         PostToolUse = $cmds.raw; PostToolUseFailure = $cmds.raw
-        UserPromptSubmit = $cmds.raw; Stop = $cmds.raw; PreCompact = $cmds.precompact
+        UserPromptSubmit = $cmds.raw; Stop = $cmds.raw; 
+        PreCompact = $cmds.precompact; PostCompact = $cmds.postcompact
     }
 
     if (Test-Path $Path) {
@@ -134,15 +144,60 @@ function Deploy-MoriSkills {
     }
     New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
     $count = 0
-    foreach ($File in Get-ChildItem -Path $SourceDir -Filter "*.skill.md") {
-        $Lines = Get-Content -Path $File.FullName -Encoding UTF8
+    $files = Get-ChildItem -Path $SourceDir -Filter "SKILL.md" -Recurse
+    $files += Get-ChildItem -Path $SourceDir -Filter "*.skill.md" -Recurse
+    $seenPaths = @{}
+    foreach ($File in $files) {
+        $resolvedPath = $File.FullName
+        if ($seenPaths.ContainsKey($resolvedPath)) { continue }
+        $seenPaths[$resolvedPath] = $true
+        
+        $Content = Get-Content -Path $resolvedPath -Raw -Encoding UTF8
+        $Lines = $Content -split '\r?\n'
         $Name = ""; $Desc = ""; $Rest = @()
         foreach ($Line in $Lines) {
-            if ($Line -match "^-\s+name:\s*(.*)$") { $Name = $Matches[1].Trim() }
-            elseif ($Line -match "^-\s+description:\s*(.*)$") { $Desc = $Matches[1].Trim() }
-            elseif ($Name -or $Desc -or $Line.Trim()) { $Rest += $Line }
+            if ($Line -match "^(?:-\s+)?name:\s*(.*)$") { $Name = $Matches[1].Trim() }
+            elseif ($Line -match "^(?:-\s+)?description:\s*(.*)$") { $Desc = $Matches[1].Trim() -replace '^"|"$','' }
         }
-        if ($Name -eq "") { $Name = $File.BaseName.Replace(".skill", "") }
+        
+        if ($Lines.Count -gt 0 -and $Lines[0].Trim() -eq "---") {
+            $endIdx = -1
+            for ($i = 1; $i -lt $Lines.Count; $i++) {
+                if ($Lines[$i].Trim() -eq "---") {
+                    $endIdx = $i
+                    break
+                }
+            }
+            if ($endIdx -ne -1) {
+                for ($i = $endIdx + 1; $i -lt $Lines.Count; $i++) {
+                    $Rest += $Lines[$i]
+                }
+            } else {
+                $Rest = $Lines
+            }
+        } else {
+            $inBody = $false
+            foreach ($Line in $Lines) {
+                if (-not $inBody) {
+                    if ($Line -match "^(?:-\s+)?(?:name|description):\s*" -or $Line.Trim() -eq "---") {
+                        continue
+                    }
+                    if ([string]::IsNullOrWhiteSpace($Line)) {
+                        continue
+                    }
+                    $inBody = $true
+                }
+                $Rest += $Line
+            }
+        }
+        
+        if ($Name -eq "") {
+            if ($File.BaseName -eq "SKILL") {
+                $Name = $File.Directory.Name
+            } else {
+                $Name = $File.BaseName.Replace(".skill", "")
+            }
+        }
         $Folder = Join-Path $DestDir "mori-$Name"
         $Out = Join-Path $Folder "SKILL.md"
         $Exists = Test-Path $Out
@@ -166,16 +221,36 @@ function Deploy-MoriSkills {
 }
 
 function Invoke-MoriDoctor {
-    param([string]$Url, [string]$Client)
+    param([string]$Url, [string]$Client, [string]$TargetProfile)
     $errors = 0
-    $AppDataDir = "$env:USERPROFILE\.gemini\antigravity-ide"
-    $ConfigDir = "$env:USERPROFILE\.gemini\config"
+    if ($TargetProfile -eq "cli") {
+        $AppDataDir = "$env:USERPROFILE\.gemini\antigravity"
+        $ConfigDir = "$env:USERPROFILE\.gemini\antigravity"
+    } else {
+        $AppDataDir = "$env:USERPROFILE\.gemini\antigravity-ide"
+        $ConfigDir = "$env:USERPROFILE\.gemini\antigravity-ide"
+    }
     $PluginsDir = "$ConfigDir\plugins\mori-bridge"
     $mcpPath = "$AppDataDir\mcp_config.json"
     $hooksPath = "$ConfigDir\hooks.json"
     $skillsTargetDir = "$PluginsDir\skills"
 
     Write-Host "--- Mori Antigravity IDE doctor ---`n" -ForegroundColor Cyan
+    Write-Host "Target profile: $($TargetProfile.ToUpper())" -ForegroundColor Cyan
+
+    $configSymlink = "$env:USERPROFILE\.gemini\config"
+    if (Test-Path $configSymlink) {
+        $item = Get-Item $configSymlink
+        if ($item.Attributes -match "ReparsePoint") {
+            $targetPath = $item.Target
+            Write-Host "INFO  ~/.gemini/config symlink points to: $targetPath" -ForegroundColor Cyan
+            if ($targetPath -notlike "*antigravity-ide*" -and (Test-Path "$env:USERPROFILE\.gemini\antigravity-ide")) {
+                Write-Host "WARN  ~/.gemini/config symlink points to CLI configuration, but Antigravity IDE folder exists." -ForegroundColor Yellow
+                Write-Host "      To redirect config to the IDE, run:" -ForegroundColor Yellow
+                Write-Host "      cmd /c rmdir `"$configSymlink`" && mklink /d `"$configSymlink`" `"$env:USERPROFILE\.gemini\antigravity-ide`"" -ForegroundColor Yellow
+            }
+        }
+    }
 
     if (Test-Path $mcpPath) {
         Write-Host "OK  MCP config: $mcpPath" -ForegroundColor Green
@@ -211,6 +286,8 @@ function Invoke-MoriDoctor {
         $text = Get-Content $hooksPath -Raw
         if ($text -like "*_mori_managed*" -or $text -like "*mori-ship-event*") { Write-Host "OK  Event hooks present" -ForegroundColor Green }
         else { Write-Host "WARN  No Mori hooks in hooks.json" -ForegroundColor Yellow; $errors++ }
+        if ($text -like "*mori-post-compact-brief*") { Write-Host "OK  PostCompact brief hook present" -ForegroundColor Green }
+        else { Write-Host "WARN  No PostCompact hook in hooks.json" -ForegroundColor Yellow }
     } else { Write-Host "FAIL  hooks.json missing" -ForegroundColor Red; $errors++ }
 
     $skills = Get-ChildItem $skillsTargetDir -Directory -Filter "mori-*" -ErrorAction SilentlyContinue
@@ -228,9 +305,11 @@ function Invoke-MoriDoctor {
 if ($Doctor) {
     if ([string]::IsNullOrWhiteSpace($ClientName)) { $ClientName = $env:COMPUTERNAME }
     if ($MoriUrl.EndsWith("/")) { $MoriUrl = $MoriUrl.TrimEnd("/") }
-    Invoke-MoriDoctor -Url $MoriUrl -Client $ClientName
+    $docTarget = if ($Target -eq "prompt") { "ide" } else { $Target }
+    Invoke-MoriDoctor -Url $MoriUrl -Client $ClientName -TargetProfile $docTarget
 }
 
+$TargetSpecified = $PSBoundParameters.ContainsKey("Target")
 $Headless = $PSBoundParameters.ContainsKey("MoriUrl") -and $PSBoundParameters.ContainsKey("ClientName")
 if (-not $Headless) {
     Write-Host "--- Mori Antigravity Bridge Setup Wizard ---" -ForegroundColor Cyan
@@ -248,17 +327,27 @@ if (-not $Headless) {
             if ($p) { $ClientName = $p }
         }
     }
+    if (-not $TargetSpecified) {
+        Write-Host ""
+        Write-Host "Install for:"
+        Write-Host "  [C] CLI only (~/.gemini/antigravity)"
+        Write-Host "  [I] IDE only (~/.gemini/antigravity-ide)"
+        Write-Host "  [B] Both"
+        $choice = Read-Host "Choose [C/I/B] (default: I)"
+        if ($choice -match "^[cC]") { $Target = "cli" }
+        elseif ($choice -match "^[bB]") { $Target = "both" }
+        else { $Target = "ide" }
+    }
 }
 
 if ($MoriUrl.EndsWith("/")) { $MoriUrl = $MoriUrl.TrimEnd("/") }
 if ($MoriUrl -notmatch "^https?://") { Write-Error "Invalid Mori URL"; exit 1 }
 if ([string]::IsNullOrWhiteSpace($ClientName)) { $ClientName = $env:COMPUTERNAME }
+if ($Target -eq "prompt") { $Target = "ide" }
 
-$AppDataDir = "$env:USERPROFILE\.gemini\antigravity-ide"
-$ConfigDir = "$env:USERPROFILE\.gemini\config"
-$PluginsDir = "$ConfigDir\plugins\mori-bridge"
-$SkillsTargetDir = "$PluginsDir\skills"
-$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$Targets = @()
+if ($Target -eq "cli" -or $Target -eq "both") { $Targets += "cli" }
+if ($Target -eq "ide" -or $Target -eq "both") { $Targets += "ide" }
 
 Write-Host "`nValidating $MoriUrl..." -ForegroundColor Yellow
 $Connected = $false
@@ -274,37 +363,61 @@ if (-not $Connected -and -not $Force) {
 
 Write-Host "`nSetting up Mori Antigravity Bridge..." -ForegroundColor Green
 $mcpOk = $false
+$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 
-Write-Host "[1/3] Configuring MCP server..." -ForegroundColor Yellow
-try {
-    $MoriServerObj = [ordered]@{
-        type = "http"
-        serverUrl = "$MoriUrl/mcp"
+foreach ($t in $Targets) {
+    Write-Host "`nInstalling to $t profile..." -ForegroundColor Green
+    if ($t -eq "cli") {
+        $AppDataDir = "$env:USERPROFILE\.gemini\antigravity"
+        $ConfigDir = "$env:USERPROFILE\.gemini\antigravity"
+    } else {
+        $AppDataDir = "$env:USERPROFILE\.gemini\antigravity-ide"
+        $ConfigDir = "$env:USERPROFILE\.gemini\antigravity-ide"
     }
-    if ($ApiKey) {
-        $MoriServerObj["headers"] = @{ "X-Api-Key" = $ApiKey }
-    }
-    Merge-McpFile -Path "$AppDataDir\mcp_config.json" -MoriServer ([PSCustomObject]$MoriServerObj)
-    $mcpOk = $true
-} catch { Write-Host "  Error: $_" -ForegroundColor Red }
+    $PluginsDir = "$ConfigDir\plugins\mori-bridge"
+    $SkillsTargetDir = "$PluginsDir\skills"
 
-Write-Host "[2/3] Setting up event capture hooks..." -ForegroundColor Yellow
-$ShipperDst = "$PluginsDir\mori-ship-event.ps1"
-$ShipperSrc = "$PSScriptRoot\mori-ship-event.ps1"
-if (Test-Path $ShipperSrc) {
-    Copy-Item $ShipperSrc $ShipperDst -Force
-    Write-Host "  Deployed mori-ship-event.ps1 to $PluginsDir" -ForegroundColor Cyan
-} else {
-    Write-Host "  Warning: mori-ship-event.ps1 not found alongside installer" -ForegroundColor Yellow
+    Write-Host "[1/3] Configuring MCP server..." -ForegroundColor Yellow
+    try {
+        $MoriServerObj = [ordered]@{
+            type = "http"
+            serverUrl = "$MoriUrl/mcp"
+        }
+        if ($ApiKey) {
+            $MoriServerObj["headers"] = @{ "X-Api-Key" = $ApiKey }
+        }
+        Merge-McpFile -Path "$AppDataDir\mcp_config.json" -MoriServer ([PSCustomObject]$MoriServerObj)
+        $mcpOk = $true
+    } catch { Write-Host "  Error: $_" -ForegroundColor Red }
+
+    Write-Host "[2/3] Setting up event capture hooks..." -ForegroundColor Yellow
+    $ShipperDst = "$PluginsDir\mori-ship-event.ps1"
+    $ShipperSrc = "$PSScriptRoot\mori-ship-event.ps1"
+    if (Test-Path $ShipperSrc) {
+        Copy-Item $ShipperSrc $ShipperDst -Force
+        Write-Host "  Deployed mori-ship-event.ps1 to $PluginsDir" -ForegroundColor Cyan
+    } else {
+        Write-Host "  Warning: mori-ship-event.ps1 not found alongside installer" -ForegroundColor Yellow
+    }
+
+    $BriefDst = "$PluginsDir\mori-post-compact-brief.ps1"
+    $BriefSrc = "$PSScriptRoot\mori-post-compact-brief.ps1"
+    if (Test-Path $BriefSrc) {
+        Copy-Item $BriefSrc $BriefDst -Force
+        Write-Host "  Deployed mori-post-compact-brief.ps1 to $PluginsDir" -ForegroundColor Cyan
+    } else {
+        Write-Host "  Warning: mori-post-compact-brief.ps1 not found alongside installer" -ForegroundColor Yellow
+    }
+
+    try {
+        Merge-MoriHooks -Path "$ConfigDir\hooks.json" -ShipperPath $ShipperDst -Url $MoriUrl -Client $ClientName -Key $ApiKey
+    } catch { Write-Host "  Error merging settings: $_" -ForegroundColor Red }
+
+    Write-Host "[3/3] Deploying skills..." -ForegroundColor Yellow
+    try {
+        Deploy-MoriSkills -SourceDir (Join-Path $RepoRoot "skills") -DestDir $SkillsTargetDir -Upgrade:$UpgradeSkills
+    } catch { Write-Host "  Error deploying skills: $_" -ForegroundColor Red }
 }
-try {
-    Merge-MoriHooks -Path "$ConfigDir\hooks.json" -ShipperPath $ShipperDst -Url $MoriUrl -Client $ClientName -Key $ApiKey
-} catch { Write-Host "  Error merging settings: $_" -ForegroundColor Red }
-
-Write-Host "[3/3] Deploying skills..." -ForegroundColor Yellow
-try {
-    Deploy-MoriSkills -SourceDir (Join-Path $RepoRoot "skills") -DestDir $SkillsTargetDir -Upgrade:$UpgradeSkills
-} catch { Write-Host "  Error deploying skills: $_" -ForegroundColor Red }
 
 Write-Host ""
 if ($mcpOk) {
