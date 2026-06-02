@@ -78,6 +78,8 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         resp_session_id = response.headers.get("mcp-session-id")
         if resp_session_id:
             _AUTHENTICATED_SESSIONS.add(resp_session_id)
-            logger.info("Session %s successfully authenticated for client %s", resp_session_id, client_name)
+            logger.info(
+                "Session %s successfully authenticated for client %s", resp_session_id, client_name
+            )
 
         return response
