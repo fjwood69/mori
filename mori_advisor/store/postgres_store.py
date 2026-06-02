@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from mori_advisor.memory_store import FRESHNESS_CHECK_PROMPT
+
 from .base import BaseStore
 
 logger = logging.getLogger(__name__)
@@ -567,12 +569,77 @@ class PostgresStore(BaseStore):
 
     async def get_memories_by_project(self, project: str, include_global: bool = True) -> dict:
         self._ensure_pool()
+        tag_value = f"project:{project}"
+
+        def _row_to_dict(row) -> dict:
+            r = dict(row)
+            raw = r.get("tags")
+            r["tags"] = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
+            return r
+
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT name, title, type, tier, tags, body FROM memories WHERE tags @> $1::jsonb",
-                json.dumps([project]),
+            project_rows = await conn.fetch(
+                """
+                SELECT * FROM memories
+                WHERE tags @> $1::jsonb
+                  AND tier IN ('canonical', 'working')
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                ORDER BY
+                  CASE tier WHEN 'canonical' THEN 0 ELSE 1 END ASC,
+                  updated_at DESC
+                """,
+                json.dumps([tag_value]),
             )
-        return {r["name"]: dict(r) for r in rows}
+
+            global_rows: list = []
+            if include_global:
+                global_rows = await conn.fetch(
+                    """
+                    SELECT * FROM memories
+                    WHERE (
+                        tags @> '["scope:global"]'::jsonb
+                        OR tags @> '["scope:cross-project"]'::jsonb
+                        OR type IN ('profile', 'pattern')
+                    )
+                    AND (superseded_by IS NULL OR superseded_by = '')
+                    AND NOT (tags @> $1::jsonb)
+                    ORDER BY tier DESC, updated_at DESC
+                    """,
+                    json.dumps([tag_value]),
+                )
+
+            # Other-project index: memories that carry any project:* tag except ours
+            other_raw = await conn.fetch(
+                """
+                SELECT tags FROM memories
+                WHERE EXISTS (
+                    SELECT 1 FROM jsonb_array_elements_text(tags) AS elem
+                    WHERE elem LIKE 'project:%'
+                )
+                AND NOT (tags @> $1::jsonb)
+                AND (superseded_by IS NULL OR superseded_by = '')
+                """,
+                json.dumps([tag_value]),
+            )
+
+        project_memories = [_row_to_dict(r) for r in project_rows]
+        global_memories = [_row_to_dict(r) for r in global_rows]
+
+        other_counts: dict[str, int] = {}
+        for row in other_raw:
+            raw = row["tags"]
+            tags = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
+            for tag in tags:
+                if isinstance(tag, str) and tag.startswith("project:") and tag != tag_value:
+                    proj_name = tag[len("project:") :]
+                    other_counts[proj_name] = other_counts.get(proj_name, 0) + 1
+        other_projects = sorted(other_counts.items(), key=lambda x: x[1], reverse=True)
+
+        return {
+            "project_memories": project_memories,
+            "global_memories": global_memories,
+            "other_projects": other_projects,
+        }
 
     async def session_summary(self, session_id: str) -> str:
         self._ensure_pool()
@@ -728,16 +795,69 @@ class PostgresStore(BaseStore):
 
     async def check_freshness(self, llm_consult, limit: int = 20) -> dict:
         self._ensure_pool()
+        cand_tag_patterns = ["infrastructure", "dependency", "tooling", "config"]
+
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT name, title, tags, body FROM memories WHERE tier = 'working' "
-                "ORDER BY last_retrieved_at ASC NULLS FIRST LIMIT $1",
+                """
+                SELECT * FROM memories
+                WHERE tier = 'canonical'
+                  AND freshness_status IN ('unknown', 'fresh')
+                  AND EXISTS (
+                      SELECT 1 FROM jsonb_array_elements_text(tags) AS elem
+                      WHERE elem = ANY($1::text[])
+                  )
+                ORDER BY freshness_checked_at IS NULL DESC, freshness_checked_at ASC
+                LIMIT $2
+                """,
+                cand_tag_patterns,
                 limit,
             )
-        results = {}
+        # Fetch all rows, release connection before LLM calls
+        mems = []
         for row in rows:
-            verdict = await llm_consult(dict(row))
-            results[row["name"]] = verdict
+            r = dict(row)
+            raw = r.get("tags")
+            r["tags"] = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
+            mems.append(r)
+
+        results = {"checked": 0, "fresh": 0, "stale": 0, "no": 0, "errors": 0}
+
+        for m in mems:
+            try:
+                prompt = FRESHNESS_CHECK_PROMPT.format(
+                    title=m["title"],
+                    tags=", ".join(m["tags"]),
+                    body=(m["body"] or "")[:2000],
+                )
+                response = llm_consult(
+                    system=prompt,
+                    user=m["name"],
+                    vk="fast",
+                    max_tokens=10,
+                    temperature=0.0,
+                )
+                status = (response or "").strip().upper()
+                normalized = "fresh"
+                if status == "NO":
+                    normalized = "no"
+                elif status == "STALE":
+                    normalized = "stale"
+
+                async with self.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE memories SET freshness_status = $1, freshness_checked_at = $2 WHERE name = $3",
+                        normalized,
+                        datetime.now(timezone.utc),
+                        m["name"],
+                    )
+
+                results["checked"] += 1
+                results[normalized] += 1
+            except Exception as e:
+                logger.warning("Freshness check failed for '%s': %s", m["name"], e)
+                results["errors"] += 1
+
         return results
 
     async def scan_orphans(self, days: int = 30, dry_run: bool = True) -> str:
