@@ -189,15 +189,28 @@ class DreamPipeline:
 
                 name = self._path_to_name(path)
                 try:
-                    await self._write_memory(
-                        mem,
-                        name,
-                        action,
-                        batch_session_ids,
-                        batch_clients,
-                        project=batch_project,
-                        _conn=txn_conn,
-                    )
+                    if hasattr(txn_conn, "transaction"):
+                        # asyncpg Connection (Postgres) supports nested transaction (savepoint)
+                        async with txn_conn.transaction():
+                            await self._write_memory(
+                                mem,
+                                name,
+                                action,
+                                batch_session_ids,
+                                batch_clients,
+                                project=batch_project,
+                                _conn=txn_conn,
+                            )
+                    else:
+                        await self._write_memory(
+                            mem,
+                            name,
+                            action,
+                            batch_session_ids,
+                            batch_clients,
+                            project=batch_project,
+                            _conn=txn_conn,
+                        )
                     logger.info("  ✓ %s %s", action, name)
                     written += 1
                 except Exception as e:

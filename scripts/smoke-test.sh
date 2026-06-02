@@ -95,6 +95,8 @@ for key in sorted(checks.keys()):
     err = check.get("error", "")
     if status == "ok":
         print(f"{GREEN}✓{RESET} {key:<20} {extra}")
+    elif status == "skipped":
+        print(f"  {key:<20} (skipped)")
     else:
         print(f"{RED}✗{RESET} {key:<20} {err or 'failed'}")
 
