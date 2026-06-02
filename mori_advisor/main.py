@@ -20,17 +20,19 @@ from pathlib import Path
 from fastmcp import FastMCP
 from pydantic import BaseModel
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.responses import JSONResponse, PlainTextResponse, Response
 
 from mori_advisor.auth import configured_clients, generate_key, init_auth
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.dream import DreamPipeline
 from mori_advisor.ingestion import IngestionPipeline
 from mori_advisor.metrics import (
+    collect_metrics,
     events_counter,
     eviction_queue_gauge,
     init_metrics,
     memories_gauge,
+    metrics_content_type,
     pending_writes_gauge,
 )
 from mori_advisor.store import get_store as _get_store
@@ -2129,45 +2131,44 @@ async def readiness(request: Request) -> JSONResponse:
 
 
 @mcp.custom_route("/metrics", methods=["GET"])
-async def metrics(request: Request) -> PlainTextResponse:
-    """Prometheus metrics endpoint in OpenMetrics exposition format.
+async def metrics(request: Request) -> Response:
+    """Prometheus metrics endpoint.
 
-    Serves from the OTel SDK's Prometheus exporter bridge. Gauges are
-    updated with current DB values on each scrape so the output is always
-    consistent with the store state.
+    Serves metrics collected directly from the memory store, message store,
+    session events, and NATS in standard Prometheus text exposition format.
     """
     try:
-        from prometheus_client import REGISTRY as prom_registry
-        from prometheus_client import generate_latest
+        # Push current DB values onto the global OTel instruments if they exist
+        # to preserve backwards-compatible OTel metric reporting
+        if memories_gauge is not None:
+            try:
+                memories_gauge.set(await _a(memory_store.count()))
+            except Exception:
+                pass
+        if events_counter is not None:
+            try:
+                events_counter.set(await _a(session_log.count_events()))
+            except Exception:
+                pass
+        if pending_writes_gauge is not None:
+            try:
+                pending_writes_gauge.set(await _a(memory_store.pending_count()))
+            except Exception:
+                pass
+        if eviction_queue_gauge is not None:
+            try:
+                eviction_queue_gauge.set(await _a(memory_store.eviction_count()))
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug("Failed to update OTel instruments: %s", e)
 
-        # Push current DB values onto the global OTel instruments
-        memories_gauge.set(await _a(memory_store.count()))
-        events_counter.set(await _a(session_log.count_events()))
-        pending_writes_gauge.set(await _a(memory_store.pending_count()))
-        eviction_queue_gauge.set(await _a(memory_store.eviction_count()))
-
-        data = generate_latest(prom_registry)
-        return PlainTextResponse(data.decode("utf-8"))
-    except Exception:
-        # Fallback: hand-rolled text when Prometheus bridge not installed
-        lines = [
-            "# HELP mori_up Was the last query successful",
-            "# TYPE mori_up gauge",
-            "mori_up 1",
-            "# HELP mori_memories_total Total number of memories in the store",
-            "# TYPE mori_memories_total gauge",
-            f"mori_memories_total {await _a(memory_store.count())}",
-            "# HELP mori_events_total Total number of session events logged",
-            "# TYPE mori_events_total gauge",
-            f"mori_events_total {await _a(session_log.count_events())}",
-            "# HELP mori_pending_writes Number of pending writes awaiting approval",
-            "# TYPE mori_pending_writes gauge",
-            f"mori_pending_writes {await _a(memory_store.pending_count())}",
-            "# HELP mori_eviction_queue_size Number of unresolved eviction queue entries",
-            "# TYPE mori_eviction_queue_size gauge",
-            f"mori_eviction_queue_size {await _a(memory_store.eviction_count())}",
-        ]
-        return PlainTextResponse("\n".join(lines) + "\n")
+    try:
+        data = await collect_metrics(store=store, nats_url=os.environ.get("MORI_NATS_URL"))
+        return Response(content=data, media_type=metrics_content_type())
+    except Exception as e:
+        logger.exception("Failed to collect Prometheus metrics")
+        return PlainTextResponse(f"# Error collecting metrics: {e}\n", status_code=500)
 
 
 # ── Entry point ──────────────────────────────────────────────────────────

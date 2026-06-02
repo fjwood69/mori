@@ -295,28 +295,45 @@ class MemoryStore:
 
     # ── Count methods (for observability) ────────────────────────────────
 
-    def count(self) -> int:
-        """Total memory count."""
+    def count(self, tier: str | None = None, protected: bool | None = None) -> int:
+        """Total memory count, optionally filtered by tier and/or protected status."""
         import sqlite3
+
+        q = "SELECT COUNT(*) FROM memories WHERE 1=1"
+        params = []
+        if tier is not None:
+            q += " AND tier = ?"
+            params.append(tier)
+        if protected is not None:
+            q += " AND protected = ?"
+            params.append(1 if protected else 0)
 
         try:
             conn = self._get_conn()
             try:
-                cur = conn.execute("SELECT COUNT(*) FROM memories")
+                cur = conn.execute(q, params)
                 return cur.fetchone()[0]
             finally:
                 conn.close()
         except sqlite3.Error:
             return 0
 
-    def pending_count(self) -> int:
-        """Number of pending writes awaiting approval."""
+    def pending_count(self, status: str | None = None) -> int:
+        """Number of pending writes, optionally filtered by status."""
         import sqlite3
+
+        q = "SELECT COUNT(*) FROM pending_writes"
+        params = []
+        if status is not None:
+            q += " WHERE status = ?"
+            params.append(status)
+        else:
+            q += " WHERE status = 'pending'"
 
         try:
             conn = self._get_conn()
             try:
-                cur = conn.execute("SELECT COUNT(*) FROM pending_writes WHERE status = 'pending'")
+                cur = conn.execute(q, params)
                 return cur.fetchone()[0]
             finally:
                 conn.close()
@@ -331,6 +348,20 @@ class MemoryStore:
             conn = self._get_conn()
             try:
                 cur = conn.execute("SELECT COUNT(*) FROM eviction_queue WHERE resolved = 0")
+                return cur.fetchone()[0]
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return 0
+
+    def count_ingestion(self) -> int:
+        """Total ingestion runs logged."""
+        import sqlite3
+
+        try:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute("SELECT COUNT(*) FROM ingestion_log")
                 return cur.fetchone()[0]
             finally:
                 conn.close()

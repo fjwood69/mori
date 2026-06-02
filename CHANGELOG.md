@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.1.13 — Native Prometheus /metrics Exposition
+
+- **Native Prometheus Exposition**: Replaced `/metrics` endpoint implementation with a native Prometheus exposition format (`text/plain; version=0.0.4` / OpenMetrics compatibility) using `prometheus_client` directly, allowing direct scraping by homelab Prometheus instances without an intermediate OTel collector.
+- **Pluggable Database Count & Filters**: Extended the memory store interfaces (`count()`, `pending_count()`, `count_messages()`, `count_ingestion()`) for both SQLite and Postgres backends to support filtering (such as memory tier, protection status, message status) directly in the database queries.
+- **OTel Backward Compatibility**: Preserved OpenTelemetry gauges update flow inside the `/metrics` endpoint scrape handler, ensuring any configured background push exporter continues receiving metrics updates.
+
 ## v2.1.12 — Fix MCP Session Auth Bypass for SSE POST/DELETE Requests
 
 - **Session-Based Auth Bypass**: Added an in-memory session tracker `_AUTHENTICATED_SESSIONS` to `ApiKeyMiddleware`. Once a client successfully authenticates via API key on the initial SSE GET request, subsequent POST/DELETE requests belonging to that session ID bypass the API key header check, fixing `401 Unauthorized` errors on clients that fail to propagate custom headers.

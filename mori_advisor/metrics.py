@@ -12,11 +12,20 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+from typing import Optional
 
 from opentelemetry import metrics
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Gauge,
+    Info,
+    generate_latest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,3 +127,136 @@ def shutdown_metrics() -> None:
     """Shut down the meter provider (flush + close)."""
     if _provider is not None:
         _provider.shutdown()
+
+
+# ── Prometheus client exposition ──────────────────────────────────────────
+
+
+# Custom registry to avoid cluttering or conflicting with the global registry
+prom_registry = CollectorRegistry()
+
+# Define Prometheus metrics
+_info = Info("mori", "Mori advisor info", registry=prom_registry)
+_memories_total = Gauge(
+    "mori_memories_total", "Total memories by tier", ["tier"], registry=prom_registry
+)
+_memories_protected = Gauge("mori_memories_protected", "Protected memories", registry=prom_registry)
+_events_total = Gauge("mori_events_total", "Total session events", registry=prom_registry)
+_dream_watermark = Gauge(
+    "mori_dream_watermark",
+    "Current dream watermark (last dreamed event ID)",
+    registry=prom_registry,
+)
+_dream_undreamed = Gauge("mori_dream_undreamed", "Events not yet dreamed", registry=prom_registry)
+_pending_writes = Gauge(
+    "mori_pending_writes_total", "Pending writes by status", ["status"], registry=prom_registry
+)
+_eviction_queue = Gauge("mori_eviction_queue_total", "Eviction queue depth", registry=prom_registry)
+_msg_pending = Gauge(
+    "mori_msg_pending_total", "Pending inter-agent messages", registry=prom_registry
+)
+_nats_connected = Gauge(
+    "mori_nats_connected", "NATS connectivity (1=connected, 0=not)", registry=prom_registry
+)
+_ingestion_log = Gauge(
+    "mori_ingestion_log_total", "Total ingestion log entries", registry=prom_registry
+)
+_scrape_duration = Gauge(
+    "mori_scrape_duration_seconds", "Time taken to collect metrics", registry=prom_registry
+)
+
+
+async def _a(val):
+    """Await val if it's a coroutine, else return as-is."""
+    import inspect
+
+    if inspect.isawaitable(val):
+        return await val
+    return val
+
+
+async def collect_metrics(store, nats_url: Optional[str] = None) -> bytes:
+    """Collect all metrics and return Prometheus exposition format bytes."""
+    t0 = time.monotonic()
+    events_val = 0
+
+    # Info
+    version = os.environ.get("MORI_VERSION", "unknown")
+    backend = "postgres" if "postgresql" in os.environ.get("MORI_DATABASE_URL", "") else "sqlite"
+    _info.info({"version": version, "backend": backend})
+
+    # Memory counts by tier
+    try:
+        for tier in ("canonical", "working", "ephemeral"):
+            count = await _a(store.count(tier=tier))
+            _memories_total.labels(tier=tier).set(count)
+        protected = await _a(store.count(protected=True))
+        _memories_protected.set(protected)
+    except Exception:
+        pass
+
+    # Events
+    try:
+        events_val = await _a(store.count_events())
+        _events_total.set(events_val)
+    except Exception:
+        pass
+
+    # Dream state
+    try:
+        watermark_raw = await _a(store.get_dream_state("last_dreamed_event_id"))
+        watermark = int(watermark_raw or 0)
+        _dream_watermark.set(watermark)
+        _dream_undreamed.set(max(0, events_val - watermark))
+    except Exception:
+        pass
+
+    # Pending writes
+    try:
+        for status in ("pending", "approved", "rejected"):
+            count = await _a(store.pending_count(status=status))
+            _pending_writes.labels(status=status).set(count)
+    except Exception:
+        pass
+
+    # Eviction queue
+    try:
+        evictions = await _a(store.eviction_count())
+        _eviction_queue.set(evictions)
+    except Exception:
+        pass
+
+    # Msg pending
+    try:
+        msgs = await _a(store.count_messages(status="pending"))
+        _msg_pending.set(msgs)
+    except Exception:
+        pass
+
+    # NATS connectivity
+    try:
+        if nats_url:
+            import nats
+
+            nc = await nats.connect(nats_url, connect_timeout=2)
+            await nc.drain()
+            _nats_connected.set(1)
+        else:
+            _nats_connected.set(0)
+    except Exception:
+        _nats_connected.set(0)
+
+    # Ingestion log
+    try:
+        ingestions = await _a(store.count_ingestion())
+        _ingestion_log.set(ingestions)
+    except Exception:
+        pass
+
+    _scrape_duration.set(time.monotonic() - t0)
+
+    return generate_latest(prom_registry)
+
+
+def metrics_content_type() -> str:
+    return CONTENT_TYPE_LATEST

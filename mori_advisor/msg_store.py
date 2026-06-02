@@ -141,10 +141,14 @@ class MsgStore:
         finally:
             conn.close()
 
-    def count(self) -> int:
-        """Total message count — used by smoke test."""
+    def count(self, status: str | None = None) -> int:
+        """Total message count, optionally filtered by status."""
         conn = self._get_conn()
         try:
+            if status is not None:
+                return conn.execute(
+                    "SELECT COUNT(*) FROM msg_log WHERE status = ?", (status,)
+                ).fetchone()[0]
             return conn.execute("SELECT COUNT(*) FROM msg_log").fetchone()[0]
         finally:
             conn.close()
