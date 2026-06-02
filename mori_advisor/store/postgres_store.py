@@ -1155,3 +1155,83 @@ class PostgresStore(BaseStore):
             }
             for r in rows
         ]
+
+    async def get_stale_canonical_memories(self) -> list:
+        """Return stale/invalid canonical memories."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT name, title, freshness_status, freshness_checked_at FROM memories "
+                "WHERE freshness_status IN ('stale', 'no') ORDER BY freshness_checked_at DESC"
+            )
+        return [
+            {
+                "name": r["name"],
+                "title": r["title"],
+                "freshness_status": r["freshness_status"],
+                "freshness_checked_at": str(r["freshness_checked_at"])
+                if r["freshness_checked_at"]
+                else None,
+            }
+            for r in rows
+        ]
+
+    async def get_eviction_queue_summary(self) -> list:
+        """Return a count of eviction queue entries grouped by reason."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT reason, COUNT(*) as total, SUM(CASE WHEN resolved THEN 1 ELSE 0 END) as resolved "
+                "FROM eviction_queue GROUP BY reason"
+            )
+        return [
+            {
+                "reason": r["reason"],
+                "total": r["total"],
+                "resolved": r["resolved"] or 0,
+            }
+            for r in rows
+        ]
+
+    async def get_requirements(
+        self, project: str = "", status: str = "", tag: str = "", limit: int = 50
+    ) -> list:
+        """Return requirement memories filtered by project, status, or tag."""
+        self._ensure_pool()
+        import json
+
+        clauses = ["type = 'requirement'"]
+        params = []
+        i = 1
+        if tag:
+            clauses.append(f"tags @> ${i}::jsonb")
+            params.append(json.dumps([tag]))
+            i += 1
+        else:
+            if project:
+                clauses.append(f"tags @> ${i}::jsonb")
+                params.append(json.dumps([f"project-{project}"]))
+                i += 1
+            if status:
+                clauses.append(f"tags @> ${i}::jsonb")
+                params.append(json.dumps([f"status-{status}"]))
+                i += 1
+
+        where = " AND ".join(clauses)
+        params.append(limit)
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT name, title, tags, description, body FROM memories WHERE {where} ORDER BY name ASC LIMIT ${i}",
+                *params,
+            )
+        return [
+            {
+                "name": r["name"],
+                "title": r["title"],
+                "tags": r["tags"],
+                "description": r["description"],
+                "body": r["body"],
+            }
+            for r in rows
+        ]

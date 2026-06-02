@@ -489,3 +489,81 @@ class SQLiteStore(BaseStore):
             ]
         finally:
             conn.close()
+
+    def get_stale_canonical_memories(self) -> list:
+        """Return stale/invalid canonical memories."""
+        conn = self._mem._get_conn()
+        try:
+            rows = conn.execute(
+                """
+                SELECT name, title, freshness_status, freshness_checked_at FROM memories
+                WHERE freshness_status IN ('stale', 'no') ORDER BY freshness_checked_at DESC
+                """
+            ).fetchall()
+            return [
+                {
+                    "name": r[0],
+                    "title": r[1],
+                    "freshness_status": r[2],
+                    "freshness_checked_at": r[3],
+                }
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    def get_eviction_queue_summary(self) -> list:
+        """Return a count of eviction queue entries grouped by reason."""
+        conn = self._mem._get_conn()
+        try:
+            rows = conn.execute(
+                """
+                SELECT reason, COUNT(*), SUM(CASE WHEN resolved THEN 1 ELSE 0 END)
+                FROM eviction_queue GROUP BY reason
+                """
+            ).fetchall()
+            return [
+                {
+                    "reason": r[0],
+                    "total": r[1],
+                    "resolved": r[2] or 0,
+                }
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    def get_requirements(
+        self, project: str = "", status: str = "", tag: str = "", limit: int = 50
+    ) -> list:
+        """Return requirement memories filtered by project, status, or tag."""
+        conn = self._mem._get_conn()
+        try:
+            sql = "SELECT name, title, tags, description, body FROM memories WHERE type = 'requirement'"
+            params = []
+            if tag:
+                sql += " AND tags LIKE ?"
+                params.append(f'%"{tag}"%')
+            else:
+                if project:
+                    sql += " AND tags LIKE ?"
+                    params.append(f'%"project-{project}"%')
+                if status:
+                    sql += " AND tags LIKE ?"
+                    params.append(f'%"status-{status}"%')
+            sql += " ORDER BY name ASC LIMIT ?"
+            params.append(limit)
+
+            rows = conn.execute(sql, params).fetchall()
+            return [
+                {
+                    "name": r[0],
+                    "title": r[1],
+                    "tags": r[2],
+                    "description": r[3],
+                    "body": r[4],
+                }
+                for r in rows
+            ]
+        finally:
+            conn.close()

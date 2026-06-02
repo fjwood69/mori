@@ -253,3 +253,14 @@ class BaseStore(ABC):
 
     @abstractmethod
     def get_eviction_summary(self) -> list: ...
+
+    @abstractmethod
+    def get_stale_canonical_memories(self) -> list: ...
+
+    @abstractmethod
+    def get_eviction_queue_summary(self) -> list: ...
+
+    @abstractmethod
+    def get_requirements(
+        self, project: str = "", status: str = "", tag: str = "", limit: int = 50
+    ) -> list: ...
