@@ -42,6 +42,15 @@ if [ -n "$DATA_DEV" ] && ! mountpoint -q /data; then
   fi
 fi
 
+# ── Restore SSH host keys if available on persistent disk ───────────────────
+if [ -d "/data/ssh" ]; then
+  echo "→ Restoring SSH host keys from persistent disk..."
+  cp -rp /data/ssh/ssh_host_* /etc/ssh/
+  chmod 600 /etc/ssh/ssh_host_*_key
+  chmod 644 /etc/ssh/ssh_host_*_key.pub
+  systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+fi
+
 # ── Restore Tailscale state if available on persistent disk ─────────────────
 if [ -d "/data/tailscale" ]; then
   echo "→ Restoring Tailscale state from persistent disk..."
