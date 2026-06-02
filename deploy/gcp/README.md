@@ -45,3 +45,15 @@ terraform apply
    sudo systemctl enable --now mori-dream.timer
    sudo systemctl enable --now mori-backup.timer
    ```
+
+4. **Configure Monitoring (GCP Ops Agent)**:
+   Copy the Prometheus scraping configuration template to the agent:
+   ```bash
+   gcloud compute ssh mori-advisor --zone northamerica-northeast2-a --command "
+     sudo tee /etc/google-cloud-ops-agent/config.yaml << 'EOF'
+   $(cat ops-agent-config.yaml)
+   EOF
+     sudo systemctl restart google-cloud-ops-agent
+   "
+   ```
+
