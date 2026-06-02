@@ -40,7 +40,11 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                 status_code=404,
             )
 
-        provided = request.headers.get("x-api-key")
+        provided = (
+            request.headers.get("x-api-key")
+            or request.query_params.get("api-key")
+            or request.query_params.get("api_key")
+        )
         client_name = check_key(provided)
 
         if client_name is None:
