@@ -286,7 +286,8 @@ resource "google_compute_instance" "mori" {
   }
 
   network_interface {
-    network = "default"
+    network    = "default"
+    network_ip = "10.188.0.16"
     # No external IP — all access via Tailscale
   }
 

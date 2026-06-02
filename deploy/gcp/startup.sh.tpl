@@ -42,10 +42,28 @@ if [ -n "$DATA_DEV" ] && ! mountpoint -q /data; then
   fi
 fi
 
+# ── Restore Tailscale state if available on persistent disk ─────────────────
+if [ -d "/data/tailscale" ]; then
+  echo "→ Restoring Tailscale state from persistent disk..."
+  mkdir -p /var/lib/tailscale
+  cp -r /data/tailscale/* /var/lib/tailscale/
+  chmod 700 /var/lib/tailscale
+  chmod 600 /var/lib/tailscale/tailscaled.state 2>/dev/null || true
+fi
+
 # ── Install Tailscale ────────────────────────────────────────────────────
 if ! command -v tailscale &>/dev/null; then
   curl -fsSL https://tailscale.com/install.sh | sh
+fi
+
+# Ensure tailscaled service is started before running tailscale up
+systemctl start tailscaled 2>/dev/null || true
+
+# ── Ensure Tailscale is up ───────────────────────────────────────────────
+if ! tailscale status &>/dev/null; then
   tailscale up --auth-key="${tailscale_auth_key}" --hostname=ca-gcp-mori-advisor
+else
+  echo "Tailscale is already authenticated and running."
 fi
 
 # ── Fetch secrets as root (GCE service account) ─────────────────────────
