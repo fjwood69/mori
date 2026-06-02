@@ -37,7 +37,7 @@ Open your terminal and run:
 The setup script automatically generates and deploys all required files:
 
 ### 1. Connects the MCP Server
-Creates or updates `mcp_config.json` under your Antigravity IDE directory (`~/.gemini/antigravity/mcp_config.json`):
+Creates or updates `mcp_config.json` under your Antigravity target directory (`~/.gemini/antigravity/mcp_config.json` or `~/.gemini/antigravity-ide/mcp_config.json`):
 
 Without API key:
 ```json
@@ -67,13 +67,13 @@ With API key authentication:
 ```
 
 ### 2. Enables Event Logging Hooks
-Creates or updates `hooks.json` under your global config directory (`~/.gemini/config/hooks.json`):
-* Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, and `PreCompact`) to Mori's event logging endpoints (`/api/events/raw` and `/api/precompact`).
+Creates or updates `hooks.json` under your config directory (`~/.gemini/antigravity/hooks.json` or `~/.gemini/antigravity-ide/hooks.json`):
+* Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `PreCompact`, and `PostCompact`) to Mori's event logging shipper (`mori-ship-event.sh` or `mori-ship-event.ps1`) and the re-grounding shipper (`mori-post-compact-brief.sh` or `mori-post-compact-brief.ps1`).
 * Overrides the event query with your configured client name and auth headers.
 * Adds `"_mori_managed": true` to each hook entry so re-runs can find and update Mori's hooks cleanly without matching command strings.
 
 ### 3. Registers Custom Skills
-Creates a custom Antigravity plugin under `~/.gemini/config/plugins/mori-bridge/`:
+Creates a custom Antigravity plugin under your plugins directory:
 * Deploys `plugin.json` to register the bridge.
 * Translates all Claude Code `.skill.md` files from the `skills/` folder into Google Antigravity's YAML frontmatter structure (`SKILL.md`) under `mori-bridge/skills/mori-<name>/SKILL.md`.
 
@@ -85,14 +85,15 @@ If you are scripting the installation or running in CI/CD, you can bypass the wi
 
 ### PowerShell Options:
 ```powershell
-powershell -File scripts/install-mori-antigravity.ps1 -MoriUrl "http://10.0.0.5:8968" -ApiKey "secret" -ClientName "my-client" -Force -UpgradeSkills
+powershell -File scripts/install-mori-antigravity.ps1 -MoriUrl "http://10.0.0.5:8968" -ApiKey "secret" -ClientName "my-client" -Target "ide" -Force -UpgradeSkills
 ```
 
 ### Bash Options:
 ```bash
-./scripts/install-mori-antigravity.sh --url "http://10.0.0.5:8968" --api-key "secret" --client "my-client" --force --upgrade-skills
+./scripts/install-mori-antigravity.sh --url "http://10.0.0.5:8968" --api-key "secret" --client "my-client" --target "ide" --force --upgrade-skills
 ```
 
+Use the `-Target` / `--target` option to specify `'cli'` (`~/.gemini/antigravity`), `'ide'` (`~/.gemini/antigravity-ide`), or `'both'` (default is `'ide'` on Windows and interactive on Linux/macOS).
 Use the `-Force` / `--force` switch to bypass interactive prompts if the server is offline during the setup.
 Use the `-UpgradeSkills` / `--upgrade-skills` switch to force overwriting existing skills in the plugin folder (by default, the installer skips existing skills to protect manual edits).
 
@@ -104,12 +105,12 @@ Validate your installation using the doctor check:
 
 ### PowerShell:
 ```powershell
-powershell -File scripts/install-mori-antigravity.ps1 -Doctor -MoriUrl "http://localhost:8968"
+powershell -File scripts/install-mori-antigravity.ps1 -Doctor -MoriUrl "http://localhost:8968" -Target "ide"
 ```
 
 ### Bash:
 ```bash
-./scripts/install-mori-antigravity.sh --doctor --url "http://localhost:8968"
+./scripts/install-mori-antigravity.sh --doctor --url "http://localhost:8968" --target "ide"
 ```
 
 ---
@@ -118,13 +119,14 @@ powershell -File scripts/install-mori-antigravity.ps1 -Doctor -MoriUrl "http://l
 
 Re-running the installer upgrades event capture hooks and skills automatically:
 * It merges event logging hooks into `hooks.json` cleanly, preserving other third-party hooks.
-* It deploys `mori-ship-event.sh` (Linux/macOS) or `mori-ship-event.ps1` (Windows) to `~/.gemini/config/plugins/mori-bridge/`.
+* It deploys shipper scripts (`mori-ship-event` and `mori-post-compact-brief`) to the plugins directory.
 * It updates legacy hook entries (inline curl or shipper commands without the field) with the `"_mori_managed": true` flag on the first re-run.
 
 The shipper scripts provide:
 - Reliable stdin capture (no subprocess pipe issues)
 - Local failure logging (`%TEMP%\mori-hook.log` on Windows, `/tmp/mori-hook.log` on Linux/macOS)
 - Log rotation at 100 KB
+- PostCompact re-grounding: triggers `/brief` automatically after context compression to keep the agent contextualized.
 - Always exit 0 so a Mori outage never interrupts your Antigravity session
 
 ---

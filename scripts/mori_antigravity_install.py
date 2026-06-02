@@ -18,6 +18,7 @@ HOOK_EVENTS = (
     "UserPromptSubmit",
     "Stop",
     "PreCompact",
+    "PostCompact",
 )
 
 
@@ -27,10 +28,19 @@ def _is_mori_hook(entry: dict[str, Any]) -> bool:
     if entry.get("_mori_managed") is True:
         return True
     cmd = entry.get("command", "")
-    return "mori-ship-event" in cmd or "/api/events/raw" in cmd or "/api/precompact" in cmd
+    return (
+        "mori-ship-event" in cmd
+        or "/api/events/raw" in cmd
+        or "/api/precompact" in cmd
+        or "mori-post-compact-brief" in cmd
+    )
 
 
 def _hook_command(shipper: str, url: str, client: str, api_key: str, mode: str) -> str:
+    if mode == "postcompact":
+        if shipper.lower().endswith(".ps1"):
+            return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{shipper}"'
+        return f'"{shipper}"'
     if shipper.lower().endswith(".ps1"):
         api_flag = f' -ApiKey "{api_key}"' if api_key else ""
         return (
@@ -86,6 +96,10 @@ def merge_hooks(
     raw_cmd = _hook_command(shipper, mori_url, client, api_key, "raw")
     precompact_cmd = _hook_command(shipper, mori_url, client, api_key, "precompact")
 
+    brief_ext = ".ps1" if shipper.lower().endswith(".ps1") else ".sh"
+    brief_shipper = str(Path(shipper).parent / f"mori-post-compact-brief{brief_ext}")
+    postcompact_cmd = _hook_command(brief_shipper, mori_url, client, api_key, "postcompact")
+
     if hooks_path.is_file() and hooks_path.stat().st_size > 0:
         with hooks_path.open(encoding="utf-8") as f:
             data = json.load(f)
@@ -94,7 +108,12 @@ def merge_hooks(
 
     hooks = data.setdefault("hooks", {})
     for event in HOOK_EVENTS:
-        cmd = precompact_cmd if event == "PreCompact" else raw_cmd
+        if event == "PreCompact":
+            cmd = precompact_cmd
+        elif event == "PostCompact":
+            cmd = postcompact_cmd
+        else:
+            cmd = raw_cmd
         hooks[event] = _merge_hook_list(hooks.get(event, []), cmd)
 
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
@@ -215,14 +234,43 @@ def _http_get(url: str, timeout: int = 5) -> tuple[int, str]:
         return 0, str(e)
 
 
-def doctor(mori_url: str | None, client: str) -> int:
+def doctor(mori_url: str | None, client: str, target: str = "ide") -> int:
     home = Path.home()
-    mcp_path = home / ".gemini" / "antigravity" / "mcp_config.json"
-    hooks_path = home / ".gemini" / "config" / "hooks.json"
-    skills_dir = home / ".gemini" / "config" / "plugins" / "mori-bridge" / "skills"
+    if target == "cli":
+        mcp_path = home / ".gemini" / "antigravity" / "mcp_config.json"
+        hooks_path = home / ".gemini" / "antigravity" / "hooks.json"
+        skills_dir = home / ".gemini" / "antigravity" / "plugins" / "mori-bridge" / "skills"
+    elif target == "ide":
+        mcp_path = home / ".gemini" / "antigravity-ide" / "mcp_config.json"
+        hooks_path = home / ".gemini" / "antigravity-ide" / "hooks.json"
+        skills_dir = home / ".gemini" / "antigravity-ide" / "plugins" / "mori-bridge" / "skills"
+    else:  # both
+        mcp_path = home / ".gemini" / "antigravity-ide" / "mcp_config.json"
+        hooks_path = home / ".gemini" / "antigravity-ide" / "hooks.json"
+        skills_dir = home / ".gemini" / "antigravity-ide" / "plugins" / "mori-bridge" / "skills"
     errors = 0
 
     print("--- Mori Antigravity IDE doctor ---\n")
+    print(f"Target profile: {target.upper()}")
+
+    # Check symlinks
+    config_symlink = home / ".gemini" / "config"
+    if config_symlink.is_symlink():
+        target_path = config_symlink.readlink()
+        print(f"INFO  ~/.gemini/config symlink points to: {target_path}")
+        if (
+            "antigravity-ide" not in str(target_path)
+            and (home / ".gemini" / "antigravity-ide").is_dir()
+        ):
+            print(
+                "WARN  ~/.gemini/config symlink points to CLI configuration, but Antigravity IDE folder exists."
+            )
+            print("      To redirect config to the IDE, run:")
+            print("      ln -sfn ~/.gemini/antigravity-ide ~/.gemini/config")
+    elif not config_symlink.exists():
+        print(
+            "WARN  ~/.gemini/config does not exist. It should be a symlink to your active Antigravity profile folder."
+        )
 
     if mcp_path.is_file():
         print(f"OK  MCP config: {mcp_path}")
@@ -268,6 +316,10 @@ def doctor(mori_url: str | None, client: str) -> int:
         else:
             print(f"WARN  No Mori hooks in {hooks_path}")
             errors += 1
+        if "mori-post-compact-brief" in text:
+            print(f"OK  PostCompact brief hook present in {hooks_path}")
+        else:
+            print(f"WARN  No PostCompact hook in {hooks_path}")
     else:
         print(f"FAIL  hooks.json missing: {hooks_path}")
         errors += 1
@@ -311,6 +363,7 @@ def main() -> int:
     p_doc = sub.add_parser("doctor")
     p_doc.add_argument("--url", default="")
     p_doc.add_argument("--client", default="antigravity-ide")
+    p_doc.add_argument("--target", default="ide", choices=["cli", "ide", "both"])
 
     args = parser.parse_args()
 
@@ -335,7 +388,7 @@ def main() -> int:
         return 0
     if args.cmd == "doctor":
         url = args.url or None
-        return doctor(url, args.client)
+        return doctor(url, args.client, args.target)
     return 1
 
 
