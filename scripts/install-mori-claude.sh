@@ -245,25 +245,25 @@ merge_json() {
         def is_mori_cmd: . // "" | test("mori-ship-event|/api/events/raw|/api/precompact|mori-post-compact-brief");
 
         # Per-event hook merge: strip all mori hooks (flat or wrapped), prepend fresh wrapped entry
-        def upsert_hook(cmd):
+        def upsert_hook(cmd; has_matcher):
           (if . == null then [] else . end)
           | map(select(
               (.hooks? // [] | any(.[]; .command? | is_mori_cmd) | not) and
               (.command? | is_mori_cmd | not)
             ))
-          | [{"hooks": [{"type": "command", "command": cmd}]}] + .;
+          | [(if has_matcher then {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]} else {"hooks": [{"type": "command", "command": cmd}]} end)] + .;
 
         # mcpServers.mori — include x-api-key header if key provided
         .mcpServers.mori = ({"type": "http", "url": $mori_url} +
           if $api_key != "" then {"headers": {"x-api-key": $api_key}} else {} end) |
 
         # hooks — per-event merge preserves non-Mori hooks
-        .hooks.PostToolUse        = (.hooks.PostToolUse        | upsert_hook($raw)) |
-        .hooks.PostToolUseFailure = (.hooks.PostToolUseFailure | upsert_hook($raw)) |
-        .hooks.UserPromptSubmit   = (.hooks.UserPromptSubmit   | upsert_hook($raw)) |
-        .hooks.Stop               = (.hooks.Stop               | upsert_hook($raw)) |
-        .hooks.PreCompact         = (.hooks.PreCompact         | upsert_hook($compact)) |
-        .hooks.PostCompact        = (.hooks.PostCompact        | upsert_hook($brief)) |
+        .hooks.PostToolUse        = (.hooks.PostToolUse        | upsert_hook($raw; true)) |
+        .hooks.PostToolUseFailure = (.hooks.PostToolUseFailure | upsert_hook($raw; false)) |
+        .hooks.UserPromptSubmit   = (.hooks.UserPromptSubmit   | upsert_hook($raw; false)) |
+        .hooks.Stop               = (.hooks.Stop               | upsert_hook($raw; false)) |
+        .hooks.PreCompact         = (.hooks.PreCompact         | upsert_hook($compact; false)) |
+        .hooks.PostCompact        = (.hooks.PostCompact        | upsert_hook($brief; false)) |
 
         # permissions.allow — additive, no duplicates
         .permissions.allow = ((.permissions.allow // []) + $allow | unique)
@@ -311,12 +311,12 @@ generate_config_json() {
     }
   },
   "hooks": {
-    "PostToolUse":        [{"hooks": [{"type": "command", "command": "${RAW_CMD}"}]}],
-    "PostToolUseFailure": [{"hooks": [{"type": "command", "command": "${RAW_CMD}"}]}],
-    "UserPromptSubmit":   [{"hooks": [{"type": "command", "command": "${RAW_CMD}"}]}],
-    "Stop":               [{"hooks": [{"type": "command", "command": "${RAW_CMD}"}]}],
-    "PreCompact":         [{"hooks": [{"type": "command", "command": "${COMPACT_CMD}"}]}],
-    "PostCompact":        [{"hooks": [{"type": "command", "command": "${BRIEF_CMD}"}]}]
+    "PostToolUse":        [{"matcher": "*", "hooks": [{"type": "command", "command": "${RAW_CMD//\"/\\\"}"}]}],
+    "PostToolUseFailure": [{"hooks": [{"type": "command", "command": "${RAW_CMD//\"/\\\"}"}]}],
+    "UserPromptSubmit":   [{"hooks": [{"type": "command", "command": "${RAW_CMD//\"/\\\"}"}]}],
+    "Stop":               [{"hooks": [{"type": "command", "command": "${RAW_CMD//\"/\\\"}"}]}],
+    "PreCompact":         [{"hooks": [{"type": "command", "command": "${COMPACT_CMD//\"/\\\"}"}]}],
+    "PostCompact":        [{"hooks": [{"type": "command", "command": "${BRIEF_CMD//\"/\\\"}"}]}]
   },
   "permissions": {
     "allow": ${allow_json}
