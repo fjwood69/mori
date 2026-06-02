@@ -11,11 +11,7 @@ If no arguments: run the standard unscoped brief.
 
 ## Execution
 
-### 1. Pull latest config
-
-`git -C ~/mori-config pull 2>/dev/null || true`
-
-### 2. Resolve project (if --auto or --project)
+### 1. Resolve project (if --auto or --project)
 
 **If `--auto`:**
 1. Check for `.mori-project` file — walk up from CWD to filesystem root; if found, use its text content (stripped, lowercased)
@@ -25,12 +21,12 @@ If no arguments: run the standard unscoped brief.
 
 **If `--project <name>`:** use that name directly.
 
-### 3. Call the MCP tool
+### 2. Call the MCP tool
 
 - With project: call `mori-brief` with `project=<name>`
 - Without project: call `mori-brief` (no params — loads all memories up to cap)
 
-### 4. Check pending messages
+### 3. Check pending messages
 
 Call `mori-msg_recv(unacked=True)`.
 
@@ -43,6 +39,6 @@ If messages are returned, surface them after the memory summary:
 
 Skip this section silently if no pending messages or if `mori-msg_recv` fails (daemon may not be running).
 
-### 5. Report
+### 4. Report
 
 Report "Ready" — summarise what was loaded (memory counts, project scope, dream state, pending message count if any). Do not take autonomous actions.
