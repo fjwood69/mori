@@ -177,6 +177,16 @@ bifrost = BifrostClient(base_url=BIFROST_BASE_URL, timeout=BIFROST_TIMEOUT)
 session_log = store._log if hasattr(store, "_log") else store
 memory_store = store._mem if hasattr(store, "_mem") else store
 
+
+async def _a(val):
+    """Await val if it's a coroutine, else return as-is."""
+    import inspect
+
+    if inspect.isawaitable(val):
+        return await val
+    return val
+
+
 dream_pipeline = DreamPipeline(
     db_path=DATA_DIR / "memories.db",
     bifrost_client=bifrost,
@@ -338,7 +348,9 @@ async def brief(
     # ── Scoped loading ─────────────────────────────────────────────────
     if project:
         try:
-            scoped = memory_store.get_memories_by_project(project, include_global=include_global)
+            scoped = await _a(
+                memory_store.get_memories_by_project(project, include_global=include_global)
+            )
             proj_mems = scoped["project_memories"]
             glob_mems = scoped["global_memories"]
             other = scoped["other_projects"]
@@ -406,7 +418,7 @@ async def brief(
     # ── Unscoped loading (legacy behaviour) ────────────────────────────
     if not project:
         try:
-            memories = memory_store.list(limit=50)
+            memories = await _a(memory_store.list(limit=50))
             mem_count = 0
             if memories and "No memories" not in memories:
                 mem_count = sum(
@@ -418,7 +430,7 @@ async def brief(
 
     # Freshness check on canonical infrastructure memories
     try:
-        fc = memory_store.check_freshness(bifrost.consult, limit=20)
+        fc = await _a(memory_store.check_freshness(bifrost.consult, limit=20))
         if fc["checked"] > 0:
             parts.append(
                 f"**Freshness check:** {fc['fresh']} fresh, {fc['stale']} stale, {fc['no']} invalid ({fc['checked']} checked)"
@@ -430,7 +442,7 @@ async def brief(
 
     # Eviction queue warning
     try:
-        unresolved = store.eviction_count()
+        unresolved = await _a(store.eviction_count())
         if unresolved > 0:
             parts.append(
                 f"**⚠ Eviction queue:** {unresolved} unresolved item(s) — "
@@ -441,7 +453,7 @@ async def brief(
 
     # Load standards
     try:
-        standards = memory_store.list(type_filter="standard", limit=50)
+        standards = await _a(memory_store.list(type_filter="standard", limit=50))
         std_count = 0
         categories: dict[str, int] = {}
         if standards and "No memories" not in standards:
@@ -466,7 +478,7 @@ async def brief(
 
     # Goals summary — show unresolved requirements per project
     try:
-        goal_rows = store.get_unresolved_goals()
+        goal_rows = await _a(store.get_unresolved_goals())
         if goal_rows:
             projects: dict[str, list[str]] = {}
             for row in goal_rows:
@@ -528,7 +540,9 @@ async def consult_advisor(
     # Inject relevant standards when a specific focus is given
     if focus != "general":
         try:
-            standards = memory_store.search(query=None, tag=focus, type_filter="standard", limit=10)
+            standards = await _a(
+                memory_store.search(query=None, tag=focus, type_filter="standard", limit=10)
+            )
             if standards and "No memories" not in standards:
                 user_prompt += f"\n\n## Relevant {focus} standards\n{standards}"
         except Exception:
@@ -553,7 +567,7 @@ async def consult_advisor(
 # ── Standards ingestion ──────────────────────────────────────────────────
 
 
-def import_standards(standards_dir: str | None = None) -> str:
+async def import_standards(standards_dir: str | None = None) -> str:
     """Import all .md files from a standards directory as protected memories.
 
     Each file is tagged with 'standard' and the name of its immediate
@@ -583,15 +597,17 @@ def import_standards(standards_dir: str | None = None) -> str:
 
         try:
             body = file_path.read_text(encoding="utf-8")
-            memory_store.write(
-                name=name,
-                title=str(rel.with_suffix("")),
-                type="standard",
-                tier="canonical",
-                body=body.strip(),
-                tags=tags,
-                client="init",
-                _skip_protection=True,
+            await _a(
+                memory_store.write(
+                    name=name,
+                    title=str(rel.with_suffix("")),
+                    type="standard",
+                    tier="canonical",
+                    body=body.strip(),
+                    tags=tags,
+                    client="init",
+                    _skip_protection=True,
+                )
             )
             imported += 1
         except Exception as e:
@@ -611,7 +627,7 @@ async def standards_reload() -> str:
     Only trusted dreamers can call this. After reload, call
     memory_list with type_filter=standard to see what's available.
     """
-    return import_standards()
+    return await import_standards()
 
 
 @mcp.tool()
@@ -658,15 +674,17 @@ async def pensieve(
         name = query[5:].strip()
         if not name:
             return "Usage: /pensieve read <memory-name>"
-        return memory_store.read(name)
+        return await _a(memory_store.read(name))
 
-    return memory_store.search(
-        query=query if query else None,
-        type_filter=type_filter,
-        tag=tag,
-        client=client,
-        since=since,
-        limit=min(limit, 50),
+    return await _a(
+        memory_store.search(
+            query=query if query else None,
+            type_filter=type_filter,
+            tag=tag,
+            client=client,
+            since=since,
+            limit=min(limit, 50),
+        )
     )
 
 
@@ -1321,17 +1339,19 @@ async def memory_write(
         origin_session_ids: JSON array of session UUIDs that contributed.
         origin_clients: JSON array of client hostnames that contributed.
     """
-    return memory_store.write(
-        name=name,
-        title=title,
-        description=description,
-        type=type,
-        tier=tier,
-        body=body,
-        tags=tags,
-        origin_session_id=origin_session_id,
-        origin_session_ids=origin_session_ids,
-        origin_clients=origin_clients,
+    return await _a(
+        memory_store.write(
+            name=name,
+            title=title,
+            description=description,
+            type=type,
+            tier=tier,
+            body=body,
+            tags=tags,
+            origin_session_id=origin_session_id,
+            origin_session_ids=origin_session_ids,
+            origin_clients=origin_clients,
+        )
     )
 
 
@@ -1342,7 +1362,7 @@ async def memory_read(name: str) -> str:
     Args:
         name: The unique kebab-case name of the memory.
     """
-    return memory_store.read(name)
+    return await _a(memory_store.read(name))
 
 
 @mcp.tool()
@@ -1362,12 +1382,14 @@ async def memory_list(
         client: Filter by client hostname.
         limit: Maximum entries to return (default 50).
     """
-    return memory_store.list(
-        type_filter=type_filter,
-        tag=tag,
-        session=session,
-        client=client,
-        limit=limit,
+    return await _a(
+        memory_store.list(
+            type_filter=type_filter,
+            tag=tag,
+            session=session,
+            client=client,
+            limit=limit,
+        )
     )
 
 
@@ -1389,33 +1411,12 @@ async def memory_req(
         tag: Arbitrary tag filter (overrides project/status if provided).
         limit: Max results (default 50).
     """
-    _conn = store.get_conn()
-    import sqlite3
-
-    sql = "SELECT name, title, tags, description, body FROM memories WHERE type = 'requirement'"
-    params: list = []
-
-    if tag:
-        sql += " AND tags LIKE ?"
-        params.append(f'%"{tag}"%')
-    else:
-        if project:
-            sql += " AND tags LIKE ?"
-            params.append(f'%"project-{project}"%')
-        if status:
-            sql += " AND tags LIKE ?"
-            params.append(f'%"status-{status}"%')
-
-    sql += " ORDER BY name ASC LIMIT ?"
-    params.append(min(limit, 100))
-
     try:
-        cur = _conn.execute(sql, params)
-        rows = cur.fetchall()
-    except sqlite3.Error as e:
+        rows = await _a(
+            store.get_requirements(project=project, status=status, tag=tag, limit=min(limit, 100))
+        )
+    except Exception as e:
         return f"Database error: {e}"
-    finally:
-        _conn.close()
 
     if not rows:
         return "No requirements found."
@@ -1424,7 +1425,12 @@ async def memory_req(
         "| Requirement | Title | Status | Project | Pri | FR/NFR | Preview |\n|---|---|---|---|---|---|---|\n"
     ]
     status_counts: dict[str, int] = {}
-    for name, title, tags_raw, desc, body in rows:
+    for r in rows:
+        name = r["name"]
+        title = r["title"]
+        tags_raw = r["tags"]
+        desc = r["description"]
+        body = r["body"]
         tags = store.parse_tags(tags_raw)
         status_val = "unknown"
         project_val = ""
@@ -1479,13 +1485,15 @@ async def memory_search(
         since: Time filter — "7d" (last 7 days), "30d", or ISO date.
         limit: Max results (default 10, max 50).
     """
-    return memory_store.search(
-        query=query,
-        type_filter=type_filter,
-        tag=tag,
-        client=client,
-        since=since,
-        limit=min(limit, 50),
+    return await _a(
+        memory_store.search(
+            query=query,
+            type_filter=type_filter,
+            tag=tag,
+            client=client,
+            since=since,
+            limit=min(limit, 50),
+        )
     )
 
 
@@ -1496,7 +1504,7 @@ async def memory_delete(name: str) -> str:
     Args:
         name: The unique kebab-case name of the memory to delete.
     """
-    return memory_store.delete(name)
+    return await _a(memory_store.delete(name))
 
 
 @mcp.tool()
@@ -1507,7 +1515,7 @@ async def memory_export(name: str, output_path: str | None = None) -> str:
         name: The unique kebab-case name of the memory to export.
         output_path: Absolute path for the output file (optional).
     """
-    return memory_store.export(name, output_path=output_path)
+    return await _a(memory_store.export(name, output_path=output_path))
 
 
 # ── Versioning tools ─────────────────────────────────────────────────────
@@ -1521,7 +1529,7 @@ async def memory_history(name: str, limit: int = 10) -> str:
         name: The kebab-case name of the memory.
         limit: Maximum versions to return (default 10).
     """
-    return memory_store.history(name, limit=limit)
+    return await _a(memory_store.history(name, limit=limit))
 
 
 @mcp.tool()
@@ -1533,7 +1541,7 @@ async def memory_diff(name: str, from_version: int, to_version: int) -> str:
         from_version: Version ID of the older version.
         to_version: Version ID of the newer version.
     """
-    return memory_store.diff(name, from_version, to_version)
+    return await _a(memory_store.diff(name, from_version, to_version))
 
 
 @mcp.tool()
@@ -1544,7 +1552,7 @@ async def memory_rollback(name: str, version_id: int) -> str:
         name: The kebab-case name of the memory.
         version_id: The version_id from memory_history to restore to.
     """
-    return memory_store.rollback(name, version_id)
+    return await _a(memory_store.rollback(name, version_id))
 
 
 # ── Eviction tools ────────────────────────────────────────────────────
@@ -1572,7 +1580,7 @@ async def memory_review(
 
     # 1. Orphans
     try:
-        orphan_result = memory_store.scan_orphans(days=orphan_days, dry_run=dry_run)
+        orphan_result = await _a(memory_store.scan_orphans(days=orphan_days, dry_run=dry_run))
         parts.append(orphan_result)
     except Exception as e:
         parts.append(f"Orphan scan failed: {e}")
@@ -1580,16 +1588,12 @@ async def memory_review(
     # 2. Stale canonical
     parts.append("\n## Stale Canonical Memories")
     try:
-        _conn = store.get_conn()
-        cur = _conn.execute(
-            "SELECT name, title, freshness_status, freshness_checked_at FROM memories "
-            "WHERE freshness_status IN ('stale', 'no') ORDER BY freshness_checked_at DESC"
-        )
-        rows = cur.fetchall()
-        _conn.close()
+        rows = await _a(store.get_stale_canonical_memories())
         if rows:
-            for name, title, status, checked_at in rows:
-                parts.append(f"- **{name}**: {title} ({status}) — checked {checked_at}")
+            for r in rows:
+                parts.append(
+                    f"- **{r['name']}**: {r['title']} ({r['freshness_status']}) — checked {r['freshness_checked_at']}"
+                )
         else:
             parts.append("No stale canonical memories.")
     except Exception as e:
@@ -1598,7 +1602,7 @@ async def memory_review(
     # 3. Superseded
     parts.append("\n## Superseded Memories")
     try:
-        superseded_rows = store.get_superseded_memories()
+        superseded_rows = await _a(store.get_superseded_memories())
         if superseded_rows:
             for row in superseded_rows:
                 parts.append(
@@ -1612,16 +1616,10 @@ async def memory_review(
     # 4. Eviction queue summary
     parts.append("\n## Eviction Queue")
     try:
-        _conn = store.get_conn()
-        cur = _conn.execute(
-            "SELECT reason, COUNT(*), SUM(CASE WHEN resolved THEN 1 ELSE 0 END) "
-            "FROM eviction_queue GROUP BY reason"
-        )
-        rows = cur.fetchall()
-        _conn.close()
+        rows = await _a(store.get_eviction_queue_summary())
         if rows:
-            for reason, total, resolved in rows:
-                parts.append(f"- **{reason}**: {total} total, {resolved} resolved")
+            for r in rows:
+                parts.append(f"- **{r['reason']}**: {r['total']} total, {r['resolved']} resolved")
         else:
             parts.append("Queue is empty.")
     except Exception as e:
@@ -1640,7 +1638,7 @@ async def memory_session_summary(session_id: str) -> str:
     Args:
         session_id: UUID of the session to search for.
     """
-    return memory_store.session_summary(session_id)
+    return await _a(memory_store.session_summary(session_id))
 
 
 # ── Portability tools ────────────────────────────────────────────────────
@@ -1655,7 +1653,7 @@ async def memory_export_all(output_dir: str | None = None) -> str:
     """
     if output_dir is None:
         output_dir = str(DATA_DIR / "exports")
-    return memory_store.export_all(output_dir)
+    return await _a(memory_store.export_all(output_dir))
 
 
 @mcp.tool()
@@ -1665,7 +1663,7 @@ async def memory_import(source_dir: str) -> str:
     Args:
         source_dir: Absolute path to directory containing .md files.
     """
-    return memory_store.import_memories(source_dir)
+    return await _a(memory_store.import_memories(source_dir))
 
 
 # ── Trusted Dreamer tools ────────────────────────────────────────────────
@@ -1678,7 +1676,7 @@ async def memory_pending_list(status: str = "pending") -> str:
     Args:
         status: Filter by status: pending, approved, or rejected.
     """
-    return memory_store.pending_list(status=status)
+    return await _a(memory_store.pending_list(status=status))
 
 
 @mcp.tool()
@@ -1690,7 +1688,7 @@ async def memory_approve(write_id: int, note: str = "", reviewer: str = "") -> s
         note: Optional review note.
         reviewer: Hostname of the reviewer (auto-detected if empty).
     """
-    return memory_store.approve(write_id, note=note, reviewer=reviewer)
+    return await _a(memory_store.approve(write_id, note=note, reviewer=reviewer))
 
 
 @mcp.tool()
@@ -1702,7 +1700,7 @@ async def memory_reject(write_id: int, note: str = "", reviewer: str = "") -> st
         note: Optional review note.
         reviewer: Hostname of the reviewer (auto-detected if empty).
     """
-    return memory_store.reject(write_id, note=note, reviewer=reviewer)
+    return await _a(memory_store.reject(write_id, note=note, reviewer=reviewer))
 
 
 @mcp.tool()
@@ -1713,7 +1711,7 @@ async def memory_protect(name: str, domains: list[str] | None = None) -> str:
         name: The kebab-case name of the memory to protect/unprotect.
         domains: Tag prefixes that trigger auto-protection.
     """
-    return memory_store.protect(name, domains=domains)
+    return await _a(memory_store.protect(name, domains=domains))
 
 
 # ── Event log API (HTTP, not MCP) ────────────────────────────────────────
@@ -1786,19 +1784,21 @@ async def log_event(request: Request) -> JSONResponse:
         if not entry.session_id:
             return JSONResponse({"status": "skipped", "reason": "no session_id"}, status_code=200)
 
-        row_id = session_log.append_event(
-            session_id=entry.session_id,
-            event_name=entry.event_name,
-            client=entry.client or "",
-            tool_name=entry.tool_name,
-            tool_input=entry.tool_input,
-            tool_response=entry.tool_response,
-            tool_error=entry.tool_error,
-            model=entry.model,
-            cwd=entry.cwd,
-            transcript_path=entry.transcript_path,
-            prompt=entry.prompt,
-            stop_reason=entry.stop_reason,
+        row_id = await _a(
+            session_log.append_event(
+                session_id=entry.session_id,
+                event_name=entry.event_name,
+                client=entry.client or "",
+                tool_name=entry.tool_name,
+                tool_input=entry.tool_input,
+                tool_response=entry.tool_response,
+                tool_error=entry.tool_error,
+                model=entry.model,
+                cwd=entry.cwd,
+                transcript_path=entry.transcript_path,
+                prompt=entry.prompt,
+                stop_reason=entry.stop_reason,
+            )
         )
         logger.info(
             "Logged event %s for session %s (id=%s)", entry.event_name, entry.session_id, row_id
@@ -1850,19 +1850,21 @@ async def log_event_raw(request: Request) -> JSONResponse:
         if not event.session_id:
             return JSONResponse({"status": "skipped", "reason": "no session_id"}, status_code=200)
 
-        row_id = session_log.append_event(
-            session_id=event.session_id,
-            event_name=event.event_name,
-            client=event.client,
-            tool_name=event.tool_name,
-            tool_input=event.tool_input,
-            tool_response=event.tool_response,
-            tool_error=event.tool_error,
-            model=event.model,
-            cwd=event.cwd,
-            transcript_path=event.transcript_path,
-            prompt=event.prompt,
-            stop_reason=event.stop_reason,
+        row_id = await _a(
+            session_log.append_event(
+                session_id=event.session_id,
+                event_name=event.event_name,
+                client=event.client,
+                tool_name=event.tool_name,
+                tool_input=event.tool_input,
+                tool_response=event.tool_response,
+                tool_error=event.tool_error,
+                model=event.model,
+                cwd=event.cwd,
+                transcript_path=event.transcript_path,
+                prompt=event.prompt,
+                stop_reason=event.stop_reason,
+            )
         )
         logger.info(
             "Raw event %s for session %s (id=%s)", event.event_name, event.session_id, row_id
@@ -1881,7 +1883,7 @@ async def events_health(request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "status": "ok",
-            "total_events": session_log.count_events(),
+            "total_events": await _a(session_log.count_events()),
         }
     )
 
@@ -2053,19 +2055,23 @@ async def precompact(request: Request) -> JSONResponse:  # noqa: C901
             return JSONResponse({"status": "skipped", "reason": "no session_id"}, status_code=200)
 
         # Log the event first
-        row_id = session_log.append_event(
-            session_id=event.session_id,
-            event_name=event.event_name,
-            client=event.client,
-            tool_name=event.tool_name,
-            tool_input=event.tool_input,
-            tool_response=event.tool_response,
-            tool_error=event.tool_error,
-            model=event.model,
-            cwd=event.cwd,
-            transcript_path=event.transcript_path,
-            prompt=event.prompt,
-            stop_reason=event.stop_reason,
+        row_id = await _a(
+            session_log.append_event(
+                session_id=event.session_id,
+                event_name=event.event_name,
+                client=event.client,
+                tool_name=event.tool_name,
+                tool_input=event.tool_input,
+                tool_response=event.tool_output
+                if hasattr(event, "tool_output")
+                else event.tool_response,
+                tool_error=event.tool_error,
+                model=event.model,
+                cwd=event.cwd,
+                transcript_path=event.transcript_path,
+                prompt=event.prompt,
+                stop_reason=event.stop_reason,
+            )
         )
 
         result = await dream_pipeline.run()
@@ -2116,7 +2122,7 @@ async def health(request: Request) -> JSONResponse:
 async def readiness(request: Request) -> JSONResponse:
     """Readiness probe. Returns 200 if the database is accessible."""
     try:
-        store.ping()
+        await _a(store.ping())
         return JSONResponse({"status": "ok", "db": "connected"})
     except Exception as e:
         return JSONResponse({"status": "error", "db": str(e)}, status_code=503)
@@ -2135,10 +2141,10 @@ async def metrics(request: Request) -> PlainTextResponse:
         from prometheus_client import generate_latest
 
         # Push current DB values onto the global OTel instruments
-        memories_gauge.set(memory_store.count())
-        events_counter.set(session_log.count_events())
-        pending_writes_gauge.set(memory_store.pending_count())
-        eviction_queue_gauge.set(memory_store.eviction_count())
+        memories_gauge.set(await _a(memory_store.count()))
+        events_counter.set(await _a(session_log.count_events()))
+        pending_writes_gauge.set(await _a(memory_store.pending_count()))
+        eviction_queue_gauge.set(await _a(memory_store.eviction_count()))
 
         data = generate_latest(prom_registry)
         return PlainTextResponse(data.decode("utf-8"))
@@ -2150,16 +2156,16 @@ async def metrics(request: Request) -> PlainTextResponse:
             "mori_up 1",
             "# HELP mori_memories_total Total number of memories in the store",
             "# TYPE mori_memories_total gauge",
-            f"mori_memories_total {memory_store.count()}",
+            f"mori_memories_total {await _a(memory_store.count())}",
             "# HELP mori_events_total Total number of session events logged",
             "# TYPE mori_events_total gauge",
-            f"mori_events_total {session_log.count_events()}",
+            f"mori_events_total {await _a(session_log.count_events())}",
             "# HELP mori_pending_writes Number of pending writes awaiting approval",
             "# TYPE mori_pending_writes gauge",
-            f"mori_pending_writes {memory_store.pending_count()}",
+            f"mori_pending_writes {await _a(memory_store.pending_count())}",
             "# HELP mori_eviction_queue_size Number of unresolved eviction queue entries",
             "# TYPE mori_eviction_queue_size gauge",
-            f"mori_eviction_queue_size {memory_store.eviction_count()}",
+            f"mori_eviction_queue_size {await _a(memory_store.eviction_count())}",
         ]
         return PlainTextResponse("\n".join(lines) + "\n")
 
