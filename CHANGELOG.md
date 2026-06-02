@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.2.0 — Antigravity Installer Profile Parity & PostCompact Hook
+## v2.1.10 — Antigravity Installer Profile Parity & PostCompact Hook
 
 - **Target Selection**: Added `--target cli/ide/both` (Bash) and `-Target cli/ide/both` (PowerShell) option to installers, directing MCP config (`mcp_config.json`) and hooks (`hooks.json`) to `~/.gemini/antigravity` (CLI), `~/.gemini/antigravity-ide` (IDE), or both. Default in headless mode is `ide` to match the NUC active IDE app data folder.
 - **PostCompact Hook**: Deployed `mori-post-compact-brief` shipper script and registered the `PostCompact` hook in Antigravity's `hooks.json` configuration, matching Claude Code installer capability to trigger automatic re-grounding via `/brief`.
