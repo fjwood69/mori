@@ -6,6 +6,8 @@
 - **PostCompact Hook**: Deployed `mori-post-compact-brief` shipper script and registered the `PostCompact` hook in Antigravity's `hooks.json` configuration, matching Claude Code installer capability to trigger automatic re-grounding via `/brief`.
 - **Robust Skill Parsing**: Upgraded the PowerShell skill installer `Deploy-MoriSkills` to support both standard YAML frontmatter blocks (`---`) and bulleted headers (`- name:`).
 - **Symlink Diagnostics**: Upgraded the `--doctor` diagnostics in `mori_antigravity_install.py` and `install-mori-antigravity.ps1` to detect and print remediation instructions when the `~/.gemini/config` symlink points to a mismatching variant.
+- **Dream datetime fix**: `dream.py` event grouper was slicing `TIMESTAMPTZ` values returned by asyncpg as `datetime` objects — not strings — causing `dream_run` to crash with `TypeError: 'datetime.datetime' object is not subscriptable`. Fixed to use `.isoformat()` when the value has that method.
+- **APP_PORT**: `mori_advisor/main.py` server port is now configurable via `APP_PORT` env var (defaults to 8968). Enables side-by-side UAT instances without rebuilding the image.
 
 ## v2.1.9 — Fix Postgres brief() interface mismatches
 
