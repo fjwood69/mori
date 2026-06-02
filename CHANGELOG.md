@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.1.12 — Fix MCP Session Auth Bypass for SSE POST/DELETE Requests
+
+- **Session-Based Auth Bypass**: Added an in-memory session tracker `_AUTHENTICATED_SESSIONS` to `ApiKeyMiddleware`. Once a client successfully authenticates via API key on the initial SSE GET request, subsequent POST/DELETE requests belonging to that session ID bypass the API key header check, fixing `401 Unauthorized` errors on clients that fail to propagate custom headers.
+
 ## v2.1.11 — Postgres UAT Dream Run Fixes & Savepoint Isolation
 
 - **Postgres Savepoint Isolation**: Wrapped each `_write_memory()` call in the dream pipeline inside a nested transaction (savepoint) using `async with txn_conn.transaction():` when running on Postgres (`asyncpg`). This prevents individual database write failures (such as unique key constraint violations) from aborting the entire transaction block, ensuring successful memory writes persist and the watermark advances cleanly.
