@@ -362,7 +362,7 @@ su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-msg \
 echo "Mori-msg daemon started."
 
 # ── Set up dream cron (every 4 hours) ────────────────────────────────────
-DREAM_CRON="0 */4 * * * XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec mori-advisor python -m mori_advisor.dream_job >/data/mori-advisor/dream-cron.log 2>&1"
+DREAM_CRON="0 */4 * * * XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec mori-advisor python -m mori_advisor.dream_job 2>&1 | tee -a /data/mori-advisor/dream-cron.log | logger -t mori-dream"
 (crontab -l 2>/dev/null | grep -v mori-advisor; echo "$DREAM_CRON") | crontab -
 echo "Dream cron installed."
 
