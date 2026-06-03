@@ -29,6 +29,7 @@
 | `MORI_MSG_HEADLESS_ENABLED` | `false` | Spawn headless `claude` process for incoming `task` messages |
 | `MORI_MSG_HEADLESS_TRUSTED` | `""` | Comma-separated hostnames allowed to trigger headless CC |
 | `MORI_POST_COMPACT_BRIEF` | `true` | Set to `false` to suppress the PostCompact re-grounding prompt |
+| `MORI_CONSULT_CAPTURE` | `true` | Set to `false` to suppress automatic capture of `consult_advisor` responses as working-tier memories |
 
 ## Authentication
 

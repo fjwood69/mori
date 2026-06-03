@@ -184,3 +184,22 @@ curl http://localhost:8968/api/events/health
 curl http://localhost:8968/metrics
 # Prometheus-formatted metrics
 ```
+
+## Git push hooks (optional but recommended)
+
+Install the post-push hook into each repo to automatically ingest commit messages into Mori's memory store and publish push events to the NATS bus:
+
+```bash
+# From the mori repo root:
+./scripts/install-git-hooks.sh                    # mori itself
+./scripts/install-git-hooks.sh --repo ~/bifrost
+./scripts/install-git-hooks.sh --repo ~/ai-stack
+```
+
+Add your API key to `~/.claude/.secrets` (the hook reads it automatically at push time):
+
+```
+MORI_API_KEY_<HOSTNAME_UPPER>=your-key
+```
+
+See [docs/reference/git-hooks.md](../reference/git-hooks.md) for full setup, verification steps, and Windows instructions.
