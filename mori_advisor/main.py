@@ -2111,6 +2111,127 @@ async def dream_trigger(request: Request) -> JSONResponse:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
+@mcp.custom_route("/api/dream/state", methods=["GET"])
+async def dream_state_get(request: Request) -> JSONResponse:
+    """Read a single dream state value by key.
+
+    Used by post-push hooks to retrieve the git watermark before computing
+    the commit range to ingest.
+
+    Query params:
+        key (str): The dream state key to look up.
+    """
+    key = request.query_params.get("key", "").strip()
+    if not key:
+        return JSONResponse({"error": "key parameter required"}, status_code=400)
+    try:
+        value = await _a(store.get_dream_state(key, default=None))
+        return JSONResponse({"key": key, "value": value})
+    except Exception as e:
+        logger.error("dream_state_get failed: %s", e)
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/ingest/git", methods=["POST"])
+async def ingest_git(request: Request) -> JSONResponse:
+    """Ingest git commit messages from a post-push hook.
+
+    Each commit is written as a memory (type=project, tags include project:<repo>
+    and pusher:<client>) and logged in the ingestion_log for idempotency. A
+    git watermark (last ingested SHA) is stored in dream_state so subsequent
+    pushes only send new commits.
+
+    Body:
+        repo (str): Repository name — used for project tag and watermark key.
+        branch (str): Branch that was pushed.
+        commits (list): Ordered list (oldest-first) of commit objects, each with:
+            sha, short_sha, subject, author, timestamp.
+        pusher (str, optional): Client hostname.
+
+    Response:
+        status, ingested (int), skipped (int), watermark (str|null)
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    repo = (body.get("repo") or "").strip()
+    branch = (body.get("branch") or "main").strip()
+    commits = body.get("commits", [])
+    pusher = (body.get("pusher") or _get_client_from_request(request) or "unknown").strip()
+
+    if not repo:
+        return JSONResponse({"error": "repo field required"}, status_code=400)
+    if not isinstance(commits, list):
+        return JSONResponse({"error": "commits must be a list"}, status_code=400)
+
+    ingested = 0
+    skipped = 0
+    watermark = None
+
+    for commit in commits:
+        sha = (commit.get("sha") or "").strip()
+        short_sha = (commit.get("short_sha") or sha[:7]).strip()
+        subject = (commit.get("subject") or "").strip()
+        author = (commit.get("author") or "").strip()
+        timestamp = (commit.get("timestamp") or "").strip()
+
+        if not sha or not subject:
+            skipped += 1
+            continue
+
+        already_ingested = await _a(store.is_ingested_by_hash(sha))
+        if already_ingested:
+            skipped += 1
+            watermark = sha
+            continue
+
+        body_text = f"[{repo}/{branch}] {subject}"
+        body_text += f"\n\nCommit {short_sha} by {author} at {timestamp}"
+
+        mem_name = f"commit-{repo}-{short_sha}"
+        await _a(
+            store.write(
+                name=mem_name,
+                title=subject,
+                body=body_text,
+                type="project",
+                tier="working",
+                tags=["commit", f"project:{repo}", f"pusher:{pusher}"],
+                origin_clients=[pusher],
+            )
+        )
+        await _a(
+            store.log_ingestion(
+                source_path=f"git://{repo}/{sha}",
+                source_hash=sha,
+                memories_written=1,
+                model="none",
+                focus="commit",
+                tier="working",
+                tags=["commit", f"project:{repo}"],
+            )
+        )
+        ingested += 1
+        watermark = sha
+
+    if watermark:
+        await _a(store.set_dream_state(f"git_watermark_{repo}", watermark))
+
+    logger.info(
+        "Git ingestion: repo=%s branch=%s ingested=%d skipped=%d watermark=%s",
+        repo,
+        branch,
+        ingested,
+        skipped,
+        watermark,
+    )
+    return JSONResponse(
+        {"status": "ok", "ingested": ingested, "skipped": skipped, "watermark": watermark}
+    )
+
+
 # ── Observability endpoints ──────────────────────────────────────────────
 
 
