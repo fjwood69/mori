@@ -65,7 +65,14 @@ if ($ApiKey) {
         $Watermark = $WmResponse.watermark
     } catch { $Watermark = $null }
 
-    $Range = if ($Watermark) { "${Watermark}..HEAD" } else { "HEAD~20..HEAD" }
+    # Use the watermark only if it resolves to a real commit (guards against
+    # force-push, rebase, fresh clone, or a SHA from another machine).
+    $WmValid = $false
+    if ($Watermark) {
+        git rev-parse --verify --quiet "$Watermark^{commit}" *>$null
+        $WmValid = ($LASTEXITCODE -eq 0)
+    }
+    $Range = if ($WmValid) { "${Watermark}..HEAD" } else { "HEAD~20..HEAD" }
 
     # Collect commits with body (record separator \x1e, field separator \x1f)
     $GitOut = git log --reverse $Range --format="%H%x1f%h%x1f%s%x1f%b%x1e" 2>$null

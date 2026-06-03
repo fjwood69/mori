@@ -59,7 +59,11 @@ if [ -n "$MORI_API_KEY" ] && command -v python3 >/dev/null 2>&1; then
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('watermark') or '')" \
     2>/dev/null || echo "")
 
-  if [ -n "$WATERMARK" ]; then
+  # Use the watermark only if it's a real commit in this repo. A watermark that
+  # doesn't resolve (force-push, rebase, fresh clone, or a SHA from another
+  # machine not yet fetched) would make `git log <bad>..HEAD` error and silently
+  # ingest nothing — fall back to the last 20 commits instead.
+  if [ -n "$WATERMARK" ] && git rev-parse --verify --quiet "${WATERMARK}^{commit}" >/dev/null 2>&1; then
     RANGE="${WATERMARK}..HEAD"
   else
     RANGE="HEAD~20..HEAD"

@@ -17,3 +17,6 @@ deploy/gcp/terraform.tfvars
 deploy/gcp/.terraform/
 deploy/gcp/*.tfstate
 deploy/gcp/*.tfstate.backup
+# Terraform-rendered startup scripts (contain secrets — never commit)
+deploy/gcp/rendered_startup.sh
+deploy/gcp/rendered_*.sh

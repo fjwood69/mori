@@ -86,58 +86,53 @@ jobs:
           key: ${{ secrets.GCE_SSH_KEY }}
           envs: GITHUB_REF_NAME
           script: |
+            set -e
             VERSION="${GITHUB_REF_NAME#v}"
             IMAGE="ghcr.io/fjwood69/mori:${VERSION}"
-            sudo podman pull "$IMAGE"
+            ENVFILE="/data/mori-advisor/.env"
+            MORI_UID=$(id -u mori)
+            RT="XDG_RUNTIME_DIR=/run/user/${MORI_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${MORI_UID}/bus"
 
-            # Stop any process holding port 8968 or 8969 that isn't tracked by
-            # rootful podman (e.g. startup-script rootless containers from a VM reboot)
-            for PORT in 8968 8969; do
-              PID=$(ss -tlnp 2>/dev/null | awk -v p=":${PORT} " '$0 ~ p {match($0, /pid=([0-9]+)/, a); if (a[1]) print a[1]}')
-              if [ -n "$PID" ]; then
-                CNAME=$(sudo podman ps --format "{{.Names}}" --filter "pid=${PID}" 2>/dev/null | head -1)
-                [ -z "$CNAME" ] && sudo kill "$PID" 2>/dev/null && sleep 2 || true
-              fi
-            done
+            # Containers run ROOTLESS as the mori user (matching the GCE startup
+            # script). The CD user reaches that runtime via `sudo su - mori`.
+            # All runtime config (incl. secrets) lives in $ENVFILE, written once
+            # by the startup script — CD never needs the secret values.
 
-            # advisor blue/green
-            sudo podman stop mori-advisor-new 2>/dev/null || true
-            sudo podman rm mori-advisor-new 2>/dev/null || true
-            sudo podman run -d \
-              --name mori-advisor-new \
-              --network=host \
-              --restart=unless-stopped \
+            # Preflight guardrail: a rootful mori container (from an old CD or a
+            # manual run) would squat the host port and the rootless container
+            # could never bind it. Rootful and rootless stores are invisible to
+            # each other, so remove any rootful copy before deploying.
+            STRAY=$(sudo podman ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^mori-(advisor|ingestion)$' || true)
+            if [ -n "$STRAY" ]; then
+              echo "Removing stray ROOTFUL mori containers: $STRAY"
+              sudo podman rm -f mori-advisor mori-ingestion 2>/dev/null || true
+            fi
+
+            if [ ! -f "$ENVFILE" ]; then
+              echo "FATAL: $ENVFILE missing — startup script must write it first"; exit 1
+            fi
+
+            # Pull new image as mori
+            sudo su - mori -c "$RT podman pull '$IMAGE'"
+
+            # Replace in place — atomic stop-old/start-new (no port clash, which
+            # blue/green cannot avoid under --network=host).
+            sudo su - mori -c "$RT podman run -d --replace --name mori-advisor \
+              --restart=always --network=host --user 0 \
               -v /data/mori-advisor:/data/mori-advisor:Z \
-              --env-file /data/mori-advisor/.env \
-              "$IMAGE"
-
-            # ingestion blue/green
-            sudo podman stop mori-ingestion-new 2>/dev/null || true
-            sudo podman rm mori-ingestion-new 2>/dev/null || true
-            sudo podman run -d \
-              --name mori-ingestion-new \
-              --network=host \
-              --restart=unless-stopped \
+              --env-file $ENVFILE '$IMAGE'"
+            sudo su - mori -c "$RT podman run -d --replace --name mori-ingestion \
+              --restart=always --network=host --user 0 \
               -v /data/mori-advisor:/data/mori-advisor:Z \
-              --env-file /data/mori-advisor/.env \
-              "$IMAGE" python -m mori_advisor.ingestion_server
+              --env-file $ENVFILE '$IMAGE' python -m mori_advisor.ingestion_server"
 
-            # wait for both to be healthy
+            # Health gate
             for i in 1 2 3 4 5; do
               sleep $((i * 2))
               curl -sf http://localhost:8968/health && curl -sf http://localhost:8969/health && break
-              [ $i -eq 5 ] && { sudo podman rm -f mori-advisor-new mori-ingestion-new; exit 1; }
+              [ $i -eq 5 ] && { echo "health check failed"; exit 1; }
             done
-
-            # swap advisor
-            sudo podman stop mori-advisor 2>/dev/null || true
-            sudo podman rm mori-advisor 2>/dev/null || true
-            sudo podman rename mori-advisor-new mori-advisor
-
-            # swap ingestion
-            sudo podman stop mori-ingestion 2>/dev/null || true
-            sudo podman rm mori-ingestion 2>/dev/null || true
-            sudo podman rename mori-ingestion-new mori-ingestion
+            echo "Deploy OK: $IMAGE (rootless, --env-file)"
 
   create-release:
     name: Create GitHub Release

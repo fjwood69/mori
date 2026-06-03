@@ -85,6 +85,9 @@ fi
 # The mori user can't call gcloud secrets — it runs under GCE's service
 # account identity which is only available to root or via metadata server.
 MORI_API_KEY=$(gcloud secrets versions access latest --secret=MORI_API_KEY --project=${project_id} 2>/dev/null || echo "")
+# Named per-client API keys (name:secret,name:secret,...) — WITHOUT this the
+# server starts in open-auth mode (anyone on the network). Required.
+MORI_API_KEYS=$(gcloud secrets versions access latest --secret=MORI_API_KEYS --project=${project_id} 2>/dev/null || echo "")
 MORI_ADVISOR_API_KEY=$(gcloud secrets versions access latest --secret=MORI_ADVISOR_API_KEY --project=${project_id} 2>/dev/null || echo "")
 MORI_BASE_URL=$(gcloud secrets versions access latest --secret=MORI_BASE_URL --project=${project_id} 2>/dev/null || echo "")
 MORI_MODEL=$(gcloud secrets versions access latest --secret=MORI_MODEL --project=${project_id} 2>/dev/null || echo "")
@@ -205,8 +208,26 @@ if [ $PG_READY -eq 0 ]; then
   exit 1
 fi
 
-# Write .env for runtime reference (backup script, manual ops)
-echo "MORI_DATABASE_URL=$MORI_DATABASE_URL" > /data/mori-advisor/.env
+# Write the COMPLETE runtime env to .env — single source of truth used by both
+# the container launches below AND the CD pipeline (--env-file). Keeping all
+# config here means CD never needs the secret values and the two deploy paths
+# can never drift. mode 600, mori-owned (contains secrets).
+cat > /data/mori-advisor/.env <<ENVEOF
+MORI_ADVISOR_DATA=/data/mori-advisor
+MORI_DATABASE_URL=$MORI_DATABASE_URL
+MORI_REQUIRE_POSTGRES=true
+MORI_PROVIDER_MODE=bifrost
+MORI_BIFROST_ADVISOR_VK=sk-bf-mori-advisor-gce-001
+MORI_BIFROST_DREAM_VK=sk-bf-mori-advisor-gce-001
+MORI_BIFROST_FAST_VK=sk-bf-mori-advisor-gce-001
+MORI_BASE_URL=http://localhost:8787
+MORI_ADVISOR_API_KEY=$MORI_ADVISOR_API_KEY
+MORI_API_KEYS=$MORI_API_KEYS
+MORI_MODEL=$MORI_MODEL
+MORI_DREAM_MODEL=$MORI_DREAM_MODEL
+MORI_TRUSTED_DREAMERS=$MORI_TRUSTED_DREAMERS
+MORI_NATS_URL=$MORI_NATS_URL
+ENVEOF
 chown mori:mori /data/mori-advisor/.env
 chmod 600 /data/mori-advisor/.env
 
@@ -309,53 +330,34 @@ fi
 # Start mori-advisor container (port 8968) — Bifrost mode via localhost:8787.
 # MORI_REQUIRE_POSTGRES=true: fail fast if postgres is unreachable rather than
 # silently falling back to SQLite.
-su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-advisor --restart=always --network=host \
+# All config comes from the --env-file written above (single source of truth,
+# identical to what the CD pipeline uses — the two paths cannot drift).
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --replace --name mori-advisor --restart=always --network=host \
   --user 0 \
   -v /data/mori-advisor:/data/mori-advisor:Z \
-  -e MORI_ADVISOR_DATA=/data/mori-advisor \
-  -e MORI_DATABASE_URL='$MORI_DATABASE_URL' \
-  -e MORI_REQUIRE_POSTGRES=true \
-  -e MORI_PROVIDER_MODE=bifrost \
-  -e MORI_BIFROST_ADVISOR_VK=sk-bf-mori-advisor-gce-001 \
-  -e MORI_BIFROST_DREAM_VK=sk-bf-mori-advisor-gce-001 \
-  -e MORI_BIFROST_FAST_VK=sk-bf-mori-advisor-gce-001 \
-  -e MORI_ADVISOR_API_KEY='$MORI_ADVISOR_API_KEY' \
-  -e MORI_BASE_URL=http://localhost:8787 \
-  -e MORI_MODEL='$MORI_MODEL' \
-  -e MORI_DREAM_MODEL='$MORI_DREAM_MODEL' \
-  -e MORI_TRUSTED_DREAMERS='$MORI_TRUSTED_DREAMERS' \
-  -e MORI_NATS_URL='$MORI_NATS_URL' \
+  --env-file /data/mori-advisor/.env \
   '$CONTAINER_IMAGE'"
 
 echo "Mori-advisor container started."
 
 # Start mori-ingestion container (port 8969) — same image, different entrypoint.
 # Shares /data/mori-advisor bind-mount with mori-advisor (co-location mandatory).
-su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f mori-ingestion 2>/dev/null; true"
-su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-ingestion \
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --replace --name mori-ingestion \
   --restart=always --network=host --user 0 \
   -v /data/mori-advisor:/data/mori-advisor:Z \
-  -e MORI_ADVISOR_DATA=/data/mori-advisor \
-  -e MORI_DATABASE_URL='$MORI_DATABASE_URL' \
-  -e MORI_REQUIRE_POSTGRES=true \
-  -e MORI_ADVISOR_API_KEY='$MORI_ADVISOR_API_KEY' \
-  -e MORI_BASE_URL=http://localhost:8787 \
-  -e MORI_MODEL='$MORI_MODEL' \
-  -e MORI_DREAM_MODEL='$MORI_DREAM_MODEL' \
-  -e MORI_TRUSTED_DREAMERS='$MORI_TRUSTED_DREAMERS' \
-  -e MORI_NATS_URL='$MORI_NATS_URL' \
+  --env-file /data/mori-advisor/.env \
   '$CONTAINER_IMAGE' python -m mori_advisor.ingestion_server"
 
 echo "Mori-ingestion container started."
 
 # Start mori-msg daemon (internal — no ports).
 # Sole writer to /data/mori-advisor/msg.db; subscribes MORI_MSG JetStream stream.
-su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f mori-msg 2>/dev/null; true"
-su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-msg \
+# Uses the same env-file; -e MORI_MSG_HEADLESS_ENABLED is applied after the
+# file (podman precedence) to keep the daemon non-headless.
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --replace --name mori-msg \
   --restart=always --network=host --user 0 \
   -v /data/mori-advisor:/data/mori-advisor:Z \
-  -e MORI_ADVISOR_DATA=/data/mori-advisor \
-  -e MORI_NATS_URL='$MORI_NATS_URL' \
+  --env-file /data/mori-advisor/.env \
   -e MORI_MSG_HEADLESS_ENABLED=false \
   '$CONTAINER_IMAGE' python -m mori_advisor.msg_daemon"
 
