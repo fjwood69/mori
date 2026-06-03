@@ -14,7 +14,11 @@
 | `MORI_BIFROST_DREAM_VK` | `mori-dream-local` | Bifrost virtual key name for dream calls |
 | `MORI_BIFROST_FAST_VK` | `mori-fast-local` | Bifrost virtual key name for fast calls |
 | `MORI_MCP_SERVER_NAME` | `mori` | MCP tool prefix |
-| `MORI_ADVISOR_DATA` | `/data/mori-advisor` | SQLite DB location |
+| `MORI_ADVISOR_DATA` | `/data/mori-advisor` | Data directory (memories.db, msg.db, etc.) |
+| `MORI_DATABASE_URL` | — | PostgreSQL connection URL (`postgresql://user:pass@host/db`). If unset, SQLite is used. |
+| `MORI_REQUIRE_POSTGRES` | — | If `true`, abort on startup when Postgres is unreachable. Prevents silent SQLite fallback in team/GCP deployments. |
+| `APP_PORT` | `8968` | Override the server listen port. Useful for side-by-side UAT instances. |
+| `MORI_NATS_URL` | — | NATS JetStream URL for cross-device messaging and `mori-msg` daemon (`nats://user:pass@host:4222`). |
 | `MORI_API_KEYS` | — | Named API keys: `name:secret,name:secret,...` — see [Authentication](#authentication) |
 | `MORI_ADVISOR_API_KEY` | — | Legacy single key (backward compat — prefer `MORI_API_KEYS`) |
 | `MORI_TRUSTED_DREAMERS` | — | Comma-separated hostnames for write approval bypass |
@@ -85,6 +89,29 @@ config changes. Migrate to named keys when adding more than one client.
 3. Update each client's MCP config with its key
 4. Restart server
 5. Remove `MORI_ADVISOR_API_KEY` from `.env`
+
+---
+
+## PostgreSQL
+
+Set `MORI_DATABASE_URL` to switch from SQLite to PostgreSQL:
+
+```bash
+MORI_DATABASE_URL=postgresql://mori:yourpassword@localhost:5432/mori
+```
+
+In team and GCP deployments, also set:
+
+```bash
+MORI_REQUIRE_POSTGRES=true   # abort instead of silently falling back to SQLite
+```
+
+SQLite remains the default — setting `MORI_DATABASE_URL` is the only change needed to activate
+the PostgreSQL backend. The store factory (`get_store()`) selects the backend at startup; no
+other code changes are required.
+
+See [docs/reference/team-configuration.md](team-configuration.md) for replication, backup, pgBouncer
+configuration, and the SQLite → PostgreSQL migration guide.
 
 ---
 

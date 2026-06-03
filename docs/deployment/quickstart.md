@@ -133,23 +133,22 @@ See [deploy/gcp/](../deploy/gcp/) for Terraform configs. Creates:
 
 - GCE e2-small VM (2 vCPU, 2GB RAM, 20GB persistent disk) — ~$12/month
 - Ubuntu 24.04 LTS with Podman rootless
-- GCS bucket for SQLite backups (daily backup, 90-day archive lifecycle)
-- GCP Secret Manager for all secrets
+- Persistent disk for Postgres data, mori state, Tailscale identity — survives VM rebuilds
+- GCS bucket for daily `pg_dump` backups (14-day lifecycle)
+- GCP Secret Manager for all secrets — no credentials in the startup script
 - Tailscale join for access (no public ports)
-- Systemd timers for dream and backup
+- Dream scheduling and pg_dump backup via cron in the startup script
 
 ```bash
 cd deploy/gcp
 terraform init
 terraform apply
-# If migrating from an existing homelab NUC:
-#   bash scripts/migrate-secrets.sh
-# (Assumes you're on the NUC with ~/.claude/.secrets available.
-#  For a fresh GCP deployment without a NUC, create secrets manually
-#  in GCP Secret Manager and reference them in your Terraform variables.)
-# SSH in and verify:
-gcloud compute ssh mori-advisor
+# Populate secrets in GCP Secret Manager (see deploy/gcp/README.md for the full list),
+# or run scripts/migrate-secrets.sh if migrating from an existing instance.
+# SSH in and verify (VM has no external IP — IAP tunneling is required):
+gcloud compute ssh mori@mori-advisor --project=<your-project> --zone=<your-zone> --tunnel-through-iap
 curl http://localhost:8968/health
+curl http://localhost:8968/ready
 ```
 
 ## Dual deployment (migration period)
