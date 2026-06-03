@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.1.22 — Unify deploy on rootless runtime + env-file single source of truth
+
+- **Root-cause fix for the production `/api/git/*` 404s**: the GCE startup script ran
+  containers ROOTLESS (as the `mori` user) while CD ran them ROOTFUL (`sudo podman`). The two
+  Podman stores are mutually invisible, so each CD spun up a parallel rootful container that
+  fought the rootless one for host port 8968 — whichever bound first served; the other
+  crash-looped. The rootful copy was also under-configured (auth off, no bifrost/NATS).
+- **`cd.yml`**: deploy ROOTLESS as the `mori` user via `sudo su - mori`, matching the startup
+  script. `podman run --replace` (atomic — blue/green is impossible under `--network=host`).
+  Preflight guardrail removes any stray rootful `mori-*` container. CD reads
+  `/data/mori-advisor/.env` and needs no secret values.
+- **`startup.sh.tpl`**: write the COMPLETE runtime env to `/data/mori-advisor/.env` (single
+  source of truth shared with CD — the two paths can no longer drift). Source `MORI_API_KEYS`
+  from Secret Manager — it was previously never set, so clean rebuilds came up in open-auth mode.
+- **`post-push.sh` / `post-push.ps1`**: validate the git watermark resolves to a real commit
+  before use; fall back to `HEAD~20` on force-push, rebase, fresh clone, or a stale/foreign SHA
+  (previously errored silently and ingested nothing).
+- **UAT**: `start-uat.sh` now runs a custom-route surface check (401 without key, non-404 with
+  key) on both SQLite and Postgres backends — the exact assertion that would have caught the
+  404 regression the standard smoke test missed.
+
 ## v2.1.21 — Fix CD port conflict + switch to http_app() ASGI startup
 
 - **`cd.yml`**: Before blue/green deploy, kill any process on ports 8968/8969 that
