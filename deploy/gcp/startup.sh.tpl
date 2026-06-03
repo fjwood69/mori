@@ -1,5 +1,5 @@
 #!/bin/bash
-# Moku-advisor GCE startup script
+# Mori-advisor GCE startup script
 # Installs Podman + Tailscale, mounts the persistent data disk,
 # ensures the mori user has subuid mappings for rootless Podman,
 # then starts the container as the mori user.
@@ -36,6 +36,12 @@ if [ -n "$DATA_DEV" ] && ! mountpoint -q /data; then
   mkdir -p /data/mori-advisor
   chown mori:mori /data/mori-advisor
   chmod 755 /data/mori-advisor
+  # Postgres pgdata — must be owned by host UID that maps to postgres uid=999
+  # inside the mori user's rootless Podman namespace.
+  # mori uid=10001, subuid start=296608 → container uid=999 → host uid=297606.
+  mkdir -p /data/postgres/pgdata
+  chmod 700 /data/postgres/pgdata
+  chown -R 297606:297606 /data/postgres/pgdata
   UUID=$(blkid -s UUID -o value "$DATA_DEV")
   if [ -n "$UUID" ] && ! grep -q "$UUID" /etc/fstab 2>/dev/null; then
     echo "UUID=$UUID /data ext4 defaults,nofail 0 2" >> /etc/fstab
@@ -86,6 +92,8 @@ MORI_DREAM_MODEL=$(gcloud secrets versions access latest --secret=MORI_DREAM_MOD
 MORI_TRUSTED_DREAMERS=$(gcloud secrets versions access latest --secret=MORI_TRUSTED_DREAMERS --project=${project_id} 2>/dev/null || echo "")
 MORI_NATS_URL=$(gcloud secrets versions access latest --secret=MORI_NATS_URL --project=${project_id} 2>/dev/null || echo "")
 GHCR_TOKEN=$(gcloud secrets versions access latest --secret=GHCR_TOKEN --project=${project_id} 2>/dev/null || echo "")
+MORI_PG_PASSWORD=$(gcloud secrets versions access latest --secret=MORI_PG_PASSWORD --project=${project_id} 2>/dev/null || echo "")
+MORI_DATABASE_URL="postgresql://mori:${MORI_PG_PASSWORD}@localhost:5432/mori"
 BIFROST_ADMIN_PASSWORD=$(gcloud secrets versions access latest --secret=BIFROST_ADMIN_PASSWORD --project=${project_id} 2>/dev/null || echo "")
 DEEPINFRA_API_KEY=$(gcloud secrets versions access latest --secret=DEEPINFRA_API_KEY --project=${project_id} 2>/dev/null || echo "")
 NOVITA_API_KEY=$(gcloud secrets versions access latest --secret=NOVITA_API_KEY --project=${project_id} 2>/dev/null || echo "")
@@ -97,6 +105,10 @@ FIREWORKS_API_KEY=$(gcloud secrets versions access latest --secret=FIREWORKS_API
 # Validate critical secrets
 if [ -z "$MORI_API_KEY" ]; then
   echo "WARN: MORI_API_KEY is empty — container will start without provider access"
+fi
+if [ -z "$MORI_PG_PASSWORD" ]; then
+  echo "FATAL: MORI_PG_PASSWORD is empty — cannot start postgres or mori-advisor"
+  exit 1
 fi
 
 # ── Pull and run containers (rootless) ──────────────────────────────────
@@ -138,6 +150,9 @@ done
 
 # Remove old containers if they exist
 su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f mori-advisor 2>/dev/null; true"
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f mori-ingestion 2>/dev/null; true"
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f mori-msg 2>/dev/null; true"
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f mori-pg 2>/dev/null; true"
 su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman rm -f bifrost 2>/dev/null; true"
 
 # Start Bifrost container (port 8787)
@@ -156,6 +171,44 @@ echo "Bifrost container started."
 
 # Wait for Bifrost to be ready
 sleep 5
+
+# ── Start Postgres (port 5432) ───────────────────────────────────────────
+# Bind-mounted to /data/postgres/pgdata so data survives VM rebuilds.
+# Must start before mori-advisor, mori-ingestion, and mori-msg — all depend on it.
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-pg \
+  --restart=always --network=host \
+  -e POSTGRES_USER=mori \
+  -e POSTGRES_PASSWORD='$MORI_PG_PASSWORD' \
+  -e POSTGRES_DB=mori \
+  -e POSTGRES_INITDB_ARGS='--locale=en_US.utf8' \
+  -v /data/postgres/pgdata:/var/lib/postgresql/data \
+  docker.io/postgres:16 \
+  postgres \
+    -c listen_addresses='*' \
+    -c wal_level=replica \
+    -c max_wal_senders=3 \
+    -c wal_keep_size=256"
+
+echo "Waiting for Postgres to be ready..."
+PG_READY=0
+for i in $(seq 1 30); do
+  if su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec mori-pg pg_isready -U mori" &>/dev/null; then
+    echo "Postgres is ready (attempt $i)."
+    PG_READY=1
+    break
+  fi
+  sleep 2
+done
+
+if [ $PG_READY -eq 0 ]; then
+  echo "FATAL: Postgres did not become ready after 60s — aborting startup."
+  exit 1
+fi
+
+# Write .env for runtime reference (backup script, manual ops)
+echo "MORI_DATABASE_URL=$MORI_DATABASE_URL" > /data/mori-advisor/.env
+chown mori:mori /data/mori-advisor/.env
+chmod 600 /data/mori-advisor/.env
 
 # Seed Bifrost config if this is a fresh install (no config.db yet)
 if [ ! -f /data/bifrost/config.db ]; then
@@ -254,11 +307,14 @@ SEEDEOF
 fi
 
 # Start mori-advisor container (port 8968) — Bifrost mode via localhost:8787.
-# Uses MORI_* env vars.
+# MORI_REQUIRE_POSTGRES=true: fail fast if postgres is unreachable rather than
+# silently falling back to SQLite.
 su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-advisor --restart=always --network=host \
   --user 0 \
   -v /data/mori-advisor:/data/mori-advisor:Z \
   -e MORI_ADVISOR_DATA=/data/mori-advisor \
+  -e MORI_DATABASE_URL='$MORI_DATABASE_URL' \
+  -e MORI_REQUIRE_POSTGRES=true \
   -e MORI_PROVIDER_MODE=bifrost \
   -e MORI_BIFROST_ADVISOR_VK=sk-bf-mori-advisor-gce-001 \
   -e MORI_BIFROST_DREAM_VK=sk-bf-mori-advisor-gce-001 \
@@ -280,6 +336,8 @@ su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --name mori-ingestion \
   --restart=always --network=host --user 0 \
   -v /data/mori-advisor:/data/mori-advisor:Z \
   -e MORI_ADVISOR_DATA=/data/mori-advisor \
+  -e MORI_DATABASE_URL='$MORI_DATABASE_URL' \
+  -e MORI_REQUIRE_POSTGRES=true \
   -e MORI_ADVISOR_API_KEY='$MORI_ADVISOR_API_KEY' \
   -e MORI_BASE_URL=http://localhost:8787 \
   -e MORI_MODEL='$MORI_MODEL' \
@@ -309,40 +367,56 @@ DREAM_CRON="0 */4 * * * XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec mori-advisor py
 echo "Dream cron installed."
 
 # ── Set up backup cron (daily at 06:00 UTC) ──────────────────────────────
-# Uses curl + GCE metadata server for auth — no gcloud SDK needed
+# pg_dump via mori-pg container — uploads to GCS via metadata server auth.
 BACKUP_SCRIPT="/usr/local/bin/mori-backup.sh"
 cat > "$BACKUP_SCRIPT" << 'BACKUPEOF'
 #!/bin/bash
-# Daily SQLite backup to GCS backup bucket using metadata server auth
+# Daily Postgres backup to GCS using GCE metadata server auth.
 set -u
 DB_DIR="/data/mori-advisor"
 BUCKET="${backup_bucket}"
 DATE=$(date +%Y%m%d)
+RUNTIME_DIR="/run/user/$(id -u mori)"
 
-# Get GCE service account access token from metadata server
-TOKEN=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" -H "Metadata-Flavor: Google" | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || echo "")
+# Get GCE service account access token
+TOKEN=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
+  -H "Metadata-Flavor: Google" | \
+  python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || echo "")
 
 if [ -z "$TOKEN" ]; then
   echo "ERROR: could not get GCE access token"
   exit 1
 fi
 
-for db in memories session_log msg; do
-  if [ -f "$DB_DIR/$db.db" ]; then
-    sqlite3 "$DB_DIR/$db.db" ".backup $DB_DIR/backup-$db-$DATE.db"
-    gzip -f "$DB_DIR/backup-$db-$DATE.db"
-    curl -sf -X PUT --data-binary @"$DB_DIR/backup-$db-$DATE.db.gz" \
-      -H "Authorization: Bearer $TOKEN" \
-      "https://storage.googleapis.com/$BUCKET/$db-$DATE.db.gz"
-    RC=$?
-    rm -f "$DB_DIR/backup-$db-$DATE.db.gz"
-    if [ $RC -eq 0 ]; then
-      echo "OK: $db-$DATE.db.gz uploaded"
-    else
-      echo "FAIL: $db upload exit code $RC"
-    fi
-  fi
-done
+# Source .env for MORI_DATABASE_URL (for reference/validation)
+[ -f "$DB_DIR/.env" ] && . "$DB_DIR/.env"
+
+TMPFILE=$(mktemp /tmp/mori-pg-backup-XXXXXX)
+REMOTE_NAME="mori-pg-${DATE}.sql.gz"
+
+echo "Backing up Postgres → ${REMOTE_NAME}"
+XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec mori-pg \
+  pg_dump -U mori mori | gzip -9 > "${TMPFILE}.gz"
+
+if [ $? -ne 0 ]; then
+  echo "FAIL: pg_dump failed"
+  rm -f "${TMPFILE}" "${TMPFILE}.gz"
+  exit 1
+fi
+
+curl -sf -X PUT --data-binary @"${TMPFILE}.gz" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/octet-stream" \
+  "https://storage.googleapis.com/$BUCKET/$REMOTE_NAME"
+RC=$?
+rm -f "${TMPFILE}" "${TMPFILE}.gz"
+
+if [ $RC -eq 0 ]; then
+  echo "OK: ${REMOTE_NAME} uploaded to gs://${BUCKET}/"
+else
+  echo "FAIL: upload exit code $RC"
+  exit 1
+fi
 echo "Backup complete: $DATE"
 BACKUPEOF
 chmod 755 "$BACKUP_SCRIPT"
