@@ -6,7 +6,7 @@ Deploys mori-advisor to a GCE VM using Terraform.
 
 - **GCE VM** — `e2-small` (2 vCPU, 2GB RAM), Ubuntu 24.04 LTS, 20GB boot disk
 - **Persistent disk** — data volume mounted at `/data/`; contains Postgres data, mori state, Tailscale identity, and SSH host keys. Survives VM stops and rebuilds (`prevent_destroy = true` in `main.tf`).
-- **GCS bucket** — daily backups: `pg_dump` (mori Postgres) + `config.db` (Bifrost SQLite), 14-day lifecycle policy
+- **GCS bucket** — daily `pg_dump` backups with 14-day lifecycle policy
 - **Secret Manager** — API keys and Postgres password injected at runtime; no credentials in the startup script or repository
 - **IAM** — service account for Secret Manager, GCS, and IAP access
 
@@ -17,39 +17,12 @@ The startup script is designed so a full VM rebuild (e.g. `terraform taint` + `a
 **Survives (on the persistent disk):**
 - Postgres data directory — all memories, session events, message history
 - mori data directory — memories.db (SQLite legacy), msg.db, `.env` containing `MORI_DATABASE_URL`
-- Bifrost data directory — `config.db` (VKs, provider keys, routing config), `logs.db`
 - Tailscale identity — VM retains its Tailscale address after rebuild
 - SSH host keys — prevents host-key warnings after rebuild
-
-**Also backed up to GCS daily (06:00 UTC):**
-- `mori-pg-YYYYMMDD.sql.gz` — mori Postgres pg_dump
-- `bifrost-config-YYYYMMDD.db.gz` — Bifrost SQLite config.db (WAL checkpointed before copy)
 
 **Does NOT survive:**
 - Named container volumes — never use named volumes for stateful data on GCE; always bind-mount to `/data/`
 - Any state stored only in container memory or the ephemeral boot disk
-
-## Restoring from GCS backup
-
-If the persistent disk is lost (unlikely — `prevent_destroy = true`) or `config.db` is corrupted:
-
-```bash
-# List available backups
-gcloud storage ls gs://<backup-bucket>/
-
-# Restore Bifrost config.db
-gcloud storage cp gs://<backup-bucket>/bifrost-config-YYYYMMDD.db.gz /tmp/
-gunzip /tmp/bifrost-config-YYYYMMDD.db.gz
-sudo cp /tmp/bifrost-config-YYYYMMDD.db /data/bifrost/config.db
-sudo chown mori:mori /data/bifrost/config.db
-# Then restart: podman restart bifrost (as mori user)
-
-# Restore mori Postgres from pg_dump
-gcloud storage cp gs://<backup-bucket>/mori-pg-YYYYMMDD.sql.gz /tmp/
-gunzip /tmp/mori-pg-YYYYMMDD.sql.gz
-podman exec -i mori-pg psql -U mori mori < /tmp/mori-pg-YYYYMMDD.sql
-# Reset sequences after restore (see team-configuration.md)
-```
 
 ## Prerequisites
 
