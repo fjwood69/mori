@@ -132,7 +132,21 @@ jobs:
               curl -sf http://localhost:8968/health && curl -sf http://localhost:8969/health && break
               [ $i -eq 5 ] && { echo "health check failed"; exit 1; }
             done
-            echo "Deploy OK: $IMAGE (rootless, --env-file)"
+
+            # Deployment contract gate — the SAME scripts/verify-deployment.py that
+            # UAT runs, executed INSIDE the freshly-deployed container against its own
+            # endpoint. Asserts the full route surface (not just /health). A deploy
+            # that serves /health but 404s on feature routes fails here instead of
+            # reporting a false green. Uses the first configured API key from the
+            # env-file (mode 600, so read via sudo).
+            VERIFY_KEY=$(sudo grep -m1 '^MORI_API_KEYS=' "$ENVFILE" | cut -d= -f2- | cut -d, -f1 | cut -d: -f2)
+            if [ -z "$VERIFY_KEY" ]; then echo "FATAL: no MORI_API_KEYS in $ENVFILE — refusing to ship auth-off"; exit 1; fi
+            echo "Running deployment contract against live container..."
+            sudo su - mori -c "$RT podman exec mori-advisor python /app/scripts/verify-deployment.py http://localhost:8968 '$VERIFY_KEY'" || {
+              echo "DEPLOYMENT CONTRACT FAILED — the deployed container is not serving the expected route surface"
+              exit 1
+            }
+            echo "Deploy OK: $IMAGE (rootless, --env-file, contract verified)"
 
   create-release:
     name: Create GitHub Release
