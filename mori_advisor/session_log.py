@@ -63,7 +63,8 @@ class SessionLog:
                 cwd             TEXT,
                 transcript_path TEXT,
                 prompt          TEXT,
-                stop_reason     TEXT
+                stop_reason     TEXT,
+                assistant_text  TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id);
             CREATE INDEX IF NOT EXISTS idx_events_time ON session_events(timestamp);
@@ -73,6 +74,15 @@ class SessionLog:
                 value TEXT NOT NULL
             );
         """)
+        # Migration: add assistant_text to pre-existing session_events tables.
+        # CREATE TABLE IF NOT EXISTS won't alter an existing table, so guard with
+        # a column check (SQLite lacks ADD COLUMN IF NOT EXISTS on older versions).
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(session_events)")}
+        if "assistant_text" not in cols:
+            try:
+                conn.execute("ALTER TABLE session_events ADD COLUMN assistant_text TEXT")
+            except sqlite3.OperationalError:
+                pass  # added concurrently
         conn.commit()
         conn.close()
 
@@ -92,6 +102,7 @@ class SessionLog:
         transcript_path: str | None = None,
         prompt: str | None = None,
         stop_reason: str | None = None,
+        assistant_text: str | None = None,
     ) -> int:
         """Insert a new event into the session log.
 
@@ -105,8 +116,8 @@ class SessionLog:
                 INSERT INTO session_events
                     (session_id, event_name, client, timestamp,
                      tool_name, tool_input, tool_response, tool_error,
-                     model, cwd, transcript_path, prompt, stop_reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     model, cwd, transcript_path, prompt, stop_reason, assistant_text)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -122,6 +133,7 @@ class SessionLog:
                     transcript_path,
                     prompt,
                     stop_reason,
+                    assistant_text,
                 ),
             )
             conn.commit()
@@ -151,6 +163,7 @@ class SessionLog:
             transcript_path=d.get("transcript_path"),
             prompt=d.get("prompt"),
             stop_reason=d.get("stop_reason"),
+            assistant_text=d.get("assistant_text"),
         )
 
     # ── read ────────────────────────────────────────────────────────────

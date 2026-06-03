@@ -22,6 +22,10 @@ from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
 
 logger = logging.getLogger(__name__)
 
+# Max chars of captured assistant reasoning surfaced per Stop event in the dream
+# prompt. Bounds distillation cost when sessions have many turns; tune from data.
+_ASSISTANT_DREAM_CAP = 1500
+
 
 async def _a(val):
     """Await val if it's a coroutine (Postgres), pass through if sync (SQLite)."""
@@ -300,6 +304,12 @@ class DreamPipeline:
                 elif name == "Stop":
                     reason = e.get("stop_reason", "end_turn")
                     items.append(f"  Stopped: {reason}")
+                    # The turn's assistant reasoning (plans/decisions) captured from
+                    # the transcript at Stop. Capped to bound the distillation prompt.
+                    assistant_text = e.get("assistant_text")
+                    if assistant_text:
+                        a_text = assistant_text[:_ASSISTANT_DREAM_CAP].replace("\n", " ")
+                        items.append(f"  Assistant: {a_text}")
 
             session_block = f"Session: {sid} ({start_ts}, {client})"
             if items:

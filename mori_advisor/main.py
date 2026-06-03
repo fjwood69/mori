@@ -1779,10 +1779,85 @@ class EventLogEntry(BaseModel):
     transcript_path: str | None = None
     prompt: str | None = None
     stop_reason: str | None = None
+    assistant_text: str | None = None
 
 
 def _get_client_from_request(request: Request) -> str:
     return request.query_params.get("client", "")
+
+
+# Include the assistant's extended-thinking blocks when capturing reasoning.
+# Off by default: thinking is large and frequently redacted in stored transcripts.
+CAPTURE_THINKING = os.environ.get("MORI_CAPTURE_THINKING", "false").lower() == "true"
+
+# Bounds on captured assistant reasoning (chars). The stored cap keeps the event
+# row small; the dream-format cap (in dream.py) bounds the distillation prompt.
+_ASSISTANT_TEXT_CAP = 4000
+_ASSISTANT_TEXT_MIN = 50
+
+
+def _extract_assistant_text(transcript_tail: str, capture_thinking: bool = CAPTURE_THINKING) -> str:
+    """Extract the completed turn's assistant reasoning from a transcript tail.
+
+    `transcript_tail` is the last bytes of a Claude Code .jsonl transcript (one
+    turn lives at the tail). Native schema: each line has `type` and a nested
+    `message.content[]` of typed blocks.
+
+    Walks the tail to the last *user-text* line (a real prompt — `tool_result`-only
+    user lines are NOT turn boundaries, so post-tool reasoning is kept), then joins
+    every `assistant` `text` block after it (+ `thinking` blocks iff capture_thinking).
+    Sidechain (subagent) lines are skipped. Tolerant of a truncated first line.
+
+    Returns "" for trivial/empty turns.
+    """
+    if not transcript_tail:
+        return ""
+
+    # Parse lines, dropping malformed ones (the first tail line is usually partial).
+    events: list[dict] = []
+    for line in transcript_tail.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    # Find the index of the last real user prompt (a user line with a text block).
+    last_user_text_idx = -1
+    for i, e in enumerate(events):
+        if e.get("isSidechain"):
+            continue
+        if e.get("type") != "user":
+            continue
+        content = (e.get("message") or {}).get("content")
+        blocks = content if isinstance(content, list) else []
+        if any(isinstance(b, dict) and b.get("type") == "text" for b in blocks):
+            last_user_text_idx = i
+
+    pieces: list[str] = []
+    for e in events[last_user_text_idx + 1 :]:
+        if e.get("isSidechain"):
+            continue
+        if e.get("type") != "assistant":
+            continue
+        content = (e.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            t = b.get("type")
+            if t == "text" and b.get("text"):
+                pieces.append(b["text"])
+            elif t == "thinking" and capture_thinking and b.get("thinking"):
+                pieces.append(f"[thinking] {b['thinking']}")
+
+    text = "\n\n".join(p.strip() for p in pieces if p and p.strip()).strip()
+    if len(text) < _ASSISTANT_TEXT_MIN:
+        return ""
+    return text[:_ASSISTANT_TEXT_CAP]
 
 
 def _map_hook_payload(raw: dict, client_override: str = "") -> EventLogEntry:
@@ -1794,6 +1869,22 @@ def _map_hook_payload(raw: dict, client_override: str = "") -> EventLogEntry:
     tool_input = raw.get("tool_input")
     if tool_input is not None and not isinstance(tool_input, str):
         tool_input = json.dumps(tool_input)
+
+    # Capture the turn's assistant reasoning from a Stop event's transcript tail.
+    assistant_text = None
+    if hook_event == "Stop" and raw.get("transcript_tail_b64"):
+        try:
+            import base64
+
+            tail = base64.b64decode(raw["transcript_tail_b64"]).decode("utf-8", errors="replace")
+            assistant_text = _extract_assistant_text(tail) or None
+            logger.info(
+                "Stop reasoning capture: session=%s chars=%s",
+                session_id,
+                len(assistant_text) if assistant_text else 0,
+            )
+        except Exception as e:
+            logger.warning("assistant-text extraction failed: %s", e)
 
     return EventLogEntry(
         session_id=session_id,
@@ -1808,6 +1899,7 @@ def _map_hook_payload(raw: dict, client_override: str = "") -> EventLogEntry:
         transcript_path=raw.get("transcript_path"),
         prompt=raw.get("prompt") if hook_event == "UserPromptSubmit" else None,
         stop_reason=raw.get("stop_reason") if hook_event in ("Stop", "SessionEnd") else None,
+        assistant_text=assistant_text,
     )
 
 
@@ -1847,6 +1939,7 @@ async def log_event(request: Request) -> JSONResponse:
                 transcript_path=entry.transcript_path,
                 prompt=entry.prompt,
                 stop_reason=entry.stop_reason,
+                assistant_text=entry.assistant_text,
             )
         )
         logger.info(
@@ -1913,6 +2006,7 @@ async def log_event_raw(request: Request) -> JSONResponse:
                 transcript_path=event.transcript_path,
                 prompt=event.prompt,
                 stop_reason=event.stop_reason,
+                assistant_text=event.assistant_text,
             )
         )
         logger.info(
@@ -2120,6 +2214,7 @@ async def precompact(request: Request) -> JSONResponse:  # noqa: C901
                 transcript_path=event.transcript_path,
                 prompt=event.prompt,
                 stop_reason=event.stop_reason,
+                assistant_text=event.assistant_text,
             )
         )
 

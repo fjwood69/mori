@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.1.24 — Capture assistant reasoning from the Stop hook
+
+- **Reasoning capture:** lifecycle hooks recorded tool calls and user prompts but never the
+  assistant's text responses — the plans, analysis, and decisions. Those are now captured.
+- **Client (shippers):** on `Stop`, `mori-ship-event.sh` / `.ps1` attach a bounded,
+  base64-encoded tail of the session transcript (`transcript_tail_b64`). Pure `tail`+`base64`
+  (bash) / native `Get-Content`+`ConvertFrom-Json` (PowerShell) — no python/jq dependency, so
+  it works on bare macOS, Linux, and Windows. Any failure ships the original event unchanged.
+- **Server:** `_extract_assistant_text()` parses the tail, walks back to the last user-text
+  line (treating `tool_result` user lines as part of the turn, so post-tool reasoning is kept),
+  skips `isSidechain` subagent lines, and joins the turn's assistant `text` blocks (+ `thinking`
+  iff `MORI_CAPTURE_THINKING=true`). Stored in `session_events.assistant_text`.
+- **Dream:** `_format_events` surfaces the captured reasoning on Stop events so it's distilled
+  into memories alongside prompts and tool calls.
+- **Migration:** `assistant_text` column added to `session_events` (SQLite guarded `ALTER`;
+  Postgres `ADD COLUMN IF NOT EXISTS`). No new endpoints, MCP tools, or installer allowlist
+  changes — re-running the installer redeploys the updated shipper.
+
 ## v2.1.23 — Deployment contract gate (UAT ⇄ PRD parity)
 
 - **`scripts/verify-deployment.py`**: single source of truth for "is this instance serving

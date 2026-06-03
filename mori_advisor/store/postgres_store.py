@@ -184,8 +184,11 @@ CREATE TABLE IF NOT EXISTS session_events (
     cwd             TEXT,
     transcript_path TEXT,
     prompt          TEXT,
-    stop_reason     TEXT
+    stop_reason     TEXT,
+    assistant_text  TEXT
 );
+-- Migration for pre-existing deployments (no-op once the column exists):
+ALTER TABLE session_events ADD COLUMN IF NOT EXISTS assistant_text TEXT;
 CREATE INDEX IF NOT EXISTS idx_session_events_ts         ON session_events (timestamp);
 CREATE INDEX IF NOT EXISTS idx_session_events_session_id ON session_events (session_id);
 
@@ -937,14 +940,16 @@ class PostgresStore(BaseStore):
         transcript_path=None,
         prompt=None,
         stop_reason=None,
+        assistant_text=None,
     ) -> int:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """INSERT INTO session_events
                    (session_id, event_name, client, timestamp, tool_name, tool_input,
-                    tool_response, tool_error, model, cwd, transcript_path, prompt, stop_reason)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id""",
+                    tool_response, tool_error, model, cwd, transcript_path, prompt, stop_reason,
+                    assistant_text)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id""",
                 session_id,
                 event_name,
                 client,
@@ -958,6 +963,7 @@ class PostgresStore(BaseStore):
                 transcript_path,
                 prompt,
                 stop_reason,
+                assistant_text,
             )
         return row["id"]
 

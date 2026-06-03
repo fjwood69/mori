@@ -92,6 +92,8 @@ Small team coherence. Requires v2.0 foundation.
 - v2.1.14: Windows installer PostToolUse `matcher` field fix; session auth bypass improvement
 - v2.1.15: Postgres-first GCP deployment — persistent-disk bind mount, `pg_isready` gate, `MORI_REQUIRE_POSTGRES`, pg_dump backup cron, Tailscale and SSH host key persistence across VM rebuilds
 - v2.1.16–v2.1.19: Git commit ingestion + consult capture — `POST /api/git/ingest`, `GET /api/git/watermark`, `MORI_CONSULT_CAPTURE`; pinned FastMCP==3.2.0 + Python 3.12 to fix `custom_route` silent failure on Python 3.14
+- v2.1.20–v2.1.23: Deploy unified on rootless `--env-file --replace`; deployment contract gate (`scripts/verify-deployment.py`) shared by UAT + CD
+- v2.1.24: Assistant reasoning capture — Stop hook ships a bounded transcript tail; server extracts the turn's assistant text into `session_events.assistant_text`; dream distills it
 
 **Remaining:**
 
