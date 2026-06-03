@@ -10,7 +10,7 @@ CLIENT="${MORI_CLIENT:-$(hostname 2>/dev/null || echo unknown)}"
 if [ -z "${MORI_API_KEY:-}" ]; then
   _SECRETS="${HOME}/.claude/.secrets"
   if [ -f "$_SECRETS" ]; then
-    # Derive key name from hostname (e.g. uk-smr-nuc15pro → MORI_API_KEY_NUC15PRO)
+    # Derive key name from hostname (e.g. dev-laptop → MORI_API_KEY_LAPTOP)
     _HOST_UPPER=$(hostname 2>/dev/null | tr '[:lower:]-' '[:upper:]_' | sed 's/^[A-Z_]*_//')
     _KEY_NAME="MORI_API_KEY_${_HOST_UPPER}"
     MORI_API_KEY=$(grep "^${_KEY_NAME}=" "$_SECRETS" | cut -d= -f2- 2>/dev/null || echo "")

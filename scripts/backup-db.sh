@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-BUCKET="${MORI_BACKUP_BUCKET:-moku-advisor-backups-moku-genai}"
+BUCKET="${MORI_BACKUP_BUCKET:?set MORI_BACKUP_BUCKET to your GCS backup bucket, e.g. mori-advisor-backups-<project>}"
 DATA_DIR="${MORI_ADVISOR_DATA:-/data/mori-advisor}"
 TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
 TMPFILE="/tmp/mori-backup-${TIMESTAMP}"

@@ -20,9 +20,9 @@ Example inbox format:
 
 ```
 ── Pending Messages ─────────────────────────────────────────────
-[task]  from twiggy  2026-05-31 14:22  id=a3f9c2b1
-  Extract rate limiting into its own middleware module in bifrost/src/middleware/
-  → ack: mori-msg_send(to="twiggy", type="ack", reply_to="a3f9c2b1-...", body="acknowledged")
+[task]  from laptop  2026-05-31 14:22  id=a3f9c2b1
+  Extract rate limiting into its own middleware module in src/middleware/
+  → ack: mori-msg_send(to="laptop", type="ack", reply_to="a3f9c2b1-...", body="acknowledged")
 
 [question]  from gce  2026-05-31 15:01  id=b4e8f3c2
   Did you resolve the JWT expiry edge case in session.rs?

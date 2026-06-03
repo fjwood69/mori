@@ -32,7 +32,7 @@ export MORI_CLIENT=$(hostname)
 ```powershell
 $env:MORI_API_URL = "<mori-server-url>"
 $env:MORI_API_KEY = "<mori-api-key>"
-$env:MORI_CLIENT  = "twiggy"
+$env:MORI_CLIENT  = "<hostname>"
 ```
 
 To make these permanent on Windows, add them as User environment variables:

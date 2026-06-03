@@ -839,7 +839,7 @@ async def update(device: str, content: str = "", skill: str = "") -> str:
     available packages are listed.
 
     Args:
-        device: Target device — nuc, twiggy, ux3405, or cb14p.
+        device: Target device hostname (e.g. laptop, workstation).
         content: The full content of the SKILL.md file (omit to read from server).
         skill: Package/skill name (e.g. dream, consult, pensieve, brief, nats).
     """
@@ -940,7 +940,7 @@ async def nats_pub(message: str, subject: str = "") -> str:
 
     Args:
         message: Text message to publish.
-        subject: NATS subject (e.g. cc.uk-smr-nuc15pro). Auto-derived if empty.
+        subject: NATS subject (e.g. cc.<hostname>). Auto-derived if empty.
     """
     try:
         import json
@@ -1084,7 +1084,7 @@ async def msg_send(
     """Send a typed message to another agent or broadcast to all.
 
     Args:
-        to: Target hostname (e.g. "nuc15pro") or "broadcast" for all agents.
+        to: Target hostname (e.g. "laptop") or "broadcast" for all agents.
         type: Message type — task, decision, question, reply, ack, done, broadcast.
         body: Message content.
         reply_to: UUID of the message being replied to (for reply/ack/done types).
