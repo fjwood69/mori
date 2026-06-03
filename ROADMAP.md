@@ -40,10 +40,10 @@ Updated with each release.
   - `get_store()` factory — zero breaking change for existing SQLite deployments
   - `mori export` / `mori import` CLI tools — SQLite → Postgres migration, idempotent
   - pgBouncer in session mode (asyncpg prepared statement compatibility)
-  - NUC streaming replica via Tailscale — `mori-pg-replica` on port 5435, lag=0
+  - Streaming replica on local host — `mori-pg-replica` on port 5435, lag=0
 - WAL-G replacing Litestream — daily pg_dump to GCS, 14-day lifecycle policy
   - GCS metadata server auth — no credentials in env vars
-  - RPO/RTO explicitly defined and tested on NUC
+  - RPO/RTO explicitly defined and tested
 - `deploy/solo/` — SQLite + Litestream sidecar (replaces `deploy/homelab/`)
 - `deploy/team/` — Postgres + pgBouncer + WAL-G sidecar
 

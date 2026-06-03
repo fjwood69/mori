@@ -6,7 +6,7 @@
   `custom_route` registration bug on Python 3.14 where routes defined after a certain index in
   the handler list silently fail to register. Python 3.13 is the current supported release with
   active security patches — not the EOL-approaching 3.12 we briefly tried. UAT masked this
-  because the local build uses the system Python 3.12 on NUC. Production was running Python 3.14
+  because local builds use the system Python (3.12 on typical dev machines). Production was running Python 3.14
   (Dockerfile default), which explains why all new endpoints returned 404 despite the code being
   present in the image.
 
@@ -87,7 +87,7 @@
 
 ## v2.1.10 — Antigravity Installer Profile Parity & PostCompact Hook
 
-- **Target Selection**: Added `--target cli/ide/both` (Bash) and `-Target cli/ide/both` (PowerShell) option to installers, directing MCP config (`mcp_config.json`) and hooks (`hooks.json`) to `~/.gemini/antigravity` (CLI), `~/.gemini/antigravity-ide` (IDE), or both. Default in headless mode is `ide` to match the NUC active IDE app data folder.
+- **Target Selection**: Added `--target cli/ide/both` (Bash) and `-Target cli/ide/both` (PowerShell) option to installers, directing MCP config (`mcp_config.json`) and hooks (`hooks.json`) to `~/.gemini/antigravity` (CLI), `~/.gemini/antigravity-ide` (IDE), or both. Default in headless mode is `ide`.
 - **PostCompact Hook**: Deployed `mori-post-compact-brief` shipper script and registered the `PostCompact` hook in Antigravity's `hooks.json` configuration, matching Claude Code installer capability to trigger automatic re-grounding via `/brief`.
 - **Robust Skill Parsing**: Upgraded the PowerShell skill installer `Deploy-MoriSkills` to support both standard YAML frontmatter blocks (`---`) and bulleted headers (`- name:`).
 - **Symlink Diagnostics**: Upgraded the `--doctor` diagnostics in `mori_antigravity_install.py` and `install-mori-antigravity.ps1` to detect and print remediation instructions when the `~/.gemini/config` symlink points to a mismatching variant.
@@ -203,7 +203,7 @@ contention activate PostgreSQL by setting one environment variable.
 See [docs/reference/team-configuration.md](docs/reference/team-configuration.md).
 
 **UAT results:** 68/68 memories, 5006/5006 session events verified across both
-backends on NUC before tagging.
+backends verified before tagging.
 
 ---
 
@@ -372,7 +372,7 @@ skills/req/SKILL.md
 **Bash generation for Linux devices**
 
 `_update_all()` always emitted PowerShell syntax regardless of device family, producing broken
-commands for Linux targets (CB14P, NUC). Fixed with a family branch — Linux devices now get
+commands for Linux targets. Fixed with a family branch — Linux devices now get
 bash heredoc commands; Windows devices retain PowerShell output.
 
 **Usage after this release:**
