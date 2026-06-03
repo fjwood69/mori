@@ -1,12 +1,14 @@
 # Changelog
 
-## v2.1.19 — Pin Python to 3.12 in Dockerfile
+## v2.1.19 — Move Dockerfile to Python 3.13
 
-- **`Dockerfile`**: Change `PYTHON_VERSION` from `3.14.5` to `3.12.10`. FastMCP 3.2.0 has a
+- **`Dockerfile`**: Change `PYTHON_VERSION` from `3.14.5` to `3.13.4`. FastMCP 3.2.0 has a
   `custom_route` registration bug on Python 3.14 where routes defined after a certain index in
-  the handler list silently fail to register. UAT masked this because the local build uses the
-  system Python 3.12. Production was running Python 3.14 (Dockerfile default), which explains
-  why all new endpoints returned 404 despite being present in the image.
+  the handler list silently fail to register. Python 3.13 is the current supported release with
+  active security patches — not the EOL-approaching 3.12 we briefly tried. UAT masked this
+  because the local build uses the system Python 3.12 on NUC. Production was running Python 3.14
+  (Dockerfile default), which explains why all new endpoints returned 404 despite the code being
+  present in the image.
 
 ## v2.1.18 — Pin FastMCP to 3.2.0
 
