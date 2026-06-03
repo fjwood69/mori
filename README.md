@@ -121,7 +121,9 @@ compression — so nothing is lost at the moment it matters most.
 
 **What it captures:** `PostToolUse`, `PostToolUseFailure`, `PreCompact`,
 `UserPromptSubmit`, `Stop` — tool calls, prompts, errors, stop reasons,
-session ID, hostname, working directory, transcript path.
+session ID, hostname, working directory, transcript path, and (on `Stop`)
+the assistant's own reasoning — the plans, analysis, and decisions behind
+each turn.
 
 ### Memory store
 
@@ -209,7 +211,7 @@ without any human session on the receiving end.
 
 ```bash
 # From UX3405, delegate a task to the NUC:
-/msg send nuc15pro task "Refactor auth middleware — extract rate limiting into its own module"
+/msg send workstation task "Refactor auth middleware — extract rate limiting into its own module"
 
 # NUC picks it up at next /brief and acks:
 /msg ack a3f9c2b1 "on it"

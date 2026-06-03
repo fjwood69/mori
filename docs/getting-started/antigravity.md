@@ -68,7 +68,7 @@ With API key authentication:
 
 ### 2. Enables Event Logging Hooks
 Creates or updates `hooks.json` under your config directory (`~/.gemini/antigravity/hooks.json` or `~/.gemini/antigravity-ide/hooks.json`):
-* Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `PreCompact`, and `PostCompact`) to Mori's event logging shipper (`mori-ship-event.sh` or `mori-ship-event.ps1`) and the re-grounding shipper (`mori-post-compact-brief.sh` or `mori-post-compact-brief.ps1`).
+* Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `PreCompact`, and `PostCompact`) to Mori's event logging shipper (`mori-ship-event.sh` or `mori-ship-event.ps1`) and the re-grounding shipper (`mori-post-compact-brief.sh` or `mori-post-compact-brief.ps1`). As of v2.1.24 the `Stop` hook also ships a bounded transcript tail, from which the server extracts the turn's assistant reasoning (plans, analysis, decisions).
 * Overrides the event query with your configured client name and auth headers.
 * Adds `"_mori_managed": true` to each hook entry so re-runs can find and update Mori's hooks cleanly without matching command strings.
 

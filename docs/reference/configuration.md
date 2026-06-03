@@ -30,6 +30,7 @@
 | `MORI_MSG_HEADLESS_TRUSTED` | `""` | Comma-separated hostnames allowed to trigger headless CC |
 | `MORI_POST_COMPACT_BRIEF` | `true` | Set to `false` to suppress the PostCompact re-grounding prompt |
 | `MORI_CONSULT_CAPTURE` | `true` | Set to `false` to suppress automatic capture of `consult_advisor` responses as working-tier memories |
+| `MORI_CAPTURE_THINKING` | `false` | Set to `true` to also capture the assistant's thinking blocks (not just text) when extracting reasoning from the `Stop` hook |
 
 ## Authentication
 
@@ -40,7 +41,7 @@ layer before any MCP tool or HTTP endpoint is reached.
 
 ```bash
 # In your server .env
-MORI_API_KEYS=nuc15pro:ab5f...,twiggy:c3d4...,ci-runner:e5f6...
+MORI_API_KEYS=laptop:a1b2...,workstation:c3d4...,ci-runner:e5f6...
 ```
 
 Each entry is `name:secret` where:

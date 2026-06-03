@@ -46,7 +46,7 @@ Creates or updates the Cline plugin registration in the VS Code global storage d
 Adds the Mori MCP server configuration to your Cline settings, pointing at your Mori server's streamable HTTP endpoint.
 
 ### 4. Deploys Lifecycle Hooks
-Configures Cline's custom hooks (`alwaysExecute`) to POST session events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `PreCompact`) to Mori's event logging API.
+Configures Cline's custom hooks (`alwaysExecute`) to POST session events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `PreCompact`) to Mori's event logging API. As of v2.1.24 the `Stop` hook also ships a bounded transcript tail, from which the server extracts the turn's assistant reasoning (plans, analysis, decisions).
 
 ### 5. Registers Custom Skills
 Deploys all slash command `.skill.md` files from the `skills/` directory into Cline's IDE skills registry.

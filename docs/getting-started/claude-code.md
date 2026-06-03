@@ -64,7 +64,7 @@ For VS Code, the script also detects any named profiles and offers to install in
 ```
 
 ### 2. Enables Event Logging Hooks
-Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `PreCompact`, and `PostCompact`) to Mori's event logging endpoints (`/api/events/raw` and `/api/precompact`). Hooks are merged per-event — any existing non-Mori hooks are preserved.
+Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `PreCompact`, and `PostCompact`) to Mori's event logging endpoints (`/api/events/raw` and `/api/precompact`). Hooks are merged per-event — any existing non-Mori hooks are preserved. As of v2.1.24 the `Stop` hook also ships a bounded transcript tail, from which the server extracts the turn's assistant reasoning (plans, analysis, decisions).
 
 The `PostCompact` hook (`~/.claude/hooks/post-compact-brief.sh`) fires after context compression and prompts you to run `/brief` to re-establish session context. It is enabled by default. To disable it:
 

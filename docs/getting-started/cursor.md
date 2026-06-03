@@ -106,7 +106,7 @@ Adds the `mori` MCP server to your Cursor MCP config:
 
 ### 2. Enables Event Capture Hooks
 
-Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, and `PreCompact`) to Mori's event logging endpoints. These hooks are written to `~/.claude/settings.json` — the same file Claude Code would use, so both editors share the same configuration.
+Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, and `PreCompact`) to Mori's event logging endpoints. These hooks are written to `~/.claude/settings.json` — the same file Claude Code would use, so both editors share the same configuration. As of v2.1.24 the `Stop` hook also ships a bounded transcript tail, from which the server extracts the turn's assistant reasoning (plans, analysis, decisions).
 
 **No Claude Code required.** If `~/.claude/settings.json` does not already exist, the installer creates it. If it exists with other hooks, Mori's hooks are merged in.
 

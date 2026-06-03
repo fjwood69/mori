@@ -79,13 +79,16 @@ The hook reads `MORI_API_KEY` from `~/.claude/.secrets` automatically. Add a lin
 MORI_API_KEY_<HOSTNAME_UPPER>=your-secret-key
 ```
 
-For example, on a host named `uk-smr-nuc15pro`:
+For example, on a host named `dev-laptop`:
 
 ```
-MORI_API_KEY_NUC15PRO=ab5f028221642ea2...
+MORI_API_KEY_LAPTOP=<your-secret-key>
 ```
 
-The hook derives the key name from `hostname`, stripping any leading `uk-smr-` / `ca-ws-` style prefix. If no hostname-specific key is found it falls back to the first `MORI_API_KEY_*` line. If `~/.claude/.secrets` is absent, the push event is still sent (NATS path), but commit ingestion is skipped.
+The hook derives the key name from `hostname`, stripping any leading location-style
+prefix (e.g. `office-`, `home-`). If no hostname-specific key is found it falls back to
+the first `MORI_API_KEY_*` line. If `~/.claude/.secrets` is absent, the push event is
+still sent (NATS path), but commit ingestion is skipped.
 
 You can also set `MORI_API_KEY` directly in the environment to override the `.secrets` lookup.
 
@@ -101,8 +104,8 @@ body:   [mori/main] fix: Postgres sequence reset in start-uat.sh
 
         After pg_dump restore, primary key sequences must be reset.
 
-        Commit abc1234 by Fred Wood at 2026-06-03T09:15:00Z
-tags:   ["commit", "project:mori", "pusher:uk-smr-nuc15pro"]
+        Commit abc1234 by Alex Dev at 2026-06-03T09:15:00Z
+tags:   ["commit", "project:mori", "pusher:dev-laptop"]
 tier:   working
 ```
 
