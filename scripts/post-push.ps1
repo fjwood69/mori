@@ -3,8 +3,29 @@
 # Or use:  .\scripts\install-git-hooks.ps1
 
 $MoriUrl = $env:MORI_URL ?? "http://localhost:8968"
-$ApiKey  = $env:MORI_API_KEY ?? ""
 $Client  = $env:MORI_CLIENT ?? $env:COMPUTERNAME ?? "unknown"
+
+# Resolve MORI_API_KEY: env var takes precedence; fall back to ~/.claude/.secrets
+$ApiKey = $env:MORI_API_KEY
+if (-not $ApiKey) {
+    $SecretsFile = Join-Path $env:USERPROFILE ".claude\.secrets"
+    if (-not (Test-Path $SecretsFile)) {
+        $SecretsFile = Join-Path $env:USERPROFILE ".claude/.secrets"
+    }
+    if (Test-Path $SecretsFile) {
+        # Derive key name from COMPUTERNAME (e.g. UK-SMR-TWIGGY → MORI_API_KEY_TWIGGY)
+        $HostUpper = ($env:COMPUTERNAME -replace '^[^-]+-[^-]+-', '' -replace '-','_').ToUpper()
+        $KeyName = "MORI_API_KEY_$HostUpper"
+        $Line = Get-Content $SecretsFile | Where-Object { $_ -match "^$KeyName=" } | Select-Object -First 1
+        if ($Line) {
+            $ApiKey = $Line.Substring($KeyName.Length + 1)
+        } else {
+            # Fallback: first MORI_API_KEY_ line
+            $Line = Get-Content $SecretsFile | Where-Object { $_ -match "^MORI_API_KEY_" } | Select-Object -First 1
+            if ($Line) { $ApiKey = ($Line -split '=', 2)[1] }
+        }
+    }
+}
 
 $Repo    = Split-Path (git rev-parse --show-toplevel 2>$null) -Leaf
 $Branch  = git branch --show-current 2>$null
@@ -35,39 +56,51 @@ try {
 
 if ($ApiKey) {
     try {
-        # Fetch the git watermark (last ingested commit SHA for this repo)
-        $WatermarkResponse = Invoke-RestMethod `
-            -Uri "$MoriUrl/api/dream/state?key=git_watermark_$Repo" `
+        # Fetch per-ref watermark
+        $WmResponse = Invoke-RestMethod `
+            -Uri "$MoriUrl/api/ingest/git/watermark?repo=$([Uri]::EscapeDataString($Repo))&ref=$([Uri]::EscapeDataString($Branch))" `
             -Headers @{ "X-Api-Key" = $ApiKey } `
             -TimeoutSec 5 `
             -ErrorAction SilentlyContinue
-        $Watermark = $WatermarkResponse.value
+        $Watermark = $WmResponse.watermark
     } catch { $Watermark = $null }
 
     $Range = if ($Watermark) { "${Watermark}..HEAD" } else { "HEAD~20..HEAD" }
 
-    # Collect commits oldest-first using field separator 0x1f
-    $GitLines = git log --reverse $Range --format="%H%x1f%h%x1f%s%x1f%an%x1f%aI" 2>$null
+    # Collect commits with body (record separator \x1e, field separator \x1f)
+    $GitOut = git log --reverse $Range --format="%H%x1f%h%x1f%s%x1f%b%x1e" 2>$null
 
     $Commits = @()
-    foreach ($Line in ($GitLines -split "`n")) {
-        $Line = $Line.Trim()
-        if (-not $Line) { continue }
-        $Parts = $Line -split [char]0x1f
-        if ($Parts.Count -lt 5) { continue }
+    foreach ($Entry in ($GitOut -split [char]0x1e)) {
+        $Entry = $Entry.Trim()
+        if (-not $Entry) { continue }
+        $Parts = $Entry -split [char]0x1f, 4
+        if ($Parts.Count -lt 3) { continue }
         $Commits += @{
             sha       = $Parts[0].Trim()
             short_sha = $Parts[1].Trim()
             subject   = $Parts[2].Trim()
-            author    = $Parts[3].Trim()
-            timestamp = $Parts[4].Trim()
+            body      = if ($Parts.Count -gt 3) { $Parts[3].Trim() } else { "" }
         }
     }
 
+    # Add author + timestamp
     if ($Commits.Count -gt 0) {
+        $MetaLines = git log --reverse $Range --format="%H%x1f%an%x1f%aI" 2>$null
+        $Meta = @{}
+        foreach ($Line in ($MetaLines -split "`n")) {
+            $P = $Line -split [char]0x1f, 3
+            if ($P.Count -eq 3) { $Meta[$P[0].Trim()] = @{ author = $P[1].Trim(); timestamp = $P[2].Trim() } }
+        }
+        for ($i = 0; $i -lt $Commits.Count; $i++) {
+            $m = $Meta[$Commits[$i].sha]
+            $Commits[$i].author    = if ($m) { $m.author } else { "" }
+            $Commits[$i].timestamp = if ($m) { $m.timestamp } else { "" }
+        }
+
         $IngestPayload = @{
             repo    = $Repo
-            branch  = $Branch
+            ref     = $Branch
             commits = $Commits
             pusher  = $Client
         } | ConvertTo-Json -Compress -Depth 4
@@ -80,7 +113,7 @@ if ($ApiKey) {
                 -Body $IngestPayload `
                 -TimeoutSec 10
             if ($Result.ingested -gt 0) {
-                Write-Host "[mori] ingested $($Result.ingested) commit(s) from $Repo"
+                Write-Host "[mori] ingested $($Result.ingested) commit(s) from ${Repo}/${Branch}"
             }
         } catch { }  # Never block a push
     }

@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -61,6 +62,9 @@ STANDARDS_DIR = os.environ.get("MORI_STANDARDS_DIR", "")
 SKILLS_DIR = os.environ.get("MORI_SKILLS_DIR", "")
 
 NATS_URL = os.environ.get("MORI_NATS_URL", "nats://localhost:4222")
+
+# Set to "false" to suppress consult output capture (e.g. for sensitive/experimental questions)
+CONSULT_CAPTURE = os.environ.get("MORI_CONSULT_CAPTURE", "true").lower() != "false"
 
 # ── System prompts ──────────────────────────────────────────────────────
 
@@ -512,6 +516,46 @@ async def brief(
 # ── Consult tool ─────────────────────────────────────────────────────────
 
 
+async def _capture_consult(
+    question: str, focus: str, context: str, files: list, advice: str
+) -> None:
+    """Write a consult advisory response to the memory store as a working-tier decision.
+
+    Uses SHA-12 of (question + focus + context_length) as the memory name so that
+    the same question asked with the same focus and roughly the same context updates
+    the same memory (idempotent across devices). Distinct contexts produce distinct
+    memories (no advisory diversity collapse).
+
+    Fires as a background task — never raises into the caller.
+    """
+    try:
+        digest_input = f"{question}|{focus}|{len(context)}|{len(files)}"
+        name = f"consult-{hashlib.sha256(digest_input.encode()).hexdigest()[:12]}"
+        short_q = question[:80] + "..." if len(question) > 80 else question
+        provenance = f"context_len={len(context)} files={len(files)}"
+        body = (
+            f"**Prompt:** {question}\n\n"
+            f"**Focus:** {focus}  ({provenance})\n\n"
+            f"**Response:**\n{advice}"
+        )
+        tags = ["consult", "advisor-output", f"focus:{focus}"]
+        client = os.environ.get("MORI_CLIENT_HOSTNAME", "unknown")
+        await _a(
+            store.write(
+                name=name,
+                title=f"Advisor: {short_q}",
+                body=body,
+                type="project",
+                tier="working",
+                tags=tags,
+                origin_clients=[client],
+            )
+        )
+        logger.debug("consult captured: %s", name)
+    except Exception as e:
+        logger.warning("consult capture failed: %s", e)
+
+
 @mcp.tool()
 async def consult_advisor(
     question: str,
@@ -562,6 +606,9 @@ async def consult_advisor(
         )
     except Exception as e:
         return f"Advisor call failed: {e}"
+
+    if CONSULT_CAPTURE:
+        await _capture_consult(question, focus, context, files, advice)
 
     return advice
 
@@ -2111,24 +2158,28 @@ async def dream_trigger(request: Request) -> JSONResponse:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
-@mcp.custom_route("/api/dream/state", methods=["GET"])
-async def dream_state_get(request: Request) -> JSONResponse:
-    """Read a single dream state value by key.
+@mcp.custom_route("/api/ingest/git/watermark", methods=["GET"])
+async def git_watermark_get(request: Request) -> JSONResponse:
+    """Return the last ingested commit SHA for a given repo and ref.
 
-    Used by post-push hooks to retrieve the git watermark before computing
-    the commit range to ingest.
+    Used by post-push hooks to compute the commit range before sending
+    a batch to /api/ingest/git. Scoped to (repo, ref) so pushes to
+    different branches maintain independent watermarks.
 
     Query params:
-        key (str): The dream state key to look up.
+        repo (str): Repository name.
+        ref (str): Branch or ref name (e.g. "main").
     """
-    key = request.query_params.get("key", "").strip()
-    if not key:
-        return JSONResponse({"error": "key parameter required"}, status_code=400)
+    repo = request.query_params.get("repo", "").strip()
+    ref = request.query_params.get("ref", "").strip()
+    if not repo or not ref:
+        return JSONResponse({"error": "repo and ref parameters required"}, status_code=400)
     try:
+        key = f"git_watermark_{repo}_{ref}"
         value = await _a(store.get_dream_state(key, default=None))
-        return JSONResponse({"key": key, "value": value})
+        return JSONResponse({"repo": repo, "ref": ref, "watermark": value})
     except Exception as e:
-        logger.error("dream_state_get failed: %s", e)
+        logger.error("git_watermark_get failed: %s", e)
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
@@ -2136,30 +2187,30 @@ async def dream_state_get(request: Request) -> JSONResponse:
 async def ingest_git(request: Request) -> JSONResponse:
     """Ingest git commit messages from a post-push hook.
 
-    Each commit is written as a memory (type=project, tags include project:<repo>
-    and pusher:<client>) and logged in the ingestion_log for idempotency. A
-    git watermark (last ingested SHA) is stored in dream_state so subsequent
-    pushes only send new commits.
+    Each commit is written as a working-tier project memory tagged
+    project:<repo> and pusher:<client>, and logged in the ingestion_log
+    for idempotency. A per-ref git watermark is stored in dream_state so
+    subsequent pushes only send new commits.
 
     Body:
         repo (str): Repository name — used for project tag and watermark key.
-        branch (str): Branch that was pushed.
+        ref (str): Branch or ref name that was pushed.
         commits (list): Ordered list (oldest-first) of commit objects, each with:
-            sha, short_sha, subject, author, timestamp.
+            sha, short_sha, subject, author, timestamp, and optional body.
         pusher (str, optional): Client hostname.
 
     Response:
         status, ingested (int), skipped (int), watermark (str|null)
     """
     try:
-        body = await request.json()
+        payload = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid JSON body"}, status_code=400)
 
-    repo = (body.get("repo") or "").strip()
-    branch = (body.get("branch") or "main").strip()
-    commits = body.get("commits", [])
-    pusher = (body.get("pusher") or _get_client_from_request(request) or "unknown").strip()
+    repo = (payload.get("repo") or "").strip()
+    ref = (payload.get("ref") or payload.get("branch") or "main").strip()
+    commits = payload.get("commits", [])
+    pusher = (payload.get("pusher") or _get_client_from_request(request) or "unknown").strip()
 
     if not repo:
         return JSONResponse({"error": "repo field required"}, status_code=400)
@@ -2169,6 +2220,7 @@ async def ingest_git(request: Request) -> JSONResponse:
     ingested = 0
     skipped = 0
     watermark = None
+    watermark_key = f"git_watermark_{repo}_{ref}"
 
     for commit in commits:
         sha = (commit.get("sha") or "").strip()
@@ -2176,6 +2228,7 @@ async def ingest_git(request: Request) -> JSONResponse:
         subject = (commit.get("subject") or "").strip()
         author = (commit.get("author") or "").strip()
         timestamp = (commit.get("timestamp") or "").strip()
+        commit_body = (commit.get("body") or "").strip()
 
         if not sha or not subject:
             skipped += 1
@@ -2184,18 +2237,19 @@ async def ingest_git(request: Request) -> JSONResponse:
         already_ingested = await _a(store.is_ingested_by_hash(sha))
         if already_ingested:
             skipped += 1
-            watermark = sha
             continue
 
-        body_text = f"[{repo}/{branch}] {subject}"
-        body_text += f"\n\nCommit {short_sha} by {author} at {timestamp}"
+        mem_body = f"[{repo}/{ref}] {subject}"
+        if commit_body:
+            mem_body += f"\n\n{commit_body}"
+        mem_body += f"\n\nCommit {short_sha} by {author} at {timestamp}"
 
         mem_name = f"commit-{repo}-{short_sha}"
         await _a(
             store.write(
                 name=mem_name,
                 title=subject,
-                body=body_text,
+                body=mem_body,
                 type="project",
                 tier="working",
                 tags=["commit", f"project:{repo}", f"pusher:{pusher}"],
@@ -2204,7 +2258,7 @@ async def ingest_git(request: Request) -> JSONResponse:
         )
         await _a(
             store.log_ingestion(
-                source_path=f"git://{repo}/{sha}",
+                source_path=f"git://{repo}/{ref}/{sha}",
                 source_hash=sha,
                 memories_written=1,
                 model="none",
@@ -2217,12 +2271,12 @@ async def ingest_git(request: Request) -> JSONResponse:
         watermark = sha
 
     if watermark:
-        await _a(store.set_dream_state(f"git_watermark_{repo}", watermark))
+        await _a(store.set_dream_state(watermark_key, watermark))
 
     logger.info(
-        "Git ingestion: repo=%s branch=%s ingested=%d skipped=%d watermark=%s",
+        "Git ingestion: repo=%s ref=%s ingested=%d skipped=%d watermark=%s",
         repo,
-        branch,
+        ref,
         ingested,
         skipped,
         watermark,

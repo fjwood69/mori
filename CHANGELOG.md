@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.1.16 — Git commit ingestion + consult output capture
+
+- **`POST /api/ingest/git`**: New endpoint that ingests git commit messages from a post-push
+  hook. Each commit is written as a working-tier project memory tagged `project:<repo>` and
+  `pusher:<client>`. Server-side dedup via `ingestion_log.source_hash` makes repeated calls
+  idempotent. Watermarks are per `(repo, ref)` so pushes to different branches maintain
+  independent ingestion state.
+- **`GET /api/ingest/git/watermark`**: Narrowly-scoped endpoint that returns the last ingested
+  commit SHA for a given `(repo, ref)`. Used by post-push hooks to compute the commit range
+  without exposing the full dream state keyspace.
+- **`scripts/post-push.sh` / `post-push.ps1`**: Extended with a git commit ingestion block.
+  API key is sourced from `~/.claude/.secrets` at push time (not the shell profile). Commit
+  body text is included alongside the subject. Output: `[mori] ingested N commit(s) from
+  <repo>/<branch>` on success. Hook always exits 0 — never blocks a push.
+- **Consult output capture**: Every successful `consult_advisor` call now writes the question,
+  focus, and advisor response as a working-tier project memory tagged `consult` and
+  `advisor-output`. The dream pipeline reviews and promotes advice that was followed; advice
+  that was superseded ages out naturally. Set `MORI_CONSULT_CAPTURE=false` to opt out.
+
 ## v2.1.15 — Postgres-first GCP deployment
 
 - **Postgres in GCP startup script**: `deploy/gcp/startup.sh.tpl` now starts a Postgres 16
