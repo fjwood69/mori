@@ -1,11 +1,20 @@
 # Changelog
 
+## v2.1.19 — Pin Python to 3.12 in Dockerfile
+
+- **`Dockerfile`**: Change `PYTHON_VERSION` from `3.14.5` to `3.12.10`. FastMCP 3.2.0 has a
+  `custom_route` registration bug on Python 3.14 where routes defined after a certain index in
+  the handler list silently fail to register. UAT masked this because the local build uses the
+  system Python 3.12. Production was running Python 3.14 (Dockerfile default), which explains
+  why all new endpoints returned 404 despite being present in the image.
+
 ## v2.1.18 — Pin FastMCP to 3.2.0
 
 - **`requirements.txt`**: Pin `fastmcp==3.2.0`. FastMCP 3.3.1 silently dropped newly-registered
   `custom_route` handlers after a certain point in the handler list — only routes present before
   v2.1.16 were reachable. UAT masked this because the local build resolved 3.2.0 while GitHub
-  Actions resolved the latest compatible (3.3.1).
+  Actions resolved the latest compatible (3.3.1). (Root cause turned out to be Python 3.14 in the
+  Dockerfile, not the FastMCP version — see v2.1.19.)
 
 ## v2.1.16 — Git commit ingestion + consult output capture
 
