@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.1.18 — Pin FastMCP to 3.2.0
+
+- **`requirements.txt`**: Pin `fastmcp==3.2.0`. FastMCP 3.3.1 silently dropped newly-registered
+  `custom_route` handlers after a certain point in the handler list — only routes present before
+  v2.1.16 were reachable. UAT masked this because the local build resolved 3.2.0 while GitHub
+  Actions resolved the latest compatible (3.3.1).
+
 ## v2.1.16 — Git commit ingestion + consult output capture
 
 - **`POST /api/git/ingest`**: New endpoint that ingests git commit messages from a post-push
