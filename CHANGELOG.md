@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.1.23 — Deployment contract gate (UAT ⇄ PRD parity)
+
+- **`scripts/verify-deployment.py`**: single source of truth for "is this instance serving
+  correctly?" — asserts open routes (`/health`, `/ready`, `/metrics`) return 200 and every
+  auth-guarded feature route returns 401 without a key and 200 with one (registered + auth
+  enforced + key accepted). Stdlib-only so it runs inside the slim image.
+- **`cd.yml`**: after the health gate, CD runs this script *inside the freshly-deployed
+  container* against its own endpoint and **fails the deploy** if the route surface is wrong.
+  Previously CD only checked `/health` — which passed even while feature routes 404'd, so
+  broken deploys reported green. A tag that passes the contract in UAT now reproduces the same
+  surface in PRD because CD enforces the identical assertions.
+- **UAT** runs the same script against both backends pre-tag (replaces an inline check). New
+  `custom_route` paths are added to `verify-deployment.py` once — both gates pick them up.
+
 ## v2.1.22 — Unify deploy on rootless runtime + env-file single source of truth
 
 - **Root-cause fix for the production `/api/git/*` 404s**: the GCE startup script ran
