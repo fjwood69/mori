@@ -371,12 +371,15 @@ echo "Dream cron installed."
 BACKUP_SCRIPT="/usr/local/bin/mori-backup.sh"
 cat > "$BACKUP_SCRIPT" << 'BACKUPEOF'
 #!/bin/bash
-# Daily Postgres backup to GCS using GCE metadata server auth.
+# Daily backup to GCS using GCE metadata server auth.
+# Backs up: mori Postgres (pg_dump) + Bifrost SQLite (config.db checkpoint).
 set -u
 DB_DIR="/data/mori-advisor"
+BIFROST_DIR="/data/bifrost"
 BUCKET="${backup_bucket}"
 DATE=$(date +%Y%m%d)
 RUNTIME_DIR="/run/user/$(id -u mori)"
+ERRORS=0
 
 # Get GCE service account access token
 TOKEN=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
@@ -388,7 +391,15 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
-# Source .env for MORI_DATABASE_URL (for reference/validation)
+gcs_put() {
+  local file="$1" remote="$2"
+  curl -sf -X PUT --data-binary @"$file" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/octet-stream" \
+    "https://storage.googleapis.com/$BUCKET/$remote"
+}
+
+# ── 1. Mori Postgres (pg_dump) ───────────────────────────────────────────────
 [ -f "$DB_DIR/.env" ] && . "$DB_DIR/.env"
 
 TMPFILE=$(mktemp /tmp/mori-pg-backup-XXXXXX)
@@ -401,23 +412,32 @@ XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec mori-pg \
 if [ $? -ne 0 ]; then
   echo "FAIL: pg_dump failed"
   rm -f "${TMPFILE}" "${TMPFILE}.gz"
-  exit 1
-fi
-
-curl -sf -X PUT --data-binary @"${TMPFILE}.gz" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/octet-stream" \
-  "https://storage.googleapis.com/$BUCKET/$REMOTE_NAME"
-RC=$?
-rm -f "${TMPFILE}" "${TMPFILE}.gz"
-
-if [ $RC -eq 0 ]; then
-  echo "OK: ${REMOTE_NAME} uploaded to gs://${BUCKET}/"
+  ERRORS=$((ERRORS + 1))
 else
-  echo "FAIL: upload exit code $RC"
-  exit 1
+  gcs_put "${TMPFILE}.gz" "$REMOTE_NAME" && echo "OK: ${REMOTE_NAME}" || { echo "FAIL: upload ${REMOTE_NAME}"; ERRORS=$((ERRORS + 1)); }
+  rm -f "${TMPFILE}" "${TMPFILE}.gz"
 fi
-echo "Backup complete: $DATE"
+
+# ── 2. Bifrost SQLite (config.db) ────────────────────────────────────────────
+if [ -f "${BIFROST_DIR}/config.db" ]; then
+  BIFROST_TMP=$(mktemp /tmp/bifrost-backup-XXXXXX)
+  BIFROST_REMOTE="bifrost-config-${DATE}.db.gz"
+
+  echo "Backing up Bifrost SQLite → ${BIFROST_REMOTE}"
+  # Checkpoint WAL into the main db file before copying
+  XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec bifrost \
+    sqlite3 /app/data/config.db "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
+  cp "${BIFROST_DIR}/config.db" "${BIFROST_TMP}"
+  gzip -9 "${BIFROST_TMP}"
+
+  gcs_put "${BIFROST_TMP}.gz" "$BIFROST_REMOTE" && echo "OK: ${BIFROST_REMOTE}" || { echo "FAIL: upload ${BIFROST_REMOTE}"; ERRORS=$((ERRORS + 1)); }
+  rm -f "${BIFROST_TMP}" "${BIFROST_TMP}.gz"
+else
+  echo "WARN: ${BIFROST_DIR}/config.db not found — skipping Bifrost backup"
+fi
+
+echo "Backup complete: $DATE (errors: $ERRORS)"
+[ $ERRORS -eq 0 ] || exit 1
 BACKUPEOF
 chmod 755 "$BACKUP_SCRIPT"
 BACKUP_CRON="0 6 * * * $BACKUP_SCRIPT >/data/mori-advisor/backup-cron.log 2>&1"
