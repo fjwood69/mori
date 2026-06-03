@@ -4,14 +4,27 @@ region     = "northamerica-northeast2"
 zone       = "northamerica-northeast2-a"
 
 # Machine
-machine_type  = "e2-small"
-disk_size_gb  = 20
+machine_type = "e2-small"
+disk_size_gb = 20
 
 # Container
-container_image = "ghcr.io/fjwood69/moku:latest"
+container_image = "ghcr.io/fjwood69/mori:latest"
 
 # Tailscale
 tailscale_auth_key = "tskey-auth-..."
+tailscale_hostname = "mori-advisor"
 
-# SSH key for VM access (from .secrets or your ~/.ssh/id_*.pub)
-ssh_public_key = "ssh-rsa AAAA..."
+# SSH key for VM access (from your ~/.ssh/id_*.pub)
+ssh_public_key = "ssh-ed25519 AAAA..."
+
+# ── Optional overrides ───────────────────────────────────────────────────
+# Allow extra source CIDRs to reach the mori port (beyond the Tailscale range):
+# extra_allowed_cidrs = ["192.168.1.0/24"]
+#
+# Use a custom startup script (e.g. one that fronts mori with an LLM gateway):
+# startup_template_path = "/path/to/your/startup.sh.tpl"
+#
+# Pin names to an existing deployment so Terraform does not recreate resources:
+# disk_name          = "mori-advisor-data"
+# backup_bucket_name = "mori-advisor-backups-my-project"
+# network_ip         = "10.128.0.10"

@@ -32,7 +32,7 @@ resource "google_storage_bucket" "mori_data" {
 }
 
 resource "google_storage_bucket" "mori_backups" {
-  name          = "moku-advisor-backups-${var.project_id}"
+  name          = local.backup_bucket_name
   location      = var.region
   storage_class = "STANDARD"
   force_destroy = false
@@ -195,21 +195,25 @@ resource "google_secret_manager_secret_iam_member" "ghcr_token" {
 # ── GCE VM ───────────────────────────────────────────────────────────────
 
 locals {
-  # Startup script: install Podman, pull image, run container
-  startup_script = templatefile("${path.module}/startup.sh.tpl", {
+  backup_bucket_name = var.backup_bucket_name != "" ? var.backup_bucket_name : "mori-advisor-backups-${var.project_id}"
+  startup_template   = var.startup_template_path != "" ? var.startup_template_path : "${path.module}/startup.sh.tpl"
+
+  # Startup script: install Podman, pull image, run containers
+  startup_script = templatefile(local.startup_template, {
     container_image    = var.container_image
     data_bucket        = google_storage_bucket.mori_data.name
     backup_bucket      = google_storage_bucket.mori_backups.name
     tailscale_auth_key = var.tailscale_auth_key
+    tailscale_hostname = var.tailscale_hostname
     project_id         = var.project_id
   })
 }
 
 resource "google_compute_disk" "mori_data" {
-  name  = "moku-advisor-data"
-  type  = "pd-standard"
-  zone  = var.zone
-  size  = var.disk_size_gb
+  name = var.disk_name
+  type = "pd-standard"
+  zone = var.zone
+  size = var.disk_size_gb
 
   labels = {
     service = "mori-advisor"
@@ -225,8 +229,9 @@ resource "google_compute_firewall" "mori_tailscale" {
   }
 
   # Tailscale uses WireGuard (UDP 41641) and DERP relays (TCP 443/80)
-  # The actual mori port only needs to be reachable from the tailnet
-  source_ranges = ["100.64.0.0/10", "10.1.0.0/16"]
+  # The actual mori port only needs to be reachable from the tailnet.
+  # 100.64.0.0/10 is the Tailscale CGNAT range; add LAN subnets via extra_allowed_cidrs.
+  source_ranges = concat(["100.64.0.0/10"], var.extra_allowed_cidrs)
   target_tags   = ["mori-advisor"]
 }
 
@@ -287,18 +292,18 @@ resource "google_compute_instance" "mori" {
 
   network_interface {
     network    = "default"
-    network_ip = "10.188.0.16"
+    network_ip = var.network_ip != "" ? var.network_ip : null
     # No external IP — all access via Tailscale
   }
 
   metadata = {
-    ssh-keys              = "${var.ssh_user}:${var.ssh_public_key}"
+    ssh-keys                  = "${var.ssh_user}:${var.ssh_public_key}"
     google-logging-enabled    = "true"
     google-monitoring-enabled = "true"
   }
 
   service_account {
-    email  = google_service_account.mori.email
+    email = google_service_account.mori.email
     scopes = [
       "https://www.googleapis.com/auth/cloud-platform",
     ]
@@ -310,5 +315,13 @@ resource "google_compute_instance" "mori" {
 
   labels = {
     service = "mori-advisor"
+  }
+
+  lifecycle {
+    # The startup script only runs on first boot / rebuild. Changing it would
+    # otherwise force a full VM replacement on every edit. Services are managed
+    # out-of-band (CD/SSH), so ignore in-place drift here; to apply a new startup
+    # script, recreate the instance deliberately (terraform taint / -replace).
+    ignore_changes = [metadata_startup_script]
   }
 }

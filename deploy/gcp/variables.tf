@@ -57,3 +57,45 @@ variable "backup_retention_days" {
   type        = number
   default     = 90
 }
+
+# ── Names (override only to match an existing/legacy deployment) ─────────────
+
+variable "disk_name" {
+  description = "Name of the persistent data disk. Override to match an existing disk so Terraform does not recreate it."
+  type        = string
+  default     = "mori-advisor-data"
+}
+
+variable "backup_bucket_name" {
+  description = "Full GCS backup bucket name. Leave empty to use mori-advisor-backups-<project_id>; set to match an existing bucket."
+  type        = string
+  default     = ""
+}
+
+variable "extra_allowed_cidrs" {
+  description = "Additional source CIDR ranges allowed to reach the mori port (beyond the Tailscale CGNAT range). E.g. a LAN subnet."
+  type        = list(string)
+  default     = []
+}
+
+# ── Tailscale ────────────────────────────────────────────────────────────
+
+variable "tailscale_hostname" {
+  description = "Hostname the VM registers with on the tailnet"
+  type        = string
+  default     = "mori-advisor"
+}
+
+# ── Custom startup script ───────────────────────────────────────────────────
+
+variable "startup_template_path" {
+  description = "Path to the startup script template. Leave empty to use the bundled generic deploy/gcp/startup.sh.tpl. Set to a custom script (e.g. one that fronts mori with an LLM gateway) to override."
+  type        = string
+  default     = ""
+}
+
+variable "network_ip" {
+  description = "Static internal IP for the VM. Leave empty to let GCP auto-assign; set to match an existing instance."
+  type        = string
+  default     = ""
+}
