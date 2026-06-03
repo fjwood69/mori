@@ -54,7 +54,7 @@ if [ -n "$MORI_API_KEY" ] && command -v python3 >/dev/null 2>&1; then
   # Fetch per-ref watermark
   WATERMARK=$(curl -sf \
     -H "X-Api-Key: ${MORI_API_KEY}" \
-    "${MORI_URL}/api/ingest/git/watermark?repo=${REPO}&ref=${BRANCH}" \
+    "${MORI_URL}/api/git/watermark?repo=${REPO}&ref=${BRANCH}" \
     2>/dev/null \
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('watermark') or '')" \
     2>/dev/null || echo "")
@@ -136,7 +136,7 @@ print(json.dumps({'repo': sys.argv[2], 'ref': sys.argv[3], 'commits': commits, '
       -H "X-Api-Key: ${MORI_API_KEY}" \
       -H "Content-Type: application/json" \
       -d "$INGEST_PAYLOAD" \
-      "${MORI_URL}/api/ingest/git" \
+      "${MORI_URL}/api/git/ingest" \
       2>/dev/null || echo "")
 
     INGESTED=$(python3 -c "import sys,json; d=json.loads(sys.argv[1]); print(d.get('ingested',0))" "$RESULT" 2>/dev/null || echo "0")

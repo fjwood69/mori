@@ -2158,7 +2158,7 @@ async def dream_trigger(request: Request) -> JSONResponse:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
-@mcp.custom_route("/api/ingest/git/watermark", methods=["GET"])
+@mcp.custom_route("/api/git/watermark", methods=["GET"])
 async def git_watermark_get(request: Request) -> JSONResponse:
     """Return the last ingested commit SHA for a given repo and ref.
 
@@ -2183,7 +2183,7 @@ async def git_watermark_get(request: Request) -> JSONResponse:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
-@mcp.custom_route("/api/ingest/git", methods=["POST"])
+@mcp.custom_route("/api/git/ingest", methods=["POST"])
 async def ingest_git(request: Request) -> JSONResponse:
     """Ingest git commit messages from a post-push hook.
 

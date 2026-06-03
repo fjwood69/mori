@@ -2,12 +2,12 @@
 
 ## v2.1.16 — Git commit ingestion + consult output capture
 
-- **`POST /api/ingest/git`**: New endpoint that ingests git commit messages from a post-push
+- **`POST /api/git/ingest`**: New endpoint that ingests git commit messages from a post-push
   hook. Each commit is written as a working-tier project memory tagged `project:<repo>` and
   `pusher:<client>`. Server-side dedup via `ingestion_log.source_hash` makes repeated calls
   idempotent. Watermarks are per `(repo, ref)` so pushes to different branches maintain
   independent ingestion state.
-- **`GET /api/ingest/git/watermark`**: Narrowly-scoped endpoint that returns the last ingested
+- **`GET /api/git/watermark`**: Narrowly-scoped endpoint that returns the last ingested
   commit SHA for a given `(repo, ref)`. Used by post-push hooks to compute the commit range
   without exposing the full dream state keyspace.
 - **`scripts/post-push.sh` / `post-push.ps1`**: Extended with a git commit ingestion block.

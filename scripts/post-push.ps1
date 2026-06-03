@@ -58,7 +58,7 @@ if ($ApiKey) {
     try {
         # Fetch per-ref watermark
         $WmResponse = Invoke-RestMethod `
-            -Uri "$MoriUrl/api/ingest/git/watermark?repo=$([Uri]::EscapeDataString($Repo))&ref=$([Uri]::EscapeDataString($Branch))" `
+            -Uri "$MoriUrl/api/git/watermark?repo=$([Uri]::EscapeDataString($Repo))&ref=$([Uri]::EscapeDataString($Branch))" `
             -Headers @{ "X-Api-Key" = $ApiKey } `
             -TimeoutSec 5 `
             -ErrorAction SilentlyContinue
@@ -107,7 +107,7 @@ if ($ApiKey) {
 
         try {
             $Result = Invoke-RestMethod `
-                -Uri "$MoriUrl/api/ingest/git" `
+                -Uri "$MoriUrl/api/git/ingest" `
                 -Method POST `
                 -Headers @{ "X-Api-Key" = $ApiKey; "Content-Type" = "application/json" } `
                 -Body $IngestPayload `

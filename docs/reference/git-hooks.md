@@ -15,8 +15,8 @@ git push
         ├─▶ POST /api/events/raw        (fire-and-forget NATS event)
         │     └─▶ NATS cc.<device>      (surfaces in /brief + /nats sub)
         │
-        └─▶ GET  /api/ingest/git/watermark?repo=X&ref=Y   (per-branch watermark)
-              └─▶ POST /api/ingest/git                     (batch commit ingest)
+        └─▶ GET  /api/git/watermark?repo=X&ref=Y   (per-branch watermark)
+              └─▶ POST /api/git/ingest                     (batch commit ingest)
                     └─▶ working-tier memories tagged project:<repo>
                           └─▶ dream pipeline promotes to canonical over time
 ```
@@ -159,7 +159,7 @@ git push
 # → Memory: commit-mori-abc1234
 
 # 4. Check the watermark advanced
-curl http://localhost:8968/api/ingest/git/watermark?repo=mori\&ref=main \
+curl http://localhost:8968/api/git/watermark?repo=mori\&ref=main \
   -H "X-Api-Key: $MORI_API_KEY"
 # → {"repo":"mori","ref":"main","watermark":"<sha>"}
 ```
