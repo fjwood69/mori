@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.1.15 — Postgres-first GCP deployment
+
+- **Postgres in GCP startup script**: `deploy/gcp/startup.sh.tpl` now starts a Postgres 16
+  container bound to `/data/postgres/pgdata` on the persistent disk as part of the standard boot
+  sequence. Postgres data survives VM stops and rebuilds — named container volumes are no longer
+  used for stateful data.
+- **`MORI_REQUIRE_POSTGRES`**: New env var — if set to `true`, mori-advisor aborts at startup
+  when Postgres is unreachable, preventing silent fallback to SQLite. Recommended for all team
+  and GCP deployments.
+- **`pg_isready` startup gate**: mori-advisor will not start until Postgres accepts connections
+  (30×2s timeout with fatal exit). Eliminates the previous race condition where the server could
+  start against an unavailable database.
+- **pg_dump backup cron**: Daily `pg_dump` to GCS replaces the SQLite Litestream backup cron
+  in the GCP deployment path. Backups use GCE metadata server auth — no credentials in env vars.
+- **Credentials via Secret Manager**: GCP deployment fetches the Postgres password from GCP
+  Secret Manager at boot and writes `MORI_DATABASE_URL` to `/data/mori-advisor/.env` on the
+  persistent disk. No credentials in the startup script or repository.
+- **Tailscale state preserved across rebuilds**: Startup script restores Tailscale state from
+  the persistent disk so the VM retains its Tailscale identity after a rebuild.
+- **SSH host keys preserved across rebuilds**: Startup script restores SSH host keys from the
+  persistent disk to prevent host-key warnings after VM recreation.
+- **skills/brief: remove dead `mori-config` pull step**: The `git -C ~/mori-config pull` step
+  in the `/brief` skill was a leftover from an earlier config management approach. Removed from
+  both `mori/skills/brief/SKILL.md` and the installed skill files.
+
 ## v2.1.14 — Fix Windows Installer Hook Format & Session-Based Auth
 
 - **Windows Installer Hook Format Fix**: Fixed a bug in `scripts/install-mori-claude.ps1` where the `PostToolUse` event hook was missing the `matcher` field (e.g. `matcher: "*"`), which caused Claude Code to reject the generated configuration. The installer now matches the correct hook wrapping behavior of `install-mori-claude.sh`.

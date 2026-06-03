@@ -5,7 +5,7 @@
 ## Quick start
 
 ```
-/msg send nuc15pro task "Extract rate limiting into its own module in bifrost/src/middleware/"
+/msg send workstation task "Extract rate limiting into its own module in bifrost/src/middleware/"
 /msg inbox
 /msg ack <message-id>
 ```
@@ -39,22 +39,22 @@
 ### Task delegation
 
 ```bash
-# UX3405 — delegate a refactor to the NUC
-/msg send nuc15pro task "Extract rate limiting into its own module in bifrost/src/middleware/ — current impl in src/server.rs lines 140-180"
+# laptop — delegate a refactor to the workstation
+/msg send workstation task "Extract rate limiting into its own module in bifrost/src/middleware/ — current impl in src/server.rs lines 140-180"
 
-# NUC — next /brief surfaces the task:
-# [task]  from uk-smr-ux3405-win11  2026-05-31 14:22  id=a3f9c2b1
+# workstation — next /brief surfaces the task:
+# [task]  from laptop  2026-05-31 14:22  id=a3f9c2b1
 #   Extract rate limiting into its own module...
-#   → ack: mori-msg_send(to="uk-smr-ux3405-win11", type="ack", reply_to="a3f9c2b1-...", body="...")
+#   → ack: mori-msg_send(to="laptop", type="ack", reply_to="a3f9c2b1-...", body="...")
 
 /msg ack a3f9c2b1 "starting now, should be done this session"
 
-# NUC — once complete:
+# workstation — once complete:
 /msg done a3f9c2b1
 
-# UX3405 — check status:
+# laptop — check status:
 /msg inbox
-# [done]  from uk-smr-nuc15pro  id=a3f9c2b1  ✓
+# [done]  from workstation  id=a3f9c2b1  ✓
 ```
 
 ### Cross-device decision
@@ -68,21 +68,21 @@
 ### Question and answer
 
 ```bash
-# GCE — ask the NUC something
-/msg send nuc15pro question "Did the JWT expiry edge case in session.rs get resolved? Dream pipeline flagged it as unresolved last week."
+# mori-server — ask the workstation something
+/msg send workstation question "Did the JWT expiry edge case in session.rs get resolved? Dream pipeline flagged it as unresolved last week."
 
-# NUC — /brief surfaces it, reply in one step:
-mori-msg_send(to="ca-gcp-mori-advisor", type="reply", reply_to="b4e8f3c2-...", body="Yes — fixed in commit c7a5665, added a 60s clock-skew buffer. Backfilled the memory.")
+# workstation — /brief surfaces it, reply in one step:
+mori-msg_send(to="mori-server", type="reply", reply_to="b4e8f3c2-...", body="Yes — fixed in commit c7a5665, added a 60s clock-skew buffer. Backfilled the memory.")
 
-# GCE — view the thread:
+# mori-server — view the thread:
 /msg thread b4e8f3c2
 ```
 
 ### Broadcast session summary
 
 ```bash
-# /wrap does this automatically as step 4b — shown here for clarity
-/msg send --broadcast "nuc on uk-smr-nuc15pro: rebuilt mori:local from feat/mori-msg, smoke 8/8 green, msg_daemon running"
+# /wrap does this automatically — shown here for clarity
+/msg send --broadcast "workstation: rebuilt mori:local from feat/mori-msg, smoke 8/8 green, msg_daemon running"
 
 # All devices see it in next /msg inbox or /brief
 ```
@@ -92,10 +92,10 @@ mori-msg_send(to="ca-gcp-mori-advisor", type="reply", reply_to="b4e8f3c2-...", b
 ### `mori-msg_send`
 
 ```
-mori-msg_send(to="nuc15pro", type="task", body="...", reply_to="<uuid>")
+mori-msg_send(to="workstation", type="task", body="...", reply_to="<uuid>")
 ```
 
-Publishes directly to NATS. Returns `Sent [task] to nuc15pro (id=a3f9c2b1)`.
+Publishes directly to NATS. Returns `Sent [task] to workstation (id=a3f9c2b1)`.
 
 ### `mori-msg_recv`
 
@@ -125,9 +125,9 @@ Returns root message + all replies in chronological order.
 **DB file:** `msg.db` in `MORI_ADVISOR_DATA` — separate from `memories.db`, sole writer is `mori-msg` daemon.  
 **Daemon:** `python -m mori_advisor.msg_daemon` — durable pull consumer, survives restarts.
 
-### Starting the daemon (NUC)
+### Starting the daemon
 
-The `start-nuc.sh` script launches `mori-msg` automatically alongside `mori-advisor`.
+The `mori-msg` daemon starts automatically alongside `mori-advisor` in the Docker Compose and startup script deployments.
 
 ### Environment variables
 

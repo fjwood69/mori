@@ -72,7 +72,6 @@ Core hardening. Remaining items before v2.0 is complete. Target: one shared inst
   - Foundation for dashboard and third-party integrations
 - API rate limiting — per-key limits
 - Headless CC cost guards — per-message spend caps
-- Prometheus native exposition on `/metrics`
 
 ---
 
@@ -80,9 +79,18 @@ Core hardening. Remaining items before v2.0 is complete. Target: one shared inst
 
 Small team coherence. Requires v2.0 foundation.
 
-**Shipped in v2.1.0:**
-- Named API key authentication — `MORI_API_KEYS=name:secret,...`, ASGI middleware covering all MCP tools and HTTP endpoints, backward compat with `MORI_ADVISOR_API_KEY`
-- PostCompact re-grounding hook — `~/.claude/hooks/post-compact-brief.sh`, opt-out via `MORI_POST_COMPACT_BRIEF=false`
+**Shipped:**
+- v2.1.0: Named API key authentication — `MORI_API_KEYS=name:secret,...`, ASGI middleware covering all MCP tools and HTTP endpoints, backward compat with `MORI_ADVISOR_API_KEY`
+- v2.1.0: PostCompact re-grounding hook — `~/.claude/hooks/post-compact-brief.sh`, opt-out via `MORI_POST_COMPACT_BRIEF=false`
+- v2.1.6: Postgres dream transaction poisoning fix — `INSERT … ON CONFLICT DO UPDATE` upsert; origin array merging, canonical tier and protection flag preservation on update
+- v2.1.8: Async Postgres ingestion pipeline; MCP endpoint now requires API key (removed from `OPEN_PATHS`)
+- v2.1.9: Postgres `brief()` interface fixes — `get_memories_by_project()` and `check_freshness()` corrected for asyncpg
+- v2.1.10: Antigravity installer profile parity (`--target cli/ide/both`); PostCompact hook for Antigravity; robust YAML frontmatter parsing in PowerShell skill installer
+- v2.1.11: Postgres savepoint isolation in dream pipeline; asyncpg datetime fix; `APP_PORT` configurable via env var; smoke-test robustness improvements
+- v2.1.12: Session-based auth bypass for SSE POST/DELETE — fixes 401 on IDE restart for clients that don't propagate custom headers
+- v2.1.13: Native Prometheus `/metrics` exposition — `text/plain; version=0.0.4`, direct scraping without OTel bridge; pluggable store count and filter methods
+- v2.1.14: Windows installer PostToolUse `matcher` field fix; session auth bypass improvement
+- v2.1.15: Postgres-first GCP deployment — persistent-disk bind mount, `pg_isready` gate, `MORI_REQUIRE_POSTGRES`, pg_dump backup cron, Tailscale and SSH host key persistence across VM rebuilds
 
 **Remaining:**
 
@@ -181,4 +189,4 @@ never appear in the public core. See `COMMERCIAL.md` for licensing terms.
 
 ---
 
-*Last updated: v2.1.0*
+*Last updated: v2.1.15*

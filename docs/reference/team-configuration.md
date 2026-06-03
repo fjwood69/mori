@@ -98,7 +98,27 @@ Restart the container. Mori will use PostgreSQL automatically.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MORI_DATABASE_URL` | *(unset)* | PostgreSQL DSN. Unset or empty = SQLiteStore. |
-| `MORI_ADVISOR_DATA` | `/data/mori-advisor` | SQLite data directory (ignored when Postgres active). |
+| `MORI_REQUIRE_POSTGRES` | *(unset)* | If `true`, abort on startup when Postgres is unreachable. Recommended for team and GCP deployments to prevent silent SQLite fallback. |
+| `MORI_ADVISOR_DATA` | `/data/mori-advisor` | Data directory (memories.db, msg.db, .env, etc.). |
+
+---
+
+## GCP deployment (v2.1.15+)
+
+For GCP deployments using `deploy/gcp/`, Postgres is managed by the startup script — you do not
+need to start or manage the container manually. The startup script:
+
+- Starts Postgres 16 bound to `/data/postgres/pgdata` on the persistent disk
+- Waits for `pg_isready` before starting mori-advisor (fatal exit if Postgres is unavailable)
+- Fetches the Postgres password from Secret Manager at boot
+- Writes `MORI_DATABASE_URL` to `/data/mori-advisor/.env` on the persistent disk
+- Runs a daily `pg_dump` to GCS via cron
+
+The `deploy/team/docker-compose.yml` path (with pgBouncer and WAL-G) is for self-hosted
+non-GCP teams. Both paths use the same `MORI_DATABASE_URL` and `PostgresStore` backend.
+
+See [deploy/gcp/README.md](../../deploy/gcp/README.md) for GCP-specific setup, IAM prerequisites,
+and the upgrade guide from SQLite.
 
 ---
 
