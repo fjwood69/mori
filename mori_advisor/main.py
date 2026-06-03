@@ -2376,14 +2376,22 @@ if __name__ == "__main__":
         result = import_standards()
         logger.info(result)
     init_auth()
+    import uvicorn
     from starlette.middleware import Middleware
 
     from mori_advisor.middleware import ApiKeyMiddleware
 
-    mcp.run(
+    # Build the ASGI app explicitly so custom_route registrations are always
+    # included regardless of FastMCP version or Python version.
+    app = mcp.http_app(
         transport="streamable-http",
+        middleware=[Middleware(ApiKeyMiddleware)],
+    )
+
+    uvicorn.run(
+        app,
         host="0.0.0.0",
         port=int(os.environ.get("APP_PORT", 8968)),
         log_level="info",
-        middleware=[Middleware(ApiKeyMiddleware)],
+        lifespan="on",
     )

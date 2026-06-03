@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.1.21 — Fix CD port conflict + switch to http_app() ASGI startup
+
+- **`cd.yml`**: Before blue/green deploy, kill any process on ports 8968/8969 that
+  isn't tracked by rootful Podman (e.g. a startup-script rootless container from a VM
+  reboot holding the port and causing every CD attempt to crash in a restart loop).
+- **`mori_advisor/main.py`**: Switch from `mcp.run(middleware=...)` to building the
+  ASGI app explicitly with `mcp.http_app()` and serving it with `uvicorn.run()` — the
+  pattern the FastMCP docs recommend for production. This makes custom_route registration
+  unambiguous and decouples the server lifecycle from FastMCP's transport abstraction.
+
 ## v2.1.19 — Move Dockerfile to Python 3.13
 
 - **`Dockerfile`**: Change `PYTHON_VERSION` from `3.14.5` to `3.13.4`. FastMCP 3.2.0 has a

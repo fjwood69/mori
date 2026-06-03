@@ -90,6 +90,16 @@ jobs:
             IMAGE="ghcr.io/fjwood69/mori:${VERSION}"
             sudo podman pull "$IMAGE"
 
+            # Stop any process holding port 8968 or 8969 that isn't tracked by
+            # rootful podman (e.g. startup-script rootless containers from a VM reboot)
+            for PORT in 8968 8969; do
+              PID=$(ss -tlnp 2>/dev/null | awk -v p=":${PORT} " '$0 ~ p {match($0, /pid=([0-9]+)/, a); if (a[1]) print a[1]}')
+              if [ -n "$PID" ]; then
+                CNAME=$(sudo podman ps --format "{{.Names}}" --filter "pid=${PID}" 2>/dev/null | head -1)
+                [ -z "$CNAME" ] && sudo kill "$PID" 2>/dev/null && sleep 2 || true
+              fi
+            done
+
             # advisor blue/green
             sudo podman stop mori-advisor-new 2>/dev/null || true
             sudo podman rm mori-advisor-new 2>/dev/null || true
