@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,23 @@ logger = logging.getLogger(__name__)
 # Arbitrary stable key for pg_advisory_lock — serialises concurrent bootstraps
 # (main server + ingestion server + dream_job can all start near-simultaneously).
 _PG_ADVISORY_LOCK_KEY = 0x4D4F524921  # "MORI!" as a bigint
+
+# Per-file locks serialise apply_sqlite across THREADS in this process (deterministic,
+# no SQLite write contention). Cross-PROCESS contention is handled by busy_timeout +
+# the retry-on-locked loop inside apply_sqlite.
+_SQLITE_APPLY_LOCKS: dict[str, threading.Lock] = {}
+_SQLITE_APPLY_LOCKS_GUARD = threading.Lock()
+
+
+def _apply_lock_for(db_path: Path) -> threading.Lock:
+    key = str(db_path.resolve())
+    with _SQLITE_APPLY_LOCKS_GUARD:
+        lock = _SQLITE_APPLY_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _SQLITE_APPLY_LOCKS[key] = lock
+        return lock
+
 
 # Callable signatures. sqlite_fn gets (conn, db_path) so backfills can use the
 # runner connection while the baseline can open the legacy bootstrappers' own
@@ -264,21 +282,46 @@ def _open_sqlite(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def apply_sqlite(db_path: str | Path, migrations: tuple[Migration, ...]) -> None:
+def apply_sqlite(
+    db_path: str | Path, migrations: tuple[Migration, ...], *, max_attempts: int = 15
+) -> None:
     """Apply all pending migrations (already filtered to this file's target) to a
-    SQLite database file, idempotently and safe under concurrent processes."""
+    SQLite database file, idempotently and safe under concurrent threads/processes.
+
+    A per-file thread lock serialises concurrent callers in this process. The whole
+    apply is wrapped in a retry-on-locked loop so a transient "database is locked"
+    from any step (incl. the schema_migrations create) under cross-process contention
+    re-opens and retries from scratch — every step is idempotent, so re-running just
+    skips what's already applied.
+    """
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = _open_sqlite(db_path)
-    try:
-        conn.execute(_SQLITE_SCHEMA_MIGRATIONS)
-        applied = _sqlite_applied(conn, migrations)
-        for m in sorted(migrations, key=lambda x: x.id):
-            if m.id in applied:
-                continue
-            _apply_one_sqlite(conn, db_path, m)
-    finally:
-        conn.close()
+    with _apply_lock_for(db_path):
+        for attempt in range(1, max_attempts + 1):
+            conn = _open_sqlite(db_path)
+            try:
+                conn.execute(_SQLITE_SCHEMA_MIGRATIONS)
+                applied = _sqlite_applied(conn, migrations)
+                for m in sorted(migrations, key=lambda x: x.id):
+                    if m.id in applied:
+                        continue
+                    _apply_one_sqlite(conn, db_path, m)
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower():
+                    raise
+                logger.info(
+                    "apply_sqlite(%s) — db locked (attempt %d/%d), retrying",
+                    db_path.name,
+                    attempt,
+                    max_attempts,
+                )
+                time.sleep(min(0.05 * attempt, 1.0))
+            finally:
+                conn.close()
+        raise sqlite3.OperationalError(
+            f"apply_sqlite({db_path}): database locked after {max_attempts} attempts"
+        )
 
 
 def _sqlite_applied(conn: sqlite3.Connection, migrations: tuple[Migration, ...]) -> set[int]:
