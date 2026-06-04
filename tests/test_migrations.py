@@ -140,4 +140,49 @@ def test_pg_fresh_idempotent_and_tables():
     ids1, ids2, tables = asyncio.run(run())
     assert set(m.id for m in MIGRATIONS) <= set(ids1)  # all migrations applied (one DB)
     assert ids1 == ids2  # idempotent
-    assert {"memories", "session_events", "msg_log", "schema_migrations"} <= tables
+    assert {
+        "memories",
+        "session_events",
+        "msg_log",
+        "delegate_tasks",
+        "schema_migrations",
+    } <= tables
+
+
+# ── Stage B drift fixes ──────────────────────────────────────────────────────
+
+
+def test_drift_fixes_sqlite(tmp_path):
+    db = tmp_path / "memories.db"
+    apply_sqlite(db, MEMORIES_MIGS)
+    c = sqlite3.connect(str(db))
+    try:
+        dreamer_cols = {r[1] for r in c.execute("PRAGMA table_info(dreamer_config)")}
+        assert "updated_at" in dreamer_cols  # 0003
+        assert "delegate_tasks" in _tables(db)  # 0004 parity
+        # PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
+        mem = {r[1]: r for r in c.execute("PRAGMA table_info(memories)")}
+        assert mem["freshness_status"][3] == 1  # already NOT NULL on SQLite
+    finally:
+        c.close()
+
+
+@requires_pg
+def test_pg_drift_fixes():
+    from mori_advisor.store.postgres_store import PostgresStore
+
+    async def run():
+        store = PostgresStore(PG_URL)
+        await store.bootstrap()
+        async with store.pool.acquire() as conn:
+            notnull = await conn.fetchval(
+                "SELECT attnotnull FROM pg_attribute "
+                "WHERE attrelid = 'memories'::regclass AND attname = 'freshness_status'"
+            )
+            has_delegate = await conn.fetchval("SELECT to_regclass('delegate_tasks') IS NOT NULL")
+        await store.pool.close()
+        return notnull, has_delegate
+
+    notnull, has_delegate = asyncio.run(run())
+    assert notnull is True  # 0005 — freshness_status now NOT NULL on Postgres
+    assert has_delegate is True
