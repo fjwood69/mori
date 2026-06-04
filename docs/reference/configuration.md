@@ -102,9 +102,9 @@ Setting `MORI_API_KEY_ROLES` alone has no effect — the mode switch must be exp
 
 | Role | Allowed operations |
 |------|-------------------|
-| `read` | All read operations — `memory_read`, `memory_list`, `memory_search`, `brief`, `pensieve`, etc. |
-| `write` | Read + `memory_write`, `memory_import`, `memory_delete`, `memory_rollback` |
-| `dreamer` | Write + `memory_approve`, `memory_reject`, `memory_protect` |
+| `read` | All read operations — `memory_read`, `memory_list`, `memory_search`, `brief`, `pensieve`, `GET /api/memories`, `GET /api/events`, etc. |
+| `write` | Read + `memory_write`, `memory_import`, `memory_delete`, `memory_rollback`, `POST /api/memories`, `GET /api/pending` |
+| `dreamer` | Write + `memory_approve`, `memory_reject`, `memory_protect`, `POST /api/memories/{name}/approve`, `POST /api/memories/{name}/reject`, `DELETE /api/memories/{name}` |
 
 Hierarchy: `read < write < dreamer`. A dreamer key may call any operation.
 
@@ -136,9 +136,73 @@ In `host` mode (the default), `MORI_API_KEY_ROLES` is loaded but **not consulted
 existing hostname-based trusted-dreamer logic is unchanged. Switching to `api` mode is a per-deployment
 opt-in that takes effect immediately on restart.
 
-The write REST API (`#14`) and review queue (`#15`) will use the same `require_role` check, so
-"new write/approve features require `api` mode" is automatic — they will fail closed in `host` mode
+The write REST API (#14) is implemented and uses the same `require_role` check, so
+"write/approve features require `api` mode" is automatic — they fail closed in `host` mode
 until the operator opts in.
+
+## Write REST API (#14)
+
+Governed write/approve/reject/delete endpoints for non-MCP consumers (dashboard, CI, agents).
+All routes require `MORI_TD_MODE=api` and an appropriate role.
+
+### `POST /api/memories` — propose or write (role: write)
+
+Propose-not-overwrite semantics:
+- **New name** → insert as working tier immediately → `201 Created`, `{"status":"created"}`
+- **Canonical or protected name** → create a pending proposal; canonical row unchanged → `202 Accepted`, `{"status":"pending"}`
+- **Working name, same actor** → idempotent update → `200 OK`, `{"status":"updated"}`
+- **Working name, different actor** → create a pending proposal → `202 Accepted`, `{"status":"pending"}`
+
+Body (JSON, all fields optional except `name`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Required. Must match `^[a-zA-Z0-9_-]{1,128}$` |
+| `title` | string | Human-readable title |
+| `description` | string | One-line summary |
+| `type` | string | `project`, `profile`, `pattern`, `decision`, `standard`, `requirement` |
+| `tier` | string | `working` (default), `canonical`, `ephemeral` |
+| `body` | string | Markdown content (max 64 KB) |
+| `tags` | list[str] | Tag strings |
+| `origin_clients` | list[str] | Contributing client hostnames |
+
+Unexpected fields are rejected with 400. Oversized body → 400. Bad name → 400.
+
+### `GET /api/pending` — list pending proposals (role: write)
+
+Returns pending writes awaiting dreamer approval. Unapproved agent output is not for read-only eyes.
+
+Query params: `status` (default `pending`; also `approved`, `rejected`).
+
+### `POST /api/memories/{name}/approve` — approve pending write (role: dreamer)
+
+Body: `{"write_id": <int>, "note": "...", "reviewer": "..."}`. `write_id` is required — fetch from `GET /api/pending`.
+
+Race-safe: SQLite uses `BEGIN IMMEDIATE`; Postgres uses `SELECT ... FOR UPDATE` inside a transaction. Concurrent approvals cannot duplicate canonical rows.
+
+### `POST /api/memories/{name}/reject` — reject pending write (role: dreamer)
+
+Body: `{"write_id": <int>, "note": "...", "reviewer": "..."}`.
+
+### `DELETE /api/memories/{name}` — hard-delete a memory (role: dreamer)
+
+Permanently removes the memory entry. Soft-delete (`deleted_at`) is deferred to a follow-up (#16).
+
+### Audit log
+
+Every write/approve/reject/delete emits a structured log line at INFO level:
+
+```
+AUDIT op=<op> actor=<key_name> name=<name> content_hash=<sha256[:16]>
+```
+
+A structured audit table is deferred to a follow-up (#16).
+
+### Deferred (#16)
+- Per-key token-bucket rate-limiting + 1 MB body cap in middleware
+- `Idempotency-Key` header + TTL replay cache
+- Soft-delete (`deleted_at`)
+- Structured audit table
 
 ### Backward compatibility
 

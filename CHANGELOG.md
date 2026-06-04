@@ -1,5 +1,40 @@
 # Changelog
 
+## v2.1.35 — Governed write REST API core: propose/pending/approve/reject/delete (#14)
+
+- **feat:** `POST /api/memories` — propose-not-overwrite, tier-aware write endpoint (role: write).
+  New name → working row created (201); canonical or protected name → pending proposal (202, canonical
+  row unchanged); working name with same actor → idempotent update (200); different actor → pending
+  proposal (202). Strict input validation: name `^[a-zA-Z0-9_-]{1,128}$`, body max 64 KB,
+  unexpected fields rejected (400).
+- **feat:** `GET /api/pending` — list pending proposals awaiting dreamer review (role: write;
+  unapproved agent output is not for read-only eyes).
+- **feat:** `POST /api/memories/{name}/approve` — approve a pending write and apply it to the store
+  (role: dreamer). Race-safe: SQLite uses `BEGIN IMMEDIATE`; Postgres uses `SELECT … FOR UPDATE`
+  inside an explicit transaction. Concurrent approvals cannot duplicate canonical rows.
+- **feat:** `POST /api/memories/{name}/reject` — reject a pending write without applying (role: dreamer).
+- **feat:** `DELETE /api/memories/{name}` — hard-delete a memory entry (role: dreamer). Soft-delete
+  (`deleted_at`) deferred to #16.
+- **feat:** Structured audit log line on every governed write/approve/reject/delete:
+  `AUDIT op=<op> actor=<key_name> name=<name> content_hash=<sha256[:16]>`. No new table (deferred).
+- **feat:** `queue_pending_write()` added to `MemoryStore`, `PostgresStore`, `SQLiteStore`, and
+  `BaseStore` — direct pending-write insertion for the REST propose path, bypassing the
+  `write()` protection-check heuristic for canonical-not-protected memories.
+- **security:** Audited `_a()` bridge for contextvars propagation — no `run_in_executor`/threads;
+  `current_actor` propagates correctly into all awaited coroutines. Fail-closed test confirms a
+  missing actor raises `PermissionDenied`, never silently passes.
+- **test:** `tests/test_write_api.py` — 18 tests covering: capability enforcement (read/write/dreamer
+  on all routes), propose-not-overwrite semantics (new/canonical/same-actor/different-actor),
+  contextvar-missing fail-closed test, input validation (body size, name chars, unexpected fields,
+  missing name), and `_validate_write_payload` unit tests. Both backends via `@requires_pg`.
+- **scripts:** `scripts/verify-deployment.py` updated — `GET /api/pending` added to guarded routes;
+  write-API auth-gating probes for approve/reject/delete; safe POST+DELETE round-trip probe.
+- **docs:** `docs/reference/configuration.md` updated — roles table expanded with REST endpoints;
+  Write REST API section with endpoint reference, body schema, and deferred items.
+- **deferred to #16:** Per-key token-bucket rate-limiting, `Idempotency-Key` replay cache, soft-delete
+  (`deleted_at`), structured audit table. These are prerequisites for autonomous mirror-writer support
+  (Hermes, #16) but not needed for the dashboard (#15).
+
 ## v2.1.34 — API key capability scoping + host→api TD mode switch (#13)
 
 - **feat:** Added `MORI_API_KEY_ROLES=name:role,...` env var — parsed parallel to `MORI_API_KEYS`

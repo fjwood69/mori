@@ -191,6 +191,28 @@ class SQLiteStore(BaseStore):
 
     # ── Approval workflow ──────────────────────────────────────────────────
 
+    def queue_pending_write(
+        self,
+        name: str,
+        title: str = "",
+        description: str = "",
+        type: str = "project",
+        body: str = "",
+        tags: list | None = None,
+        origin_clients: list | None = None,
+        proposed_by: str = "api",
+    ) -> str:
+        return self._mem.queue_pending_write(
+            name=name,
+            title=title,
+            description=description,
+            type=type,
+            body=body,
+            tags=tags,
+            origin_clients=origin_clients,
+            proposed_by=proposed_by,
+        )
+
     def pending_list(self, status: str = "pending") -> str:
         return self._mem.pending_list(status=status)
 

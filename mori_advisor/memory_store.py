@@ -1554,6 +1554,58 @@ class MemoryStore:
 
     # ── Trusted Dreamers ───────────────────────────────────────────────
 
+    def queue_pending_write(
+        self,
+        name: str,
+        title: str = "",
+        description: str = "",
+        type: str = "project",
+        body: str = "",
+        tags: list | None = None,
+        origin_clients: list | None = None,
+        proposed_by: str = "api",
+    ) -> str:
+        """Insert a pending write proposal for an existing memory without modifying it.
+
+        Used by the write REST API for canonical and other-actor working memories
+        where propose-not-overwrite semantics are required (see #14).
+
+        Returns a human-readable string describing the outcome.
+        """
+        import sqlite3
+
+        tags_json = self._format_tags(tags or [])
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """
+                INSERT INTO pending_writes
+                    (memory_name, title, description, type, body, tags,
+                     origin_session_ids, origin_clients, proposed_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    name,
+                    title,
+                    description,
+                    type,
+                    body,
+                    tags_json,
+                    "[]",
+                    self._format_tags(origin_clients or []),
+                    proposed_by,
+                ),
+            )
+            conn.commit()
+            return (
+                f"Memory '{name}' is canonical or owned by another actor — "
+                "change queued as pending write (dreamer review required)."
+            )
+        except sqlite3.Error as e:
+            return f"Database error queuing pending write: {e}"
+        finally:
+            conn.close()
+
     def pending_list(self, status: str = "pending") -> str:
         """List pending writes awaiting approval."""
         import sqlite3
@@ -1589,52 +1641,54 @@ class MemoryStore:
         return "\n".join(lines)
 
     def approve(self, write_id: int, note: str = "", reviewer: str = "") -> str:
-        """Approve a pending write. Applies the change and records reviewer."""
+        """Approve a pending write. Applies the change and records reviewer.
+
+        Race-safe: uses BEGIN IMMEDIATE so concurrent approvals cannot both
+        apply the same pending write (SQLite write-lock held for full transaction).
+        """
         import sqlite3
 
         conn = self._get_conn()
         try:
+            # IMMEDIATE acquires the write-lock upfront — prevents TOCTOU race
+            # between the SELECT and the UPDATE on pending_writes.
+            conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
                 "SELECT * FROM pending_writes WHERE id = ? AND status = 'pending'",
                 (write_id,),
             )
             row = cur.fetchone()
-        except sqlite3.Error as e:
-            return f"Database error: {e}"
-        finally:
-            conn.close()
+            if not row:
+                conn.rollback()
+                return f"Pending write #{write_id} not found or already processed."
 
-        if not row:
-            return f"Pending write #{write_id} not found or already processed."
+            pw = {
+                "memory_name": row[1],
+                "title": row[2],
+                "description": row[3],
+                "type": row[4],
+                "body": row[5],
+                "tags": self._parse_tags(row[6]),
+                "origin_session_ids": self._parse_tags(row[7]) if row[7] else [],
+                "origin_clients": self._parse_tags(row[8]) if row[8] else [],
+            }
 
-        # Apply the write
-        pw = {
-            "memory_name": row[1],
-            "title": row[2],
-            "description": row[3],
-            "type": row[4],
-            "body": row[5],
-            "tags": self._parse_tags(row[6]),
-            "origin_session_ids": self._parse_tags(row[7]) if row[7] else [],
-            "origin_clients": self._parse_tags(row[8]) if row[8] else [],
-        }
+            # Apply the write within the same connection / transaction
+            result = self.write(
+                name=pw["memory_name"],
+                title=pw["title"],
+                description=pw["description"],
+                type=pw["type"],
+                body=pw["body"],
+                tags=pw["tags"],
+                origin_session_ids=pw["origin_session_ids"],
+                origin_clients=pw["origin_clients"],
+                client=reviewer or "trusted-dreamer",
+                _conn=conn,
+            )
 
-        result = self.write(
-            name=pw["memory_name"],
-            title=pw["title"],
-            description=pw["description"],
-            type=pw["type"],
-            body=pw["body"],
-            tags=pw["tags"],
-            origin_session_ids=pw["origin_session_ids"],
-            origin_clients=pw["origin_clients"],
-            client=reviewer or "trusted-dreamer",
-        )
-
-        # Update pending write status
-        conn2 = self._get_conn()
-        try:
-            conn2.execute(
+            # Mark the pending write as approved in the same transaction
+            conn.execute(
                 """
                 UPDATE pending_writes
                 SET status = 'approved', reviewed_at = datetime('now'),
@@ -1643,13 +1697,17 @@ class MemoryStore:
                 """,
                 (reviewer or "trusted-dreamer", note, write_id),
             )
-            conn2.commit()
-        except sqlite3.Error as e:
-            return f"Approved write but failed to update status: {e}"
-        finally:
-            conn2.close()
+            conn.commit()
+            return f"Pending write #{write_id} approved. {result}"
 
-        return f"Pending write #{write_id} approved. {result}"
+        except sqlite3.Error as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return f"Database error: {e}"
+        finally:
+            conn.close()
 
     def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str:
         """Reject a pending write without applying."""

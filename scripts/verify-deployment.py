@@ -41,6 +41,20 @@ GUARDED_ROUTES = [
     ("GET", "/api/smoke", None),
     ("GET", "/api/memories?query=verify&limit=1", None),
     ("GET", "/api/events?limit=1", None),
+    # Write API (#14) — auth-gating probes only (mutating routes use safe strategies below)
+    ("GET", "/api/pending", None),
+]
+
+# Write-API routes that require safe probes rather than a static body.
+# These are checked for auth-gating (401 without key) and route registration
+# (non-404 with key). We do NOT assert 200 because the operation may legitimately
+# return 400/404/409 depending on store state.
+WRITE_API_AUTH_ROUTES = [
+    # POST /api/memories: safe probe uses a throwaway name + minimal body.
+    # Probed separately below (see _probe_write_api).
+    ("POST", "/api/memories/{name}/approve"),
+    ("POST", "/api/memories/{name}/reject"),
+    ("DELETE", "/api/memories/{name}"),
 ]
 
 
@@ -89,6 +103,45 @@ def main():
                 f"-- expected noauth=401, auth=200"
             )
             fail = 1
+
+    # Write API auth-gating probes — assert 401 without key (auth enforced), non-404 with key.
+    # Use a sentinel name so the path is valid but the write won't pollute the store.
+    _verify_name = "verify-deployment-probe"
+    for method, tmpl in WRITE_API_AUTH_ROUTES:
+        path = tmpl.replace("{name}", _verify_name)
+        short = path.split("?")[0]
+        noauth = _request(method, base + path, key=None, body=None)
+        auth_code = _request(method, base + path, key=key, body=None)
+        if noauth == 401 and auth_code != 404:
+            print(f"  OK  {method} {short} (noauth={noauth} auth={auth_code})")
+        else:
+            print(
+                f"  XX  {method} {short} (noauth={noauth} auth={auth_code}) "
+                f"-- expected noauth=401, auth≠404"
+            )
+            fail = 1
+
+    # POST /api/memories safe write-then-delete probe:
+    # Propose a throwaway memory, then delete it. Both must succeed (or 202 for pending).
+    _probe_name = "verify-deployment-write-probe"
+    post_code = _request(
+        "POST",
+        base + "/api/memories",
+        key=key,
+        body={"name": _probe_name, "title": "Verify probe", "body": "deployment check"},
+    )
+    if post_code in (200, 201, 202):
+        del_code = _request("DELETE", f"{base}/api/memories/{_probe_name}", key=key)
+        if del_code in (200, 404):
+            print(f"  OK  POST /api/memories + DELETE probe (post={post_code} del={del_code})")
+        else:
+            print(
+                f"  XX  DELETE /api/memories/{_probe_name} returned {del_code} (expected 200/404)"
+            )
+            fail = 1
+    else:
+        print(f"  XX  POST /api/memories probe returned {post_code} (expected 200/201/202)")
+        fail = 1
 
     # Dynamic detail probe: GET /api/memories/{name} — can't use a static path because
     # ApiKeyMiddleware 401s any /api/* route it doesn't recognise, so a static empty-store
