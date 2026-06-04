@@ -2,12 +2,10 @@
 
 ## v2.1.31 — Dashboard connect modal: key-first, server URL optional
 
-- **Why:** once mori served the dashboard same-origin (v2.1.30), the modal's "Base URL"
-  field became an orphan — it asked you to point at a server you were already on, with a
-  stale `localhost` placeholder. Confusing, and not something to ship in a public UI.
-- **What:** the connect modal now leads with the **API key** (the only thing actually
-  needed); the server URL is demoted to an optional override whose placeholder is the live
-  page origin ("blank = this server"). Same-origin serving needs nothing but a key.
+- With mori serving the dashboard same-origin (v2.1.30), the connect modal now leads with
+  the **API key** — the only field needed in the common case. The server URL is an optional
+  override (placeholder set to the live page origin; blank = this server), relevant only
+  when hosting the page standalone against a remote instance.
 
 ## v2.1.30 — Mori serves the dashboard at its root
 
