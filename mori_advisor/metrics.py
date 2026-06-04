@@ -233,12 +233,24 @@ async def collect_metrics(store, nats_url: Optional[str] = None) -> bytes:
     except Exception:
         pass
 
-    # NATS connectivity
+    # NATS connectivity — must never hang /metrics. nats.connect() retries a refused
+    # server (reconnect loop) even with connect_timeout, so disable reconnect AND wrap
+    # in a hard wait_for; a down/unreachable NATS just reports 0.
     try:
         if nats_url:
+            import asyncio
+
             import nats
 
-            nc = await nats.connect(nats_url, connect_timeout=2)
+            nc = await asyncio.wait_for(
+                nats.connect(
+                    nats_url,
+                    connect_timeout=2,
+                    allow_reconnect=False,
+                    max_reconnect_attempts=0,
+                ),
+                timeout=3,
+            )
             await nc.drain()
             _nats_connected.set(1)
         else:

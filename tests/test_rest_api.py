@@ -18,6 +18,22 @@ requires_pg = pytest.mark.skipif(not PG_URL, reason="MORI_TEST_DATABASE_URL not 
 # The stable dict shape both backends must return.
 API_KEYS = {"name", "title", "type", "tier", "tags", "updated_at", "description"}
 
+# Full detail shape returned by get_memory() on both backends.
+DETAIL_KEYS = {
+    "name",
+    "title",
+    "type",
+    "tier",
+    "tags",
+    "description",
+    "body",
+    "created_at",
+    "updated_at",
+    "origin_clients",
+    "retrieval_count",
+    "freshness_status",
+}
+
 
 def _req(query_string: str):
     from starlette.requests import Request
@@ -48,6 +64,21 @@ def test_read_api_params_defaults_and_clamp():
         "since": "7d",
         "limit": 5,
     }
+
+
+def test_json_safe_rows():
+    """Postgres read_events returns datetime (TIMESTAMPTZ) — must become an ISO string
+    so JSONResponse can serialize it (regression: GET /api/events 500 on Postgres)."""
+    import json
+    from datetime import datetime, timezone
+
+    from mori_advisor.main import _json_safe_rows
+
+    rows = [{"id": 1, "name": "x", "timestamp": datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc)}]
+    out = _json_safe_rows(rows)
+    assert isinstance(out[0]["timestamp"], str) and out[0]["timestamp"].startswith("2026-06-04")
+    assert out[0]["id"] == 1 and out[0]["name"] == "x"
+    json.dumps(out)  # must not raise
 
 
 # ── SQLite search_json ───────────────────────────────────────────────────────
@@ -133,3 +164,70 @@ def test_pg_search_json():
     assert isinstance(out["hit"][0]["updated_at"], str)  # datetime → isoformat string
     assert {m["name"] for m in out["all"]} == {"alpha-x", "beta-y"}
     assert [m["name"] for m in out["filt"]] == ["beta-y"]
+
+
+# ── SQLite get_memory ────────────────────────────────────────────────────────
+
+
+def test_sqlite_get_memory(tmp_path):
+    mem = _sqlite_mem(tmp_path)
+    mem.write(
+        name="detail-test",
+        title="Detail Test Memory",
+        body="Some body content here",
+        type="project",
+        tier="working",
+        tags=["infra", "test"],
+        description="A test memory for get_memory",
+    )
+
+    result = mem.get_memory("detail-test")
+    assert result is not None
+    assert set(result.keys()) == DETAIL_KEYS
+    assert result["name"] == "detail-test"
+    assert result["title"] == "Detail Test Memory"
+    assert result["body"] == "Some body content here"
+    assert isinstance(result["tags"], list)
+    assert set(result["tags"]) == {"infra", "test"}
+    assert isinstance(result["origin_clients"], list)
+    assert isinstance(result["retrieval_count"], int)
+
+    # Miss case
+    assert mem.get_memory("does-not-exist") is None
+
+
+# ── Postgres get_memory (gated) ──────────────────────────────────────────────
+
+
+@requires_pg
+def test_pg_get_memory():
+    from mori_advisor.store.postgres_store import PostgresStore
+
+    async def run():
+        store = PostgresStore(PG_URL)
+        await store.bootstrap()
+        async with store.pool.acquire() as c:
+            await c.execute("DELETE FROM memories WHERE name = 'detail-pg-test'")
+        await store.write(
+            name="detail-pg-test",
+            title="PG Detail Test",
+            body="postgres body content",
+            type="project",
+            tier="working",
+            tags=["pg", "test"],
+            description="PG memory for get_memory test",
+        )
+        result = await store.get_memory("detail-pg-test")
+        miss = await store.get_memory("does-not-exist-pg")
+        await store.pool.close()
+        return result, miss
+
+    result, miss = asyncio.run(run())
+    assert result is not None
+    assert set(result.keys()) == DETAIL_KEYS
+    assert result["name"] == "detail-pg-test"
+    assert result["body"] == "postgres body content"
+    assert isinstance(result["tags"], list)
+    assert set(result["tags"]) == {"pg", "test"}  # JSONB → list
+    assert isinstance(result["origin_clients"], list)
+    assert miss is None

@@ -432,6 +432,50 @@ class PostgresStore(BaseStore):
         ]
         return "\n".join(lines)
 
+    async def get_memory(self, name: str) -> dict | None:
+        """Return a curated detail dict for a single memory, or None if not found.
+
+        Does NOT bump retrieval_count (browse/API access, not agent recall).
+        Returns exactly the DETAIL_KEYS shape:
+          name, title, type, tier, tags, description, body,
+          created_at, updated_at, origin_clients, retrieval_count, freshness_status.
+        """
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM memories WHERE name = $1", name)
+        if not row:
+            return None
+        r = dict(row)
+
+        # JSONB columns: asyncpg may return a JSON string or already-parsed list/None.
+        def _to_list(val):
+            if val is None:
+                return []
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except (json.JSONDecodeError, TypeError):
+                    return []
+            # asyncpg decoded JSONB → already a Python list
+            if isinstance(val, list):
+                return val
+            return []
+
+        return {
+            "name": r["name"],
+            "title": r["title"],
+            "type": r["type"],
+            "tier": r["tier"],
+            "tags": _to_list(r.get("tags")),
+            "description": r.get("description") or "",
+            "body": r.get("body") or "",
+            "created_at": r.get("created_at"),
+            "updated_at": r.get("updated_at"),
+            "origin_clients": _to_list(r.get("origin_clients")),
+            "retrieval_count": r.get("retrieval_count") or 0,
+            "freshness_status": r.get("freshness_status") or "unknown",
+        }
+
     async def list(self, type_filter=None, tag=None, session=None, client=None, limit=50) -> str:
         self._ensure_pool()
         clauses = []
