@@ -473,30 +473,45 @@ class PostgresStore(BaseStore):
         clauses = []
         params: list[Any] = []
         i = 1
-        if query:
-            clauses.append(
-                f"(title ILIKE ${i} OR description ILIKE ${i} OR body ILIKE ${i} OR name ILIKE ${i})"
-            )
-            params.append(f"%{query}%")
-            i += 1
-        if type_filter:
-            clauses.append(f"type = ${i}")
-            params.append(type_filter)
-            i += 1
-        if tag:
-            clauses.append(f"tags @> ${i}::jsonb")
-            params.append(json.dumps([tag]))
-            i += 1
-        if since:
-            clauses.append(f"updated_at >= ${i}")
-            params.append(_ts(since))
-            i += 1
+        order = "updated_at DESC"
 
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        params.append(limit)
         async with self.pool.acquire() as conn:
+            # Full-text via the generated search_tsv column when a query is present
+            # and the column exists; otherwise recency (no query) or ILIKE
+            # (pre-migration). websearch_to_tsquery accepts raw human input safely.
+            has_tsv = await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'memories' AND column_name = 'search_tsv')"
+            )
+            if query and has_tsv:
+                clauses.append(f"search_tsv @@ websearch_to_tsquery('english', ${i})")
+                params.append(query)
+                # Reuse the same param in the rank expression (lower index = query).
+                order = f"ts_rank(search_tsv, websearch_to_tsquery('english', ${i})) DESC, updated_at DESC"
+                i += 1
+            elif query:
+                clauses.append(
+                    f"(title ILIKE ${i} OR description ILIKE ${i} OR body ILIKE ${i} OR name ILIKE ${i})"
+                )
+                params.append(f"%{query}%")
+                i += 1
+            if type_filter:
+                clauses.append(f"type = ${i}")
+                params.append(type_filter)
+                i += 1
+            if tag:
+                clauses.append(f"tags @> ${i}::jsonb")
+                params.append(json.dumps([tag]))
+                i += 1
+            if since:
+                clauses.append(f"updated_at >= ${i}")
+                params.append(_ts(since))
+                i += 1
+
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            params.append(limit)
             rows = await conn.fetch(
-                f"SELECT name, title, type, tier FROM memories {where} ORDER BY updated_at DESC LIMIT ${i}",
+                f"SELECT name, title, type, tier FROM memories {where} ORDER BY {order} LIMIT ${i}",
                 *params,
             )
         if not rows:

@@ -22,6 +22,21 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _fts_query(raw: str | None) -> str:
+    """Build a safe FTS5 MATCH string from raw user input.
+
+    Virtual-table MATCH can't use parameter binding, and FTS5 treats quotes / ``*``
+    / ``:`` / ``AND`` / ``OR`` / ``NEAR`` as operators — so escaping raw input is a
+    landmine. Instead, extract word tokens and OR them as quoted phrases: forgiving
+    (OR recall), injection-proof, and never raises on punctuation. Returns "" when
+    there are no usable tokens (the caller then falls back to LIKE / recency).
+    """
+    if not raw:
+        return ""
+    tokens = re.findall(r"\w+", raw, flags=re.UNICODE)
+    return " OR ".join(f'"{t}"' for t in tokens)
+
+
 def normalise_since(since: str) -> str:
     """Normalise a `since` boundary to the stored `updated_at` format (UTC).
 
@@ -847,50 +862,75 @@ class MemoryStore:
         import sqlite3
         from datetime import datetime, timedelta, timezone
 
-        sql = """
-            SELECT name, title, type, tags, updated_at, description, body
-            FROM memories WHERE 1=1
-        """
-        params: list = []
-
-        if query:
-            sql += " AND (name LIKE ? OR title LIKE ? OR description LIKE ? OR body LIKE ?)"
-            like = f"%{query}%"
-            params.extend([like, like, like, like])
-
-        if type_filter:
-            sql += " AND type = ?"
-            params.append(type_filter)
-
-        if tag:
-            sql += " AND tags LIKE ?"
-            params.append(f'%"{tag}"%')
-
-        if client:
-            sql += " AND origin_clients LIKE ?"
-            params.append(f'%"{client}"%')
-
+        # Normalise the `since` shorthand ("7d"/"30d") or ISO date up front.
+        since_iso = None
         if since:
-            # Parse "7d" / "30d" shorthand or ISO date
             try:
                 if since.endswith("d"):
                     days = int(since[:-1])
-                    dt = datetime.now(timezone.utc) - timedelta(days=days)
-                    since_iso = dt.strftime("%Y-%m-%d %H:%M:%S")
+                    since_iso = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
                 else:
                     since_iso = since
-                sql += " AND updated_at >= ?"
-                params.append(since_iso)
             except (ValueError, TypeError):
-                pass  # ignore unparseable since values
-
-        sql += " ORDER BY updated_at DESC LIMIT ?"
-        params.append(limit)
+                since_iso = None
 
         conn = self._get_conn()
         try:
-            cur = conn.execute(sql, params)
-            rows = cur.fetchall()
+            # Use FTS5 when a query is present and the index exists (ranked, stemmed
+            # matching). Fall back to LIKE when there's no query, no usable tokens,
+            # or FTS5 isn't compiled into this SQLite build.
+            has_fts = (
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories_fts'"
+                ).fetchone()
+                is not None
+            )
+            match = _fts_query(query) if (query and has_fts) else ""
+            use_fts = bool(match)
+            col = "m." if use_fts else ""
+            params: list = []
+
+            if use_fts:
+                sql = (
+                    "SELECT m.name, m.title, m.type, m.tags, m.updated_at, m.description, m.body "
+                    "FROM memories_fts f JOIN memories m ON m.id = f.rowid "
+                    "WHERE memories_fts MATCH ?"
+                )
+                params.append(match)
+            else:
+                sql = (
+                    "SELECT name, title, type, tags, updated_at, description, body "
+                    "FROM memories WHERE 1=1"
+                )
+                if query:
+                    sql += " AND (name LIKE ? OR title LIKE ? OR description LIKE ? OR body LIKE ?)"
+                    like = f"%{query}%"
+                    params.extend([like, like, like, like])
+
+            if type_filter:
+                sql += f" AND {col}type = ?"
+                params.append(type_filter)
+            if tag:
+                sql += f" AND {col}tags LIKE ?"
+                params.append(f'%"{tag}"%')
+            if client:
+                sql += f" AND {col}origin_clients LIKE ?"
+                params.append(f'%"{client}"%')
+            if since_iso:
+                sql += f" AND {col}updated_at >= ?"
+                params.append(since_iso)
+
+            if use_fts:
+                # bm25 weights name/title > description > body (lower score = better),
+                # recency as the tiebreaker.
+                sql += f" ORDER BY bm25(memories_fts, 10.0, 10.0, 5.0, 1.0), {col}updated_at DESC LIMIT ?"
+            else:
+                sql += " ORDER BY updated_at DESC LIMIT ?"
+            params.append(limit)
+
+            rows = conn.execute(sql, params).fetchall()
         except sqlite3.Error as e:
             return f"Database error: {e}"
         finally:
