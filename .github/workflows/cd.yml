@@ -8,12 +8,10 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-# Pre-tag UAT gate (manual, run on NUC before pushing the tag):
-#   bash ~/dotfiles/mori-uat/start-uat.sh
-#   # Required: db_read ok, dream_watermark ok, auth ok on both port 8970 (SQLite) and 8972 (Postgres)
-#   # Extended: curl -X POST http://localhost:8972/api/dream/run — no coroutine errors
-#   bash ~/dotfiles/mori-uat/stop-uat.sh
-# See ~/dotfiles/mori-uat/README.md for full checklist.
+# Pre-tag UAT gate (manual on deploy host before pushing the tag):
+#   Run your local mori UAT start script, verify db_read / dream_watermark / auth
+#   on ports 8970 (SQLite) and 8972 (Postgres), then stop UAT.
+#   Extended: curl -X POST http://localhost:8972/api/dream/run — no coroutine errors
 
 jobs:
   build-and-push:

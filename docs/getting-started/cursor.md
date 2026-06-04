@@ -15,51 +15,29 @@ Connect Cursor 2.4+ to your Mori shared memory server: `/brief`, `/consult`, `/d
 
 ## Already set up via Claude Code?
 
-If you use Claude Code on this machine, **skills and Mori hooks may already be deployed** under `~/.claude/`. Cursor reuses that path — you often only need MCP in Cursor.
+If you use Claude Code on this machine, **Mori skills and hooks may already be deployed** under `~/.claude/`. Cursor reuses that path — you often only need MCP in Cursor.
 
 Check what you have:
 
 ```bash
 ls ~/.claude/skills/
-grep -E 'mori-ship-event|mori-post-compact|dotfiles/hooks' ~/.claude/settings.json
+grep -E 'mori-ship-event|mori-post-compact' ~/.claude/settings.json
 ```
 
 | You see | Cursor needs |
 |---------|----------------|
 | `brief`, `wrap`, `msg`, … under `~/.claude/skills/` | Skills OK — run `--upgrade-skills` after a mori repo pull to refresh |
-| `mori-ship-event.sh` + GCE URL in `settings.json` hooks | Event capture OK for Cursor too |
+| `mori-ship-event.sh` in `settings.json` hooks | Event capture OK for Cursor too |
 | `mori-post-compact-brief.sh` on `PostCompact` | Re-ground after compaction OK |
-| `ready` under `~/.claude/skills/` | Personal `/ready` OK (from dotfiles) |
-| Nothing under `~/.cursor/mcp.json` | Run Mori installer step 1 (or add MCP manually) |
-| No `session-start` / `git-push-guard` in hooks | Run dotfiles hook installer (below) |
+| Nothing under `~/.cursor/mcp.json` | Run the Mori installer below (or add MCP manually) |
 
-**Do not reinstall blindly** — `install-mori-cursor` merges Mori hooks and updates shipper commands; it will not remove your other `settings.json` entries.
-
----
-
-## Two-layer setup
-
-```mermaid
-flowchart LR
-  mori_install[install-mori-cursor]
-  dotfiles_install[install-dotfiles-cursor-hooks]
-  cursor[Cursor Agent]
-  gce[Mori server GCE]
-  mori_install --> cursor
-  dotfiles_install --> cursor
-  mori_install --> gce
-```
-
-| Layer | Command | What it enables |
-|-------|---------|-----------------|
-| **1. Mori bridge** | `install-mori-cursor.sh` / `.ps1` | `~/.cursor/mcp.json`, Mori event hooks, Mori skills from [`mori/skills/`](../skills/), shipper scripts in `~/.claude/` |
-| **2. Dotfiles personal** | `~/dotfiles/scripts/install-dotfiles-cursor-hooks.sh` | `/ready`, UK `git push` guard, session-start ops context |
+**Do not reinstall blindly** — `install-mori-cursor` merges Mori hooks and updates shipper commands; it will not remove unrelated entries in `settings.json`.
 
 Shared memory lives on the **Mori server** — not on this laptop. Do not use `~/ai-stack/.../memories.db` or a local clone DB.
 
 ---
 
-## 1. Mori bridge (installer)
+## Automated installation
 
 Run from the **mori** repo root.
 
@@ -94,7 +72,7 @@ powershell -File scripts/install-mori-cursor.ps1 -UpgradeSkills -MoriUrl "http:/
 
 Windows installer is pure PowerShell (no Python).
 
-### What the Mori installer writes
+### What the installer writes
 
 | Path | Purpose |
 |------|---------|
@@ -113,6 +91,8 @@ Windows installer is pure PowerShell (no Python).
 | `PostCompact` | Prompt to run `/brief --post-compact` |
 
 Re-runs upgrade legacy inline `curl` hooks to the shipper and set `_mori_managed: true` without removing other hook entries.
+
+Keep [`mori/scripts/mori-post-compact-brief.sh`](../../scripts/mori-post-compact-brief.sh) as the source for PostCompact re-ground text shipped to `~/.claude/`.
 
 ### Mori slash commands (skills)
 
@@ -134,37 +114,16 @@ See [slash-commands.md](../reference/slash-commands.md) for full options.
 
 ---
 
-## 2. Dotfiles personal layer
-
-From your **dotfiles** repo (separate from mori). Wires personal hooks and the `/ready` skill without touching Mori-managed entries.
-
-```bash
-chmod +x ~/dotfiles/scripts/install-dotfiles-cursor-hooks.sh
-~/dotfiles/scripts/install-dotfiles-cursor-hooks.sh
-```
-
-| Hook / skill | Source | Cursor event |
-|--------------|--------|--------------|
-| `git-push-guard.sh` | `dotfiles/hooks/` | `PreToolUse` — confirm `git push` in UK work hours |
-| `session-start.sh` | `dotfiles/hooks/` | `UserPromptSubmit` — ops context (runs **alongside** Mori event shipper) |
-| `ready` | `dotfiles/skills/ready/` | Slash command `/ready` (personal bootstrap) |
-
-`PostCompact` is handled by the Mori installer (`mori-post-compact-brief.*` in `~/.claude/`). Keep [`dotfiles/hooks/post-compact-brief.sh`](https://github.com/fjwood69/dotfiles/blob/main/hooks/post-compact-brief.sh) aligned with [`mori/scripts/mori-post-compact-brief.sh`](../../scripts/mori-post-compact-brief.sh) when editing re-ground text.
-
-Example combined `settings.json`: [examples/settings-with-dotfiles.json](../../examples/settings-with-dotfiles.json). Mori-only example: [examples/settings.json](../../examples/settings.json).
-
----
-
 ## Manual MCP config
 
-Copy [.cursor/mcp.json.example](../../.cursor/mcp.json.example) to `~/.cursor/mcp.json` and set your server URL. Add hooks/scripts/skills as in the examples above if not using the installers.
+Copy [.cursor/mcp.json.example](../../.cursor/mcp.json.example) to `~/.cursor/mcp.json` and set your server URL. Add hooks and skills as in [examples/settings.json](../../examples/settings.json) if not using the installer.
 
 ---
 
 ## Verify
 
 1. **Reload Cursor window** (Command Palette → *Developer: Reload Window*).
-2. **Doctor** (Mori): `./scripts/install-mori-cursor.sh --doctor --url "http://<server>:8968"`
+2. **Doctor:** `./scripts/install-mori-cursor.sh --doctor --url "http://<server>:8968"`
 3. **MCP** — Settings → MCP → `mori` connected.
 4. **`/brief`** — counts + dream state from server via MCP.
 5. **Events** — `curl http://<server>:8968/api/events/health` (count increases as you use Agent).
@@ -181,8 +140,6 @@ Copy [.cursor/mcp.json.example](../../.cursor/mcp.json.example) to `~/.cursor/mc
 | Hooks work, MCP tools blocked | Half-install | Re-run Mori installer; check `permissions.allow` |
 | Stale slash commands | Old `~/.claude/skills` copy | `install-mori-cursor.sh --upgrade-skills` |
 | No re-ground after compaction | Missing `PostCompact` / brief script | Re-run Mori installer |
-| No `/ready` | Dotfiles skill not deployed | `install-dotfiles-cursor-hooks.sh` |
-| No UK push prompt | Dotfiles hook not merged | Same dotfiles script |
 | `jq` error on PostCompact (Linux) | `mori-post-compact-brief.sh` needs `jq` | Install `jq` or use Windows shipper (PowerShell) |
 
 ---
@@ -198,13 +155,11 @@ Copy [.cursor/mcp.json.example](../../.cursor/mcp.json.example) to `~/.cursor/mc
 ## Notes
 
 - Cursor reads `~/.claude/skills/` directly (also `.cursor/skills/` if you add skills there).
-- Claude Code and Cursor share one `settings.json` — install order does not matter; installers merge.
+- Claude Code and Cursor share one `settings.json` — the Mori installer only touches `_mori_managed` hooks.
 - Optional: [git-hooks.md](../reference/git-hooks.md) for NATS push notifications on `git push`.
 
 ---
 
 ## Upgrading
 
-- **Mori shipper / MCP / skills:** re-run `install-mori-cursor` (use `--upgrade-skills` to refresh skill files).
-- **Dotfiles hooks / ready:** re-run `install-dotfiles-cursor-hooks.sh`.
-- Hook failures: `%TEMP%\mori-hook.log` (Windows) or `/tmp/mori-hook.log` (Linux/macOS).
+Re-run `install-mori-cursor` (use `--upgrade-skills` to refresh skill files). Hook failures: `%TEMP%\mori-hook.log` (Windows) or `/tmp/mori-hook.log` (Linux/macOS).
