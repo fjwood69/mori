@@ -466,48 +466,64 @@ class PostgresStore(BaseStore):
         lines = [f"- **{r['name']}** ({r['type']}/{r['tier']}) — {r['title']}" for r in rows]
         return f"{len(rows)} memories:\n" + "\n".join(lines)
 
+    async def _has_search_tsv(self, conn) -> bool:
+        return await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'memories' AND column_name = 'search_tsv')"
+        )
+
+    def _build_search_clauses(self, has_tsv, query, type_filter, tag, client, since):
+        """Build (clauses, params, order, next_$index) — shared by search()/search_json().
+
+        FTS via the generated search_tsv (ranked) when a query is present + the column
+        exists; else ILIKE (pre-migration) or pure recency. websearch_to_tsquery accepts
+        raw human input safely.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        i = 1
+        order = "updated_at DESC"
+        if query and has_tsv:
+            clauses.append(f"search_tsv @@ websearch_to_tsquery('english', ${i})")
+            params.append(query)
+            # Reuse the same param in the rank expression (lower index = query).
+            order = (
+                f"ts_rank(search_tsv, websearch_to_tsquery('english', ${i})) DESC, updated_at DESC"
+            )
+            i += 1
+        elif query:
+            clauses.append(
+                f"(title ILIKE ${i} OR description ILIKE ${i} OR body ILIKE ${i} OR name ILIKE ${i})"
+            )
+            params.append(f"%{query}%")
+            i += 1
+        if type_filter:
+            clauses.append(f"type = ${i}")
+            params.append(type_filter)
+            i += 1
+        if tag:
+            clauses.append(f"tags @> ${i}::jsonb")
+            params.append(json.dumps([tag]))
+            i += 1
+        if client:
+            clauses.append(f"origin_clients @> ${i}::jsonb")
+            params.append(json.dumps([client]))
+            i += 1
+        if since:
+            clauses.append(f"updated_at >= ${i}")
+            params.append(_ts(since))
+            i += 1
+        return clauses, params, order, i
+
     async def search(
         self, query=None, type_filter=None, tag=None, client=None, since=None, limit=10
     ) -> str:
         self._ensure_pool()
-        clauses = []
-        params: list[Any] = []
-        i = 1
-        order = "updated_at DESC"
-
         async with self.pool.acquire() as conn:
-            # Full-text via the generated search_tsv column when a query is present
-            # and the column exists; otherwise recency (no query) or ILIKE
-            # (pre-migration). websearch_to_tsquery accepts raw human input safely.
-            has_tsv = await conn.fetchval(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
-                "WHERE table_name = 'memories' AND column_name = 'search_tsv')"
+            has_tsv = await self._has_search_tsv(conn)
+            clauses, params, order, i = self._build_search_clauses(
+                has_tsv, query, type_filter, tag, client, since
             )
-            if query and has_tsv:
-                clauses.append(f"search_tsv @@ websearch_to_tsquery('english', ${i})")
-                params.append(query)
-                # Reuse the same param in the rank expression (lower index = query).
-                order = f"ts_rank(search_tsv, websearch_to_tsquery('english', ${i})) DESC, updated_at DESC"
-                i += 1
-            elif query:
-                clauses.append(
-                    f"(title ILIKE ${i} OR description ILIKE ${i} OR body ILIKE ${i} OR name ILIKE ${i})"
-                )
-                params.append(f"%{query}%")
-                i += 1
-            if type_filter:
-                clauses.append(f"type = ${i}")
-                params.append(type_filter)
-                i += 1
-            if tag:
-                clauses.append(f"tags @> ${i}::jsonb")
-                params.append(json.dumps([tag]))
-                i += 1
-            if since:
-                clauses.append(f"updated_at >= ${i}")
-                params.append(_ts(since))
-                i += 1
-
             where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
             params.append(limit)
             rows = await conn.fetch(
@@ -518,6 +534,40 @@ class PostgresStore(BaseStore):
             return "No results."
         lines = [f"- **{r['name']}** ({r['type']}/{r['tier']}) — {r['title']}" for r in rows]
         return "\n".join(lines)
+
+    async def search_json(
+        self, query=None, type_filter=None, tag=None, client=None, since=None, limit=50
+    ) -> list[dict]:
+        """Structured search for the REST API — same shape as MemoryStore.search_json
+        (name, title, type, tier, tags, updated_at, description). FTS-ranked when a query
+        is given. No retrieval_count bump (API surfacing, not agent recall)."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            has_tsv = await self._has_search_tsv(conn)
+            clauses, params, order, i = self._build_search_clauses(
+                has_tsv, query, type_filter, tag, client, since
+            )
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            params.append(limit)
+            rows = await conn.fetch(
+                "SELECT name, title, type, tier, tags, updated_at, description "
+                f"FROM memories {where} ORDER BY {order} LIMIT ${i}",
+                *params,
+            )
+        out = []
+        for r in rows:
+            d = dict(r)
+            tags = d.get("tags")  # JSONB → asyncpg returns a JSON string
+            if isinstance(tags, str):
+                try:
+                    d["tags"] = json.loads(tags)
+                except (json.JSONDecodeError, TypeError):
+                    d["tags"] = []
+            ua = d.get("updated_at")  # TIMESTAMPTZ → datetime; ISO for JSON
+            if hasattr(ua, "isoformat"):
+                d["updated_at"] = ua.isoformat()
+            out.append(d)
+        return out
 
     async def delete(self, name: str) -> str:
         self._ensure_pool()

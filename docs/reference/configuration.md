@@ -32,6 +32,7 @@
 | `MORI_POST_COMPACT_WINDOW` | `6h` | Default `since` window for `/brief --post-compact` when the client supplies no marker/session boundary. Accepts `6h`/`30m`/`7d` or ISO-8601. |
 | `MORI_CONSULT_CAPTURE` | `true` | Set to `false` to suppress automatic capture of `consult_advisor` responses as working-tier memories |
 | `MORI_CAPTURE_THINKING` | `false` | Set to `true` to also capture the assistant's thinking blocks (not just text) when extracting reasoning from the `Stop` hook |
+| `MORI_CORS_ORIGINS` | `*` | Comma-separated allowed origins for the read REST API (`GET /api/memories`, `GET /api/events`) — set to your dashboard origin(s) in production. Routes remain API-key gated regardless. |
 
 ## Authentication
 
