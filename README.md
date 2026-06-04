@@ -88,7 +88,7 @@ powershell -File scripts/install-mori-cursor.ps1
 | **Universal ingestion** | Feed PDFs, images, git, transcripts into the memory store | `/ingest` |
 | **Strategic review** | LLM guidance with focus areas and auto-injected standards | `/consult` |
 | **Requirements tracking** | Lightweight project checklist surfaced via `/brief` | `/req` |
-| **Governance** | Versioning, trusted dreamers, rollback, attribution | — |
+| **Governance** | Capability-scoped API keys (read/write/dreamer roles), versioning, trusted dreamers, rollback, attribution | — |
 | **NATS messaging** | Real-time cross-device awareness | `/nats` |
 | **Inter-agent messaging** | Send tasks, questions, and decisions across the device network | `/msg` |
 | **Skill deployment** | Push slash commands to all devices in one step | `/update` |
