@@ -131,7 +131,53 @@ MIGRATIONS: tuple[Migration, ...] = (
         sqlite_fn=_baseline_sqlite_msg,
         # Postgres: msg_log is already created by migration 1's _DDL → records-only.
     ),
-    # Stage B (drift fixes) and Stage C (FTS) append ids 3.. here.
+    # ── Stage B: drift fixes (bring the two backends back into parity) ──────
+    Migration(
+        id=3,
+        name="dreamer_config_updated_at",
+        target="memories",
+        # Postgres already has dreamer_config.updated_at (in _DDL) → records-only.
+        # SQLite ADD COLUMN defaults must be constant (no datetime('now')), so add
+        # with a constant default and backfill existing rows.
+        sqlite_sql=(
+            "ALTER TABLE dreamer_config ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+            "UPDATE dreamer_config SET updated_at = datetime('now') WHERE updated_at = ''",
+        ),
+    ),
+    Migration(
+        id=4,
+        name="delegate_tasks_sqlite_parity",
+        target="memories",
+        # Postgres already has delegate_tasks (in _DDL) → records-only. Create the
+        # SQLite analogue (TEXT timestamps) so the delegate feature can persist on
+        # the solo/dev backend too.
+        sqlite_sql=(
+            """CREATE TABLE IF NOT EXISTS delegate_tasks (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id     TEXT NOT NULL UNIQUE,
+                from_host   TEXT NOT NULL,
+                to_host     TEXT NOT NULL,
+                description TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'pending',
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                result      TEXT
+            )""",
+        ),
+    ),
+    Migration(
+        id=5,
+        name="freshness_status_not_null",
+        target="memories",
+        # SQLite already has freshness_status NOT NULL DEFAULT 'unknown' → records-only.
+        # Bring Postgres to the same contract: backfill NULLs first, then constrain.
+        postgres_sql=(
+            "UPDATE memories SET freshness_status = 'unknown' WHERE freshness_status IS NULL; "
+            "ALTER TABLE memories ALTER COLUMN freshness_status SET DEFAULT 'unknown'; "
+            "ALTER TABLE memories ALTER COLUMN freshness_status SET NOT NULL"
+        ),
+    ),
+    # Stage C (FTS) appends id 6 here.
 )
 
 
@@ -193,50 +239,78 @@ def _sqlite_applied(conn: sqlite3.Connection, migrations: tuple[Migration, ...])
     return {r[0] for r in rows}
 
 
-def _apply_one_sqlite(conn: sqlite3.Connection, db_path: Path, m: Migration) -> None:
-    t0 = time.monotonic()
+def _run_one_sqlite(conn: sqlite3.Connection, db_path: Path, m: Migration) -> None:
+    """Execute one migration's body + stamp. Raises on failure; the caller retries."""
     # INSERT OR IGNORE so a concurrent duplicate stamp is harmless (PK on id).
     stamp = (
         "INSERT OR IGNORE INTO schema_migrations (id, name, checksum) VALUES (?, ?, ?)",
         (m.id, m.name, m.checksum("sqlite")),
     )
-    try:
-        if m.transactional:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                # Re-check under the write lock: another process may have applied
-                # this migration between our applied-set read and acquiring the
-                # lock (closes the TOCTOU — body must not run twice).
-                if conn.execute("SELECT 1 FROM schema_migrations WHERE id=?", (m.id,)).fetchone():
-                    conn.execute("COMMIT")
-                    return
-                for stmt in m.sqlite_sql or ():
-                    conn.execute(stmt)
-                if m.sqlite_fn:
-                    m.sqlite_fn(conn, db_path)
-                conn.execute(*stamp)
+    if m.transactional:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Re-check under the write lock: another process may have applied this
+            # migration between our applied-set read and acquiring the lock
+            # (closes the TOCTOU — body must not run twice).
+            if conn.execute("SELECT 1 FROM schema_migrations WHERE id=?", (m.id,)).fetchone():
                 conn.execute("COMMIT")
-            except Exception:
-                conn.execute("ROLLBACK")
-                raise
-        else:
-            # Non-transactional (e.g. baseline): the body MUST be idempotent. No
-            # write lock is held, so concurrent runners may both execute it; that
-            # is safe for IF-NOT-EXISTS/guarded DDL, and the stamp is OR IGNORE.
+                return
             for stmt in m.sqlite_sql or ():
                 conn.execute(stmt)
             if m.sqlite_fn:
                 m.sqlite_fn(conn, db_path)
             conn.execute(*stamp)
-    except sqlite3.OperationalError as e:
-        if "locked" in str(e).lower():
-            # Another process is applying concurrently; it will stamp the row.
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    else:
+        # Non-transactional (e.g. baseline): the body MUST be idempotent. No write
+        # lock is held, so concurrent runners may both execute it; that is safe for
+        # IF-NOT-EXISTS / guarded DDL, and the stamp is OR IGNORE.
+        for stmt in m.sqlite_sql or ():
+            conn.execute(stmt)
+        if m.sqlite_fn:
+            m.sqlite_fn(conn, db_path)
+        conn.execute(*stamp)
+
+
+def _apply_one_sqlite(
+    conn: sqlite3.Connection, db_path: Path, m: Migration, *, max_attempts: int = 12
+) -> None:
+    """Apply one migration, retrying transient 'database is locked' contention.
+
+    Several processes (main server + ingestion server + dream_job) can bootstrap
+    near-simultaneously. busy_timeout serialises most of it; the rare lock that
+    still escapes is retried with backoff rather than abandoned (the previous
+    'return on locked' left the idempotent baseline half-applied).
+    """
+    t0 = time.monotonic()
+    for attempt in range(1, max_attempts + 1):
+        if conn.execute("SELECT 1 FROM schema_migrations WHERE id=?", (m.id,)).fetchone():
+            return  # applied by a concurrent runner
+        try:
+            _run_one_sqlite(conn, db_path, m)
             logger.info(
-                "sqlite migration %d (%s) — db locked, another process is applying", m.id, m.name
+                "sqlite migration %d (%s) applied in %.3fs", m.id, m.name, time.monotonic() - t0
             )
             return
-        raise
-    logger.info("sqlite migration %d (%s) applied in %.3fs", m.id, m.name, time.monotonic() - t0)
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower():
+                raise
+            logger.info(
+                "sqlite migration %d (%s) — db locked (attempt %d/%d), retrying",
+                m.id,
+                m.name,
+                attempt,
+                max_attempts,
+            )
+            time.sleep(min(0.05 * attempt, 1.0))
+    if conn.execute("SELECT 1 FROM schema_migrations WHERE id=?", (m.id,)).fetchone():
+        return
+    raise sqlite3.OperationalError(
+        f"migration {m.id} ({m.name}): database locked after {max_attempts} attempts"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
