@@ -43,7 +43,7 @@ The hook never blocks a push — if Mori is unreachable both paths silently drop
 
 # Install into a different repo:
 ./scripts/install-git-hooks.sh --repo ~/bifrost
-./scripts/install-git-hooks.sh --repo ~/dotfiles
+./scripts/install-git-hooks.sh --repo ~/my-other-repo
 ./scripts/install-git-hooks.sh --repo ~/ai-stack
 ```
 
@@ -55,7 +55,7 @@ The hook never blocks a push — if Mori is unreachable both paths silently drop
 
 # Install into a different repo:
 .\scripts\install-git-hooks.ps1 -RepoDir C:\My Code\bifrost
-.\scripts\install-git-hooks.ps1 -RepoDir C:\My Code\dotfiles
+.\scripts\install-git-hooks.ps1 -RepoDir C:\My Code\my-other-repo
 ```
 
 > **Windows note:** Git for Windows runs bash hooks automatically. The `.ps1` hook is installed alongside and requires a thin bash wrapper if your git uses bash hooks only. See [Manual install](#manual-install) below if needed.
@@ -138,8 +138,8 @@ Install in each repo where cross-device push awareness and memory capture matter
 
 - `mori`
 - `bifrost`
-- `dotfiles`
 - `ai-stack`
+- any other repo where push awareness matters
 
 ---
 

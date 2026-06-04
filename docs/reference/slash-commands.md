@@ -6,7 +6,7 @@ Eight slash commands — `/brief`, `/wrap`, `/dream`, `/consult`, `/pensieve`, `
 
 ## `/brief` — Session Bootstrap
 
-Loads shared memories and team standards into context at the start of every session. Also runs per-device bootstrap checks (dotfiles, hostname, caveats).
+Loads shared memories and team standards into context at the start of every session. Also runs per-device bootstrap checks (hostname, local caveats).
 
 **MCP tool:** `mori-brief`
 
