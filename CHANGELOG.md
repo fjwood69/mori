@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.1.28 — Schema-migration runner + full-text search
+
+- **Why:** the DB schema was defined ad-hoc across four sources (three SQLite bootstrappers
+  + one Postgres `_DDL` string) with no recorded version, so the two backends had silently
+  drifted (Postgres-only `delegate_tasks`, `dreamer_config.updated_at` missing on SQLite,
+  `freshness_status` nullable on PG). And the guarded-`ALTER` approach could only add nullable
+  columns — it had no safe path for the change recall actually needed: full-text search.
+- **Migration runner (`mori_advisor/store/migrations.py`):** one ordered `MIGRATIONS` registry
+  drives both backends with a `schema_migrations` version table (PK = id). `apply_sqlite` (sync,
+  `BEGIN IMMEDIATE` + re-check-under-lock + retry-on-locked) and `apply_postgres` (async, one
+  dedicated connection held for the run so the session-scoped `pg_advisory_lock` can't be dropped
+  by a pool reset; standby guard). Migration 1 ("baseline") *invokes the existing bootstrap code*
+  (not copied DDL), so fresh and populated production DBs converge identically. `ingestion_server`
+  bootstrap moved out of import-time into its async lifespan.
+- **Drift fixes (0003–0005):** `dreamer_config.updated_at` on SQLite; `delegate_tasks` SQLite
+  parity; Postgres `freshness_status` backfilled + `SET NOT NULL DEFAULT 'unknown'`.
+- **Full-text search (0006):** SQLite **FTS5** external-content + triggers (porter stemming,
+  bm25 ranking, LIKE fallback if FTS5 absent); Postgres generated **`tsvector`** column
+  (`COALESCE` + weighted `setweight`) + GIN, `websearch_to_tsquery` + `ts_rank`. Replaces the
+  unranked LIKE/ILIKE `search()`; empty query → recency; tags stay structured. `_fts_query`
+  builds the SQLite MATCH string programmatically (injection-proof). Vectors deferred (FTS is
+  native in both backends; vectors are not).
+- **CI:** new `postgres:16` service + dual-backend test job — the Postgres path was never
+  CI-tested before. New `tests/test_migrations.py` + `tests/test_search.py`.
+
 ## v2.1.27 — `/brief --post-compact` delta re-grounding
 
 - **Why:** the `PostCompact` hook fired a plain `/brief`, which re-injects the *entire*
