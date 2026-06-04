@@ -82,7 +82,7 @@ powershell -File scripts/install-mori-cursor.ps1
 | Capability | What it does | Slash command |
 |-----------|-------------|---------------|
 | **Dream pipeline** | Auto-distils session events into structured memories | `/dream` |
-| **Session grounding** | Loads shared context at session start — not per-query RAG | `/brief` |
+| **Session grounding** | Loads shared context at session start — not per-query RAG; lightweight delta re-grounding after context compaction | `/brief`, `/brief --post-compact` |
 | **Universal ingestion** | Feed PDFs, images, git, transcripts into the memory store | `/ingest` |
 | **Strategic review** | LLM guidance with focus areas and auto-injected standards | `/consult` |
 | **Requirements tracking** | Lightweight project checklist surfaced via `/brief` | `/req` |
@@ -118,6 +118,13 @@ PreCompact  →  POST /api/precompact  →  dream_run() reads since watermark
 
 The `PreCompact` hook triggers an immediate synchronous dream before context
 compression — so nothing is lost at the moment it matters most.
+
+Its counterpart, the `PostCompact` hook, fires `/brief --post-compact` **after**
+compression — a lightweight *delta* that surfaces only what changed in the shared
+store since your last brief (new, superseded, and evicted memories), skipping the
+full base reload and the freshness scan. PreCompact preserves what this session
+learned; PostCompact re-grounds it on what every other instance changed while it
+was busy.
 
 **What it captures:** `PostToolUse`, `PostToolUseFailure`, `PreCompact`,
 `UserPromptSubmit`, `Stop` — tool calls, prompts, errors, stop reasons,
