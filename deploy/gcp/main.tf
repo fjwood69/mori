@@ -117,6 +117,16 @@ resource "google_secret_manager_secret" "ghcr_token" {
   }
 }
 
+# Postgres password — read on first boot to initialise pgdata and build
+# MORI_DATABASE_URL. On reboot the startup script reuses the persisted .env, so
+# this secret is only required on first boot / VM rebuild.
+resource "google_secret_manager_secret" "mori_pg_password" {
+  secret_id = "MORI_PG_PASSWORD"
+  replication {
+    auto {}
+  }
+}
+
 # ── IAM — Service Account ────────────────────────────────────────────────
 
 resource "google_service_account" "mori" {
@@ -188,6 +198,12 @@ resource "google_secret_manager_secret_iam_member" "tailscale_auth_key" {
 
 resource "google_secret_manager_secret_iam_member" "ghcr_token" {
   secret_id = google_secret_manager_secret.ghcr_token.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.mori.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "mori_pg_password" {
+  secret_id = google_secret_manager_secret.mori_pg_password.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.mori.email}"
 }

@@ -20,9 +20,12 @@ if ! command -v podman &>/dev/null; then
 fi
 
 # ── Create mori user for rootless Podman ─────────────────────────────────
-# NOTE: no -r flag — a regular user gets auto subuid mappings.
+# No fixed uid — let the system assign it. Everything downstream derives from
+# `id -u mori` and /etc/subuid, so the user, rootless Podman storage, and pgdata
+# ownership stay self-consistent on every fresh build (a hardcoded uid that
+# mismatches the live user taints the storage runRoot).
 if ! id mori &>/dev/null; then
-  useradd -u 10001 -m -s /bin/bash mori
+  useradd -m -s /bin/bash mori
   loginctl enable-linger mori
 fi
 chmod 755 /home/mori 2>/dev/null || true
@@ -36,12 +39,14 @@ if [ -n "$DATA_DEV" ] && ! mountpoint -q /data; then
   mkdir -p /data/mori-advisor
   chown mori:mori /data/mori-advisor
   chmod 755 /data/mori-advisor
-  # Postgres pgdata — owned by the host UID that maps to postgres uid=999 inside
-  # the mori user's rootless Podman namespace (mori uid=10001, subuid base 296608
-  # → container uid=999 → host uid=297606).
+  # Postgres pgdata must be owned by the host uid that the mori user's rootless
+  # Podman maps container uid 999 (postgres) to: subuid_base + (999 - 1).
+  # Derived from /etc/subuid so it is correct for whatever uid/subuid mori got.
   mkdir -p /data/postgres/pgdata
   chmod 700 /data/postgres/pgdata
-  chown -R 297606:297606 /data/postgres/pgdata
+  PG_SUBUID_BASE=$(grep '^mori:' /etc/subuid | cut -d: -f2)
+  PG_HOST_UID=$(( PG_SUBUID_BASE + 998 ))
+  chown -R "$PG_HOST_UID:$PG_HOST_UID" /data/postgres/pgdata
   UUID=$(blkid -s UUID -o value "$DATA_DEV")
   if [ -n "$UUID" ] && ! grep -q "$UUID" /etc/fstab 2>/dev/null; then
     echo "UUID=$UUID /data ext4 defaults,nofail 0 2" >> /etc/fstab
@@ -73,23 +78,43 @@ else
   echo "Tailscale is already authenticated and running."
 fi
 
-# ── Fetch secrets as root (GCE service account) ─────────────────────────
-MORI_API_KEY=$(gcloud secrets versions access latest --secret=MORI_API_KEY --project=${project_id} 2>/dev/null || echo "")
-# Named per-client API keys (name:secret,...). Without this the server runs in
-# open-auth mode (anyone on the tailnet). Strongly recommended.
-MORI_API_KEYS=$(gcloud secrets versions access latest --secret=MORI_API_KEYS --project=${project_id} 2>/dev/null || echo "")
-MORI_ADVISOR_API_KEY=$(gcloud secrets versions access latest --secret=MORI_ADVISOR_API_KEY --project=${project_id} 2>/dev/null || echo "")
-MORI_BASE_URL=$(gcloud secrets versions access latest --secret=MORI_BASE_URL --project=${project_id} 2>/dev/null || echo "")
-MORI_MODEL=$(gcloud secrets versions access latest --secret=MORI_MODEL --project=${project_id} 2>/dev/null || echo "")
-MORI_DREAM_MODEL=$(gcloud secrets versions access latest --secret=MORI_DREAM_MODEL --project=${project_id} 2>/dev/null || echo "")
-MORI_TRUSTED_DREAMERS=$(gcloud secrets versions access latest --secret=MORI_TRUSTED_DREAMERS --project=${project_id} 2>/dev/null || echo "")
-MORI_NATS_URL=$(gcloud secrets versions access latest --secret=MORI_NATS_URL --project=${project_id} 2>/dev/null || echo "")
-GHCR_TOKEN=$(gcloud secrets versions access latest --secret=GHCR_TOKEN --project=${project_id} 2>/dev/null || echo "")
-MORI_PG_PASSWORD=$(gcloud secrets versions access latest --secret=MORI_PG_PASSWORD --project=${project_id} 2>/dev/null || echo "")
-MORI_DATABASE_URL="postgresql://mori:$${MORI_PG_PASSWORD}@localhost:5432/mori"
+# ── Resolve runtime config: reuse persisted env on reboot, else fetch ────────
+# The persisted /data/mori-advisor/.env (written on first boot, also the source
+# of truth for CD) makes a reboot independent of Secret Manager — a denied or
+# unreachable secret must never abort boot. Secret Manager is consulted ONLY on
+# first boot (no .env yet); on reboot the env (incl. the pg password inside
+# MORI_DATABASE_URL) is read straight back from disk.
+ENVFILE="/data/mori-advisor/.env"
 
-if [ -z "$MORI_PG_PASSWORD" ]; then
-  echo "FATAL: MORI_PG_PASSWORD is empty — cannot start postgres or mori-advisor"
+if [ -s "$ENVFILE" ]; then
+  echo "→ Persisted $ENVFILE found — reboot path (Secret Manager not required)."
+  FIRST_BOOT=0
+  set -a; . "$ENVFILE"; set +a
+  # pgdata was initialised with this password — recover it from the persisted URL.
+  MORI_PG_PASSWORD=$(printf '%s' "$${MORI_DATABASE_URL:-}" | sed -nE 's#^[^:]+://[^:]+:(.*)@[^@/]+/.*$#\1#p')
+else
+  echo "→ No persisted env — first boot; fetching secrets from Secret Manager."
+  FIRST_BOOT=1
+  MORI_API_KEY=$(gcloud secrets versions access latest --secret=MORI_API_KEY --project=${project_id} 2>/dev/null || echo "")
+  # Named per-client API keys (name:secret,...). Without this the server runs in
+  # open-auth mode (anyone on the tailnet). Strongly recommended.
+  MORI_API_KEYS=$(gcloud secrets versions access latest --secret=MORI_API_KEYS --project=${project_id} 2>/dev/null || echo "")
+  MORI_ADVISOR_API_KEY=$(gcloud secrets versions access latest --secret=MORI_ADVISOR_API_KEY --project=${project_id} 2>/dev/null || echo "")
+  MORI_BASE_URL=$(gcloud secrets versions access latest --secret=MORI_BASE_URL --project=${project_id} 2>/dev/null || echo "")
+  MORI_MODEL=$(gcloud secrets versions access latest --secret=MORI_MODEL --project=${project_id} 2>/dev/null || echo "")
+  MORI_DREAM_MODEL=$(gcloud secrets versions access latest --secret=MORI_DREAM_MODEL --project=${project_id} 2>/dev/null || echo "")
+  MORI_TRUSTED_DREAMERS=$(gcloud secrets versions access latest --secret=MORI_TRUSTED_DREAMERS --project=${project_id} 2>/dev/null || echo "")
+  MORI_NATS_URL=$(gcloud secrets versions access latest --secret=MORI_NATS_URL --project=${project_id} 2>/dev/null || echo "")
+  MORI_PG_PASSWORD=$(gcloud secrets versions access latest --secret=MORI_PG_PASSWORD --project=${project_id} 2>/dev/null || echo "")
+  if [ -z "$MORI_PG_PASSWORD" ]; then
+    echo "FATAL: MORI_PG_PASSWORD is empty on first boot — cannot initialise postgres or mori-advisor"
+    exit 1
+  fi
+  MORI_DATABASE_URL="postgresql://mori:$${MORI_PG_PASSWORD}@localhost:5432/mori"
+fi
+
+if [ -z "$${MORI_PG_PASSWORD:-}" ]; then
+  echo "FATAL: could not resolve MORI_PG_PASSWORD (neither persisted .env nor Secret Manager)"
   exit 1
 fi
 
@@ -134,8 +159,11 @@ if [ $PG_READY -eq 0 ]; then
   echo "FATAL: Postgres did not become ready after 60s — aborting startup."; exit 1
 fi
 
-# ── Write the complete runtime env (single source of truth; CD reuses it) ─────
-cat > /data/mori-advisor/.env <<ENVEOF
+# ── Write the complete runtime env on FIRST BOOT only (single source of truth;
+# CD reuses it). On reboot the existing .env is reused untouched — that is what
+# makes reboot Secret-Manager-independent. mode 600, mori-owned (has secrets).
+if [ "$FIRST_BOOT" = "1" ]; then
+  cat > /data/mori-advisor/.env <<ENVEOF
 MORI_ADVISOR_DATA=/data/mori-advisor
 MORI_DATABASE_URL=$MORI_DATABASE_URL
 MORI_REQUIRE_POSTGRES=true
@@ -149,8 +177,9 @@ MORI_API_KEYS=$MORI_API_KEYS
 MORI_TRUSTED_DREAMERS=$MORI_TRUSTED_DREAMERS
 MORI_NATS_URL=$MORI_NATS_URL
 ENVEOF
-chown mori:mori /data/mori-advisor/.env
-chmod 600 /data/mori-advisor/.env
+  chown mori:mori /data/mori-advisor/.env
+  chmod 600 /data/mori-advisor/.env
+fi
 
 # ── Install Quadlet units for the mori app (single source of truth) ──────────
 # The app containers (advisor/ingestion/msg) + dream are systemd-managed via

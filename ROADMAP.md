@@ -95,6 +95,7 @@ Small team coherence. Requires v2.0 foundation.
 - v2.1.20–v2.1.23: Deploy unified on rootless `--env-file --replace`; deployment contract gate (`scripts/verify-deployment.py`) shared by UAT + CD
 - v2.1.24: Assistant reasoning capture — Stop hook ships a bounded transcript tail; server extracts the turn's assistant text into `session_events.assistant_text`; dream distills it
 - v2.1.25: GCE app containers (`mori-advisor`/`ingestion`/`msg`) managed by rootless **systemd Quadlet** — one declarative source of truth (units injected verbatim by Terraform), `dream` cron → `dream.timer`, CD switched to `podman pull` + `systemctl --user restart`; `mori-pg` stays imperative. Lays the substrate for horizontal worker scaling (template units)
+- v2.1.26: Reboot-safe GCE deployment — startup reuses the persisted `/data/mori-advisor/.env` on reboot (Secret Manager consulted only on first boot, so a denied/unreachable secret can't take a running instance down); system-assigned mori uid with `pgdata` ownership derived from `/etc/subuid`; `MORI_PG_PASSWORD` now a Terraform-managed secret with a durable `secretAccessor` grant
 
 **Remaining:**
 

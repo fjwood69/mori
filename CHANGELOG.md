@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.1.26 — Reboot-safe GCE deployment
+
+- **Why:** a reboot re-runs the startup script, which fetched every secret from Secret Manager
+  and `exit 1`'d if `MORI_PG_PASSWORD` came back empty. A single denied/unreachable secret would
+  therefore take a *running* instance down on the next reboot — and a hardcoded `useradd -u`
+  that mismatched the live user's uid tainted the rootless Podman storage on rebuild.
+- **Env reuse on reboot:** `startup.sh.tpl` now reads the persisted `/data/mori-advisor/.env`
+  (written first boot, also CD's source of truth) and recovers the pg password from
+  `MORI_DATABASE_URL` — **Secret Manager is consulted only on first boot** (no `.env` yet). A
+  reboot now survives with Secret Manager denied or unreachable. The `.env` is written once on
+  first boot and reused untouched thereafter (preserving CD/manual updates).
+- **Self-consistent uid:** dropped the hardcoded `useradd -u 10001`; the user gets a
+  system-assigned uid and the Postgres `pgdata` owner is derived from `/etc/subuid`
+  (`subuid_base + 998` → container uid 999), so user / storage / pgdata can't drift on a rebuild.
+- **`main.tf`:** `MORI_PG_PASSWORD` is now a managed `google_secret_manager_secret` with a
+  `secretAccessor` binding for the service account — previously created out-of-band with no
+  durable IAM grant, which is how the access silently lapsed. (Existing projects: `terraform
+  import google_secret_manager_secret.mori_pg_password MORI_PG_PASSWORD`.)
+- Verified: both templates render (`templatefile`) and the rendered scripts pass `bash -n`.
+
 ## v2.1.25 — Manage GCE app containers with systemd Quadlet
 
 - **Why:** the run-spec for `mori-advisor`/`mori-ingestion` lived in *two* places — the GCE
