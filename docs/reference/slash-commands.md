@@ -140,6 +140,28 @@ Requirements persist as tagged memories in the shared store. They surface automa
 
 ---
 
+## Coordination model — Event / Errand / State
+
+mori coordinates across instances with three primitives. They aren't competitors —
+`/msg` is layered *on* the NATS bus, and a state cache sits beside them. Reach for them
+by **pattern**, not by habit:
+
+| Pattern | Use it for | Reach for | Example |
+|---|---|---|---|
+| **Event** — "X just happened" | real-time awareness, fan-out, no tracking needed | `/nats` (the bus itself) | `/nats pub "deploying v2 — hold off on reboots"`; the automatic `GitPush` event |
+| **Errand** — "*you*: do / answer / note this" | directed, typed work that needs tracking | `/msg` (a protocol over the bus) | `/msg send laptop task "extract rate limiting into its own module"`; `/msg send --broadcast decision "standardising on Postgres"` |
+| **State** — "the *current* X is…" | a shared snapshot anyone pulls; session hand-off | a KV/cache (e.g. cc-share) | the `/wrap` session summary; a "where I left off" note |
+
+**Tie-breakers** for the blurry edges:
+- A broadcast heads-up — Event or Errand? Use **`/nats`** if it's awareness only; **`/msg`** if you need an ack or to track who acted.
+- A session summary — State or memory? Use a **state cache** if it's transient ("where I left off"); write a **mori memory** if it's durable knowledge.
+
+A state cache is deliberately **independent** of the bus and the store — it still works when
+NATS or mori is down, which is exactly why it's the right home for degraded-mode hand-off.
+Don't fold it into either.
+
+---
+
 ## `/nats` — Cross-Device Messaging
 
 Publish and subscribe to real-time messages across Claude Code instances (requires NATS server).
