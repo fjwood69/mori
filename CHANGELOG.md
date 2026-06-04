@@ -457,8 +457,7 @@ When you push to any git repo with the hook installed, a `GitPush` event is publ
 ./scripts/install-git-hooks.sh
 
 # Other repos
-./scripts/install-git-hooks.sh --repo ~/bifrost
-./scripts/install-git-hooks.sh --repo ~/dotfiles
+./scripts/install-git-hooks.sh --repo ~/path/to/your-other-repo
 ```
 
 Set `MORI_URL`, `MORI_API_KEY`, `MORI_CLIENT` in your environment — see `docs/reference/git-hooks.md`.
