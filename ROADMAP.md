@@ -64,12 +64,12 @@ Core hardening. Remaining items before v2.0 is complete. Target: one shared inst
   - TLS on all Postgres connections
 - WAL-G — continuous GCS backup, explicit RPO < 5min / RTO < 30min
 - REST API
-  - `GET /api/memories?query=...`
-  - `POST /api/memories`
-  - `GET /api/events`
+  - `GET /api/memories?query=...` — ✅ shipped v2.1.29 (+ `GET /api/memories/{name}`)
+  - `POST /api/memories` — write path, deferred
+  - `GET /api/events` — ✅ shipped v2.1.29
   - Webhook support — push notifications on significant memory writes
   - OpenAPI spec
-  - Foundation for dashboard and third-party integrations
+  - Foundation for dashboard and third-party integrations — ✅ dashboard shipped v2.1.29
 - API rate limiting — per-key limits
 - Headless CC cost guards — per-message spend caps
 
@@ -98,13 +98,13 @@ Small team coherence. Requires v2.0 foundation.
 - v2.1.26: Reboot-safe GCE deployment — startup reuses the persisted `/data/mori-advisor/.env` on reboot (Secret Manager consulted only on first boot, so a denied/unreachable secret can't take a running instance down); system-assigned mori uid with `pgdata` ownership derived from `/etc/subuid`; `MORI_PG_PASSWORD` now a Terraform-managed secret with a durable `secretAccessor` grant
 - v2.1.27: `/brief --post-compact` delta re-grounding — `brief(post_compact=True, since=…)` surfaces only changed/superseded/evicted memories since the last brief, skipping the full base + standards + freshness scan; `get_memories_changed_since` (SQLite + Postgres, `updated_at` index); session-aware `since` (`.mori-last-brief` marker → session start → `MORI_POST_COMPACT_WINDOW`); Cline + Cursor installer parity; pytest suite + CI
 - v2.1.28: Schema-migration runner + full-text search — one ordered `MIGRATIONS` registry with a `schema_migrations` version table drives both backends (single source of truth; baseline invokes the existing bootstrap); drift fixes bring SQLite/Postgres back into parity; ranked FTS replaces unranked LIKE/ILIKE (SQLite **FTS5** + triggers, Postgres generated **`tsvector`** + GIN); Postgres now exercised in CI via a service container. Vectors deferred (FTS is symmetric across both backends)
+- v2.1.29: Read REST API + standalone web dashboard — `GET /api/memories` (ranked FTS/recency), `GET /api/memories/{name}` (full detail + provenance), `GET /api/events`; `CORSMiddleware` (`MORI_CORS_ORIGINS`) for cross-origin browser access; a dependency-free static `dashboard/` to search, browse, and unfurl memories. Read-only — authenticated by the same `MORI_API_KEYS`. Delete/write + OpenAPI + rate-limiting deferred
 
 **Remaining:**
 
 | Priority | Feature |
 |----------|---------|
 | P0 | **Multi-project `/brief`** — `--project api --project frontend` — small teams wear many hats |
-| P0 | **Simple web dashboard** — memory browser, search, delete. No RBAC. One admin password. Teams need to see what's in the store. |
 | P0 | **Demo video** — ships the week v2.1 does. Unblocks Product Hunt and HN Show HN. |
 | P1 | **URL ingestion** — bootstrap context from docs, RFCs, public pages without copy-paste |
 | P1 | **GitHub inbound ingestion** — issues, PR comments, commit history → memory context |

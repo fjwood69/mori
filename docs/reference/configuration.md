@@ -63,6 +63,15 @@ mori-key_generate name="newclient"
 The output line goes into `MORI_API_KEYS` on the server. The secret goes into
 the client's MCP config as `X-Api-Key`.
 
+### Web dashboard
+
+The same keys authenticate the standalone web dashboard (`dashboard/`). In its
+settings, enter the server URL + any valid key; it sends the secret as `X-Api-Key`
+on every `/api/*` request, exactly like an MCP client. The dashboard is read-only,
+so any key with read access works — no special role required. Cross-origin browser
+access additionally requires `MORI_CORS_ORIGINS` to permit the dashboard's origin
+(default `*`); see the variable above.
+
 ### Open mode
 
 If neither `MORI_API_KEYS` nor `MORI_ADVISOR_API_KEY` is set, the server starts
