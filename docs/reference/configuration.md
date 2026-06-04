@@ -21,7 +21,10 @@
 | `MORI_NATS_URL` | — | NATS JetStream URL for cross-device messaging and `mori-msg` daemon (`nats://user:pass@host:4222`). |
 | `MORI_API_KEYS` | — | Named API keys: `name:secret,name:secret,...` — see [Authentication](#authentication) |
 | `MORI_ADVISOR_API_KEY` | — | Legacy single key (backward compat — prefer `MORI_API_KEYS`) |
-| `MORI_TRUSTED_DREAMERS` | — | Comma-separated hostnames for write approval bypass |
+| `MORI_API_KEY_ROLES` | — | Capability roles per key: `name:role,name:role,...` — roles: `read`, `write`, `dreamer`. Names absent from this list default to `read` (fail closed). Only consulted when `MORI_TD_MODE=api`. See [Capability roles](#capability-roles). |
+| `MORI_TD_MODE` | `host` | Trusted-dreamer mode switch. `host` (default): existing hostname-based trust, no key-role enforcement — existing deployments unchanged. `api`: API key role is the sole authority for write/approve operations. |
+| `MORI_LOCAL_FULL_ACCESS` | `false` | When `true`, a missing actor (e.g. stdio transport without an ASGI request) is treated as having dreamer access. Only set on fully-trusted single-user deployments. |
+| `MORI_TRUSTED_DREAMERS` | — | Comma-separated hostnames for write approval bypass (host mode only) |
 | `MORI_STANDARDS_DIR` | — | Path to team standards .md directory |
 | `MORI_SKILLS_DIR` | — | Path to slash command skill files (for /update) |
 | `MORI_DREAM_INTERVAL` | `60` | Dream pipeline interval in minutes |
@@ -89,6 +92,53 @@ The following endpoints are always accessible without a key (standard probe conv
 | `/health` | Liveness probe |
 | `/ready` | Readiness probe |
 | `/metrics` | Prometheus scrape |
+
+### Capability roles
+
+Key-based capability scoping requires **both** `MORI_API_KEY_ROLES` and `MORI_TD_MODE=api`.
+Setting `MORI_API_KEY_ROLES` alone has no effect — the mode switch must be explicitly opted in.
+
+#### Roles (least to most privileged)
+
+| Role | Allowed operations |
+|------|-------------------|
+| `read` | All read operations — `memory_read`, `memory_list`, `memory_search`, `brief`, `pensieve`, etc. |
+| `write` | Read + `memory_write`, `memory_import`, `memory_delete`, `memory_rollback` |
+| `dreamer` | Write + `memory_approve`, `memory_reject`, `memory_protect` |
+
+Hierarchy: `read < write < dreamer`. A dreamer key may call any operation.
+
+#### Example configuration
+
+```bash
+# Server .env
+MORI_API_KEYS=laptop:a1b2...,ci-runner:c3d4...,gce-dreamer:e5f6...
+MORI_API_KEY_ROLES=laptop:write,ci-runner:read,gce-dreamer:dreamer
+MORI_TD_MODE=api
+```
+
+- `laptop` — can write memories but cannot approve pending writes
+- `ci-runner` — read-only (briefing, search, pensieve)
+- `gce-dreamer` — full access including approve/reject/protect
+
+#### Fail-closed defaults
+
+- A name present in `MORI_API_KEYS` but **absent** from `MORI_API_KEY_ROLES` defaults to `read`.
+  This is intentional — adding a new key without a role assignment does not accidentally grant write access.
+- An **unknown role string** (not `read`, `write`, or `dreamer`) is rejected at startup with an error log
+  and the key is assigned `read`.
+- A **missing actor** (no ASGI request — e.g. stdio transport) is denied for privileged operations
+  unless `MORI_LOCAL_FULL_ACCESS=true`.
+
+#### Backward compatibility
+
+In `host` mode (the default), `MORI_API_KEY_ROLES` is loaded but **not consulted** for authorisation —
+existing hostname-based trusted-dreamer logic is unchanged. Switching to `api` mode is a per-deployment
+opt-in that takes effect immediately on restart.
+
+The write REST API (`#14`) and review queue (`#15`) will use the same `require_role` check, so
+"new write/approve features require `api` mode" is automatic — they will fail closed in `host` mode
+until the operator opts in.
 
 ### Backward compatibility
 

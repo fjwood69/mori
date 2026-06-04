@@ -36,6 +36,7 @@ from mori_advisor.metrics import (
     metrics_content_type,
     pending_writes_gauge,
 )
+from mori_advisor.policy import PermissionDenied, require_role
 from mori_advisor.store import get_store as _get_store
 
 logger = logging.getLogger(__name__)
@@ -1501,6 +1502,10 @@ async def memory_write(
         origin_session_ids: JSON array of session UUIDs that contributed.
         origin_clients: JSON array of client hostnames that contributed.
     """
+    try:
+        require_role("write")
+    except PermissionDenied as exc:
+        return str(exc)
     return await _a(
         memory_store.write(
             name=name,
@@ -1666,6 +1671,10 @@ async def memory_delete(name: str) -> str:
     Args:
         name: The unique kebab-case name of the memory to delete.
     """
+    try:
+        require_role("write")
+    except PermissionDenied as exc:
+        return str(exc)
     return await _a(memory_store.delete(name))
 
 
@@ -1714,6 +1723,10 @@ async def memory_rollback(name: str, version_id: int) -> str:
         name: The kebab-case name of the memory.
         version_id: The version_id from memory_history to restore to.
     """
+    try:
+        require_role("write")
+    except PermissionDenied as exc:
+        return str(exc)
     return await _a(memory_store.rollback(name, version_id))
 
 
@@ -1825,6 +1838,10 @@ async def memory_import(source_dir: str) -> str:
     Args:
         source_dir: Absolute path to directory containing .md files.
     """
+    try:
+        require_role("write")
+    except PermissionDenied as exc:
+        return str(exc)
     return await _a(memory_store.import_memories(source_dir))
 
 
@@ -1850,6 +1867,10 @@ async def memory_approve(write_id: int, note: str = "", reviewer: str = "") -> s
         note: Optional review note.
         reviewer: Hostname of the reviewer (auto-detected if empty).
     """
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return str(exc)
     return await _a(memory_store.approve(write_id, note=note, reviewer=reviewer))
 
 
@@ -1862,6 +1883,10 @@ async def memory_reject(write_id: int, note: str = "", reviewer: str = "") -> st
         note: Optional review note.
         reviewer: Hostname of the reviewer (auto-detected if empty).
     """
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return str(exc)
     return await _a(memory_store.reject(write_id, note=note, reviewer=reviewer))
 
 
@@ -1873,6 +1898,10 @@ async def memory_protect(name: str, domains: list[str] | None = None) -> str:
         name: The kebab-case name of the memory to protect/unprotect.
         domains: Tag prefixes that trigger auto-protection.
     """
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return str(exc)
     return await _a(memory_store.protect(name, domains=domains))
 
 

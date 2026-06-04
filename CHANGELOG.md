@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.1.34 — API key capability scoping + host→api TD mode switch (#13)
+
+- **feat:** Added `MORI_API_KEY_ROLES=name:role,...` env var — parsed parallel to `MORI_API_KEYS`
+  (format unchanged). Roles: `read < write < dreamer`. Names absent from the roles map default to
+  `read` (fail closed). Unknown role strings are rejected at startup with an error log and
+  downgraded to `read`.
+- **feat:** New `MORI_TD_MODE=host|api` mode switch (default: `host`). In `host` mode, existing
+  hostname-based trusted-dreamer logic is unchanged — deployments that do not set this variable
+  behave exactly as before. In `api` mode, the API key role is the sole authority for
+  write/approve operations.
+- **feat:** New module `mori_advisor/policy.py` — `Actor(key_name, role)` dataclass,
+  `current_actor` ContextVar (set by `ApiKeyMiddleware` per request, reset on exit),
+  `require_role(min_role)` helper that raises `PermissionDenied` on insufficient privilege.
+  `can_read` / `can_write` / `can_approve` functions for REST-surface callers.
+- **feat:** `require_role` applied as the first call in each privileged MCP tool:
+  `memory_write`/`memory_import` → `write`; `memory_approve`/`memory_reject`/`memory_protect` →
+  `dreamer`; `memory_delete`/`memory_rollback` → `write`.
+- **feat:** `MORI_LOCAL_FULL_ACCESS=true` allows a nil actor (stdio transport) through in `api` mode
+  for fully-trusted single-user deployments.
+- **test:** `tests/test_policy.py` — 39 tests (26 SQLite + 13 Postgres) covering: read key denied
+  for write/dreamer ops; write key denied for dreamer ops; dreamer key allowed for all; host mode
+  no-enforcement (backward compat); nil actor fail-closed; `MORI_LOCAL_FULL_ACCESS` bypass; the
+  **no-bypass proof** — the same under-privileged call is denied on both the MCP-tool surface
+  (via `current_actor` ContextVar) and the REST surface (via `can_write`/`can_approve`).
+- **docs:** `docs/reference/configuration.md` updated with new env vars and capability roles section.
+- **note:** Audit logging is a planned dependency of #15. The write REST API (#14) and review queue
+  (#15) will use the same `require_role` check; in `host` mode they fail closed automatically.
+
 ## v2.1.33 — MCP tool test coverage across both backends (issue #19)
 
 - **Test:** Added `tests/test_mcp_tools.py` — 36 tests parametrised over SQLite

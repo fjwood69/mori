@@ -13,6 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from mori_advisor.auth import check_key
+from mori_advisor.policy import Actor, current_actor, role_for
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,18 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             )
 
         request.state.mori_client = client_name
-        response = await call_next(request)
+
+        # Build the Actor for this request and attach it to both the request state
+        # (for REST endpoints) and the ContextVar (for MCP tools, which have no
+        # direct access to the request object).
+        actor = Actor(key_name=client_name, role=role_for(client_name))
+        request.state.actor = actor
+        token = current_actor.set(actor)
+        try:
+            response = await call_next(request)
+        finally:
+            # Always reset after the request — prevents actor leaking across tasks.
+            current_actor.reset(token)
 
         # Capture server-issued session ID for subsequent request bypass
         resp_session_id = response.headers.get("mcp-session-id")
