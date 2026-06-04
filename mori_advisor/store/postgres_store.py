@@ -1094,7 +1094,7 @@ class PostgresStore(BaseStore):
             trusted = []
         return client in trusted
 
-    async def parse_tags(self, raw: str) -> list:
+    def parse_tags(self, raw: str) -> list:
         if not raw:
             return []
         try:

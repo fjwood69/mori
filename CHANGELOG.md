@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.1.32 — Fix `/req` (`memory_req`) crashing on Postgres backend (issue #12)
+
+- **Bug:** `memory_req` (the `/req` MCP tool) raised `TypeError: 'coroutine' object
+  is not iterable` when called against a Postgres-backed instance. The error surfaced
+  as a tool error visible to the caller, not as a "Database error: …" string.
+- **Root cause:** `PostgresStore.parse_tags` was declared `async def` despite
+  containing no awaits. `memory_req` called it bare — `store.parse_tags(raw)` — and
+  then iterated the result with `for t in tags:`, which failed because the call
+  returned a coroutine object rather than a list. The SQLite backend's `parse_tags`
+  is correctly `def` (sync), so SQLite was unaffected.
+- **Fix:** removed `async` from `PostgresStore.parse_tags` so it matches the
+  `BaseStore` abstract signature (`def parse_tags`) and returns a list directly.
+- **Regression test:** `tests/test_rest_api.py::test_pg_get_requirements_returns_list_not_coroutine`
+  (gated on `MORI_TEST_DATABASE_URL`). The CI `test-postgres` job now also runs
+  `tests/test_rest_api.py` so this class of regression is caught automatically.
+
 ## v2.1.31 — Dashboard connect modal: key-first, server URL optional
 
 - With mori serving the dashboard same-origin (v2.1.30), the connect modal now leads with

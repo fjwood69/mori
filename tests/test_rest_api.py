@@ -231,3 +231,63 @@ def test_pg_get_memory():
     assert set(result["tags"]) == {"pg", "test"}  # JSONB → list
     assert isinstance(result["origin_clients"], list)
     assert miss is None
+
+
+# ── Postgres get_requirements / memory_req (gated) ── regression for issue #12 ─
+
+
+@requires_pg
+def test_pg_get_requirements_returns_list_not_coroutine():
+    """Regression test for issue #12.
+
+    PostgresStore.parse_tags was declared async def, so memory_req's
+    ``for t in store.parse_tags(raw):`` raised
+    ``TypeError: 'coroutine' object is not iterable`` on the Postgres backend.
+    This test asserts that get_requirements returns a plain list (not a
+    coroutine), and that parse_tags returns a plain list too.
+    """
+    import inspect
+
+    from mori_advisor.store.postgres_store import PostgresStore
+
+    async def run():
+        store = PostgresStore(PG_URL)
+        await store.bootstrap()
+        # Seed one requirement memory for the filter test.
+        async with store.pool.acquire() as c:
+            await c.execute("DELETE FROM memories WHERE name = 'req-pg-issue12'")
+        await store.write(
+            name="req-pg-issue12",
+            title="Issue 12 regression fixture",
+            body="Postgres parse_tags must be sync",
+            type="requirement",
+            tier="working",
+            tags=["project-test", "status-open"],
+        )
+        rows = await store.get_requirements(project="test", status="", tag="", limit=10)
+        # parse_tags must be sync: calling it without await must return a list.
+        if rows:
+            tags_raw = rows[0]["tags"]
+            tags_result = store.parse_tags(tags_raw)
+            is_awaitable = inspect.isawaitable(tags_result)
+            if is_awaitable:
+                tags_result.close()  # clean up to avoid ResourceWarning
+        else:
+            tags_result = None
+            is_awaitable = False
+        await store.pool.close()
+        return rows, tags_result, is_awaitable
+
+    rows, tags_result, is_awaitable = asyncio.run(run())
+
+    # get_requirements must return a list, not a coroutine.
+    assert isinstance(rows, list), f"expected list, got {type(rows)}"
+    assert len(rows) >= 1
+
+    # parse_tags must be sync: result is a list, not an awaitable.
+    assert not is_awaitable, "parse_tags returned a coroutine — async def must be removed"
+    assert isinstance(tags_result, list)
+
+    # The loop that memory_req uses must work without raising TypeError.
+    for t in tags_result:
+        assert isinstance(t, str)
