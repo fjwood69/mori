@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.1.33 — MCP tool test coverage across both backends (issue #19)
+
+- **Test:** Added `tests/test_mcp_tools.py` — 36 tests parametrised over SQLite
+  and Postgres (72 cases total), covering every store-touching MCP tool in
+  `mori_advisor/main.py`. The coroutine-scan helper `assert_no_coroutines()`
+  recursively traverses each tool's return value and fails if any leaf is an
+  unawaited coroutine, catching the exact class of bug from issue #12.
+- **Store globals:** Monkeypatched via `monkeypatch.setattr("mori_advisor.main.store", ...)`
+  (and the derived `memory_store`/`session_log` consistently). No DI refactor — a
+  `# TODO` notes this as a future improvement.
+- **External stubs:** NATS tools stubbed via `sys.modules["nats"]` replacement;
+  bifrost/LLM stubbed via `monkeypatch`; ingestion pipeline stubbed with a fake
+  returning a complete result dict so arg-parsing and the coroutine scan still run.
+- **Bug-reintroduction check:** Temporarily restoring `async def parse_tags` in
+  `PostgresStore` caused `test_memory_req[postgres]` to fail with
+  `TypeError: 'coroutine' object is not iterable` while SQLite passed — confirming
+  the suite catches issue #12's bug class. Reverted immediately after.
+- **Bonus bugs found and fixed:** The suite also discovered three pre-existing schema
+  mismatches in `PostgresStore` (wrong column names in `history`/`diff`/`rollback`
+  and `pending_list`/`approve`/`reject`) — fixed as part of this PR.
+- **CI:** `tests/test_mcp_tools.py` added to the `test-postgres` job so it runs
+  against `postgres:16` on every push.
+
 ## v2.1.32 — Fix `/req` (`memory_req`) crashing on Postgres backend (issue #12)
 
 - **Bug:** `memory_req` (the `/req` MCP tool) raised `TypeError: 'coroutine' object
