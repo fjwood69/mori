@@ -512,14 +512,14 @@
     <!-- Key Modal -->
     <div id="keyModal" class="modal">
         <div class="modal-content">
-            <div class="modal-title">Connection Settings</div>
-            <div class="modal-field">
-                <label class="modal-label">Base URL</label>
-                <input type="text" id="baseUrlInput" placeholder="http://localhost:8970">
-            </div>
+            <div class="modal-title">Connect to mori</div>
             <div class="modal-field">
                 <label class="modal-label">API Key</label>
                 <input type="password" id="apiKeyInput" placeholder="your API key">
+            </div>
+            <div class="modal-field">
+                <label class="modal-label">Server URL (optional — defaults to this server)</label>
+                <input type="text" id="baseUrlInput">
             </div>
             <div id="modalMessage" class="message"></div>
             <div class="modal-buttons">
@@ -807,7 +807,9 @@
 
         // ===== KEY MODAL =====
         function showKeyModal() {
-            document.getElementById('baseUrlInput').value = state.baseUrl;
+            const baseInput = document.getElementById('baseUrlInput');
+            baseInput.value = state.baseUrl;
+            baseInput.placeholder = window.location.origin;  // blank = this server
             document.getElementById('apiKeyInput').value = state.apiKey;
             document.getElementById('keyModal').classList.add('open');
         }
