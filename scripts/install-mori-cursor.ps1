@@ -189,20 +189,28 @@ function Deploy-MoriSkills {
     foreach ($SkillDir in Get-ChildItem -Path $SourceDir -Directory) {
         $SkillFile = Join-Path $SkillDir.FullName "SKILL.md"
         if (-not (Test-Path $SkillFile)) { continue }
-        $Lines = Get-Content -Path $SkillFile -Encoding UTF8
-        $Name = ""; $Desc = ""; $Rest = @()
-        foreach ($Line in $Lines) {
-            if ($Line -match "^-\s+name:\s*(.*)$") { $Name = $Matches[1].Trim() }
-            elseif ($Line -match "^-\s+description:\s*(.*)$") { $Desc = $Matches[1].Trim() }
-            elseif ($Name -or $Desc -or $Line.Trim()) { $Rest += $Line }
-        }
-        if ($Name -eq "") { $Name = $SkillDir.Name }
-        $Folder = Join-Path $DestDir "$Name"
+        $raw = Get-Content -Path $SkillFile -Raw -Encoding UTF8
+        $Name = $SkillDir.Name
+        $Folder = Join-Path $DestDir $Name
         $Out = Join-Path $Folder "SKILL.md"
         if ((Test-Path $Out) -and -not $Upgrade) { continue }
         New-Item -ItemType Directory -Force -Path $Folder | Out-Null
-        $body = ($Rest -join "`n").Trim()
-        Write-Utf8File $Out "---`nname: $Name`ndescription: `"$($Desc.Replace('"','\"'))`"`n---`n`n$body`n"
+        if ($raw.TrimStart().StartsWith("---")) {
+            Write-Utf8File $Out $raw.TrimEnd() + "`n"
+        } else {
+            $Lines = $raw -split "`n"
+            $Desc = ""
+            $Rest = [System.Collections.ArrayList]@()
+            $pastMeta = $false
+            foreach ($Line in $Lines) {
+                if ($Line -match "^-\s+name:\s*(.*)$") { $Name = $Matches[1].Trim() }
+                elseif ($Line -match "^-\s+description:\s*(.*)$") { $Desc = $Matches[1].Trim() }
+                elseif (-not $pastMeta -and [string]::IsNullOrWhiteSpace($Line) -and $Name -eq $SkillDir.Name -and $Desc -eq "") { continue }
+                else { $pastMeta = $true; [void]$Rest.Add($Line) }
+            }
+            $body = ($Rest -join "`n").TrimEnd()
+            Write-Utf8File $Out "---`nname: $Name`ndescription: `"$($Desc.Replace('"','\"'))`"`n---`n`n$body`n"
+        }
         Write-Host "  Deployed skill: $Name" -ForegroundColor Cyan
         $count++
     }

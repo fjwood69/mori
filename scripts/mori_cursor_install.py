@@ -105,6 +105,13 @@ def _hook_command(shipper: str, url: str, client: str, api_key: str, mode: str) 
     return " ".join(parts)
 
 
+def _postcompact_command(brief_shipper: str) -> str:
+    """PostCompact runs mori-post-compact-brief only (no URL/client/mode args)."""
+    if brief_shipper.lower().endswith(".ps1"):
+        return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{brief_shipper}"'
+    return f'"{brief_shipper}"'
+
+
 def _update_entry_command(entry: dict[str, Any], new_cmd: str) -> bool:
     if "hooks" in entry and isinstance(entry["hooks"], list):
         for h in entry["hooks"]:
@@ -171,7 +178,7 @@ def merge_settings(
     # ship-event shipper, deployed by the .sh/.ps1 installer.
     brief_ext = ".ps1" if shipper.lower().endswith(".ps1") else ".sh"
     brief_shipper = str(Path(shipper).parent / f"mori-post-compact-brief{brief_ext}")
-    postcompact_cmd = _hook_command(brief_shipper, mori_url, client, api_key, "postcompact")
+    postcompact_cmd = _postcompact_command(brief_shipper)
 
     if settings_path.is_file():
         with settings_path.open(encoding="utf-8") as f:
@@ -219,12 +226,30 @@ def merge_mcp(mcp_path: Path, mori_url: str) -> None:
         f.write("\n")
 
 
-def _parse_skill_md(path: Path) -> tuple[str, str, str]:
+def _parse_skill_md(skill_dir: Path, skill_file: Path) -> tuple[str, str, str | None]:
+    """Return (name, description, body). body=None means copy SKILL.md verbatim."""
+    text = skill_file.read_text(encoding="utf-8")
+    default_name = skill_dir.name
+
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            fm = parts[1]
+            name = default_name
+            desc = ""
+            for line in fm.splitlines():
+                line = line.strip()
+                if line.startswith("name:"):
+                    name = line.split(":", 1)[1].strip()
+                elif line.startswith("description:"):
+                    desc = line.split(":", 1)[1].strip().strip('"')
+            return name, desc, None
+
     name = ""
     desc = ""
     body_lines: list[str] = []
     in_body = False
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         if re.match(r"^-\s+name:\s*", line):
             name = re.sub(r"^-\s+name:\s*", "", line).strip()
         elif re.match(r"^-\s+description:\s*", line):
@@ -235,8 +260,8 @@ def _parse_skill_md(path: Path) -> tuple[str, str, str]:
             in_body = True
             body_lines.append(line)
     if not name:
-        name = path.stem.replace(".skill", "")
-    return name, desc, body_lines
+        name = default_name
+    return name, desc, "\n".join(body_lines).rstrip() + "\n"
 
 
 def deploy_skills(source_dir: Path, dest_dir: Path, upgrade: bool, prefix: str = "") -> int:
@@ -246,24 +271,26 @@ def deploy_skills(source_dir: Path, dest_dir: Path, upgrade: bool, prefix: str =
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     count = 0
-    for path in sorted(source_dir.iterdir()):
-        if not path.is_dir():
+    for skill_dir in sorted(source_dir.iterdir()):
+        if not skill_dir.is_dir():
             continue
-        skill_file = path / "SKILL.md"
+        skill_file = skill_dir / "SKILL.md"
         if not skill_file.is_file():
             continue
-        name, desc, body_lines = _parse_skill_md(skill_file)
+        name, desc, body = _parse_skill_md(skill_dir, skill_file)
         folder = dest_dir / f"{prefix}{name}"
         skill_file_out = folder / "SKILL.md"
         if skill_file_out.exists() and not upgrade:
             continue
         folder.mkdir(parents=True, exist_ok=True)
-        escaped = desc.replace('"', '\\"')
-        content = "\n".join(body_lines).rstrip() + "\n"
-        skill_file_out.write_text(
-            f'---\nname: {prefix}{name}\ndescription: "{escaped}"\n---\n\n{content}',
-            encoding="utf-8",
-        )
+        if body is None:
+            skill_file_out.write_text(skill_file.read_text(encoding="utf-8"), encoding="utf-8")
+        else:
+            escaped = desc.replace('"', '\\"')
+            skill_file_out.write_text(
+                f'---\nname: {prefix}{name}\ndescription: "{escaped}"\n---\n\n{body}\n',
+                encoding="utf-8",
+            )
         print(f"  Deployed skill: {prefix}{name}")
         count += 1
     return count
