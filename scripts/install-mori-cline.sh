@@ -163,6 +163,8 @@ auth_flag=""
 CLAUDEDIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SHIPPER_SRC="${SCRIPT_DIR}/mori-ship-event.sh"
 SHIPPER_DST="${CLAUDEDIR}/mori-ship-event.sh"
+BRIEF_SRC="${SCRIPT_DIR}/mori-post-compact-brief.sh"
+BRIEF_DST="${CLAUDEDIR}/mori-post-compact-brief.sh"
 
 mkdir -p "$CLAUDEDIR"
 if [ -f "$SHIPPER_SRC" ]; then
@@ -170,6 +172,13 @@ if [ -f "$SHIPPER_SRC" ]; then
   echo "  Deployed mori-ship-event.sh to ${CLAUDEDIR}"
 else
   echo "  Warning: mori-ship-event.sh not found alongside installer — hooks will not work correctly."
+fi
+
+if [ -f "$BRIEF_SRC" ]; then
+  cp "$BRIEF_SRC" "$BRIEF_DST" && chmod +x "$BRIEF_DST"
+  echo "  Deployed mori-post-compact-brief.sh to ${CLAUDEDIR}"
+else
+  echo "  Warning: mori-post-compact-brief.sh not found alongside installer — PostCompact hook will not work."
 fi
 
 generate_mcp_hooks() {
@@ -210,6 +219,12 @@ generate_mcp_hooks() {
       {
         "type": "command",
         "command": "\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode precompact"
+      }
+    ],
+    "PostCompact": [
+      {
+        "type": "command",
+        "command": "\"${BRIEF_DST}\""
       }
     ]
   }

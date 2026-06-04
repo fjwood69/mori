@@ -29,6 +29,7 @@
 | `MORI_MSG_HEADLESS_ENABLED` | `false` | Spawn headless `claude` process for incoming `task` messages |
 | `MORI_MSG_HEADLESS_TRUSTED` | `""` | Comma-separated hostnames allowed to trigger headless CC |
 | `MORI_POST_COMPACT_BRIEF` | `true` | Set to `false` to suppress the PostCompact re-grounding prompt |
+| `MORI_POST_COMPACT_WINDOW` | `6h` | Default `since` window for `/brief --post-compact` when the client supplies no marker/session boundary. Accepts `6h`/`30m`/`7d` or ISO-8601. |
 | `MORI_CONSULT_CAPTURE` | `true` | Set to `false` to suppress automatic capture of `consult_advisor` responses as working-tier memories |
 | `MORI_CAPTURE_THINKING` | `false` | Set to `true` to also capture the assistant's thinking blocks (not just text) when extracting reasoning from the `Stop` hook |
 

@@ -124,12 +124,21 @@ mkdir -p "$CLAUDEDIR"
 HOOKS_FILE="$CLAUDEDIR/settings.json"
 SHIPPER_SRC="${SCRIPT_DIR}/mori-ship-event.sh"
 SHIPPER_DST="${CLAUDEDIR}/mori-ship-event.sh"
+BRIEF_SRC="${SCRIPT_DIR}/mori-post-compact-brief.sh"
+BRIEF_DST="${CLAUDEDIR}/mori-post-compact-brief.sh"
 
 if [ -f "$SHIPPER_SRC" ]; then
   cp "$SHIPPER_SRC" "$SHIPPER_DST" && chmod +x "$SHIPPER_DST"
   echo "  Deployed mori-ship-event.sh to ${CLAUDEDIR}"
 else
   echo "  Warning: mori-ship-event.sh not found alongside installer" >&2
+fi
+
+if [ -f "$BRIEF_SRC" ]; then
+  cp "$BRIEF_SRC" "$BRIEF_DST" && chmod +x "$BRIEF_DST"
+  echo "  Deployed mori-post-compact-brief.sh to ${CLAUDEDIR}"
+else
+  echo "  Warning: mori-post-compact-brief.sh not found alongside installer — PostCompact hook will not work." >&2
 fi
 
 if python3 "$INSTALL_PY" merge-settings \

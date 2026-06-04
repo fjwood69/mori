@@ -33,6 +33,26 @@ jobs:
       - name: Ruff format check
         run: ruff format --check mori_advisor/
 
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-asyncio
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        run: pytest -q
+
   docker:
     name: Docker build check
     runs-on: ubuntu-latest

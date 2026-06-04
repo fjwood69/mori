@@ -21,6 +21,49 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
+def normalise_since(since: str) -> str:
+    """Normalise a `since` boundary to the stored `updated_at` format (UTC).
+
+    Accepts:
+      - relative shorthand: "6h", "30m", "7d" (hours / minutes / days)
+      - ISO-8601: "2026-06-04T12:34:56+00:00", "...Z", or already-spaced
+        "2026-06-04 12:34:56"
+
+    Returns a naive-UTC string "YYYY-MM-DD HH:MM:SS" matching SQLite's
+    datetime('now'). This is critical for correctness: `updated_at` is stored
+    space-separated, so a raw ISO string with a "T" separator would compare
+    GREATER than every stored row (ord('T') > ord(' ')) and silently return
+    nothing. Always route a `since` value through here before comparing.
+
+    Raises ValueError on an unparseable value so callers can fall back.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    s = since.strip()
+    if not s:
+        raise ValueError("empty since")
+
+    # Relative shorthand
+    unit_secs = {"d": 86400, "h": 3600, "m": 60}
+    if len(s) >= 2 and s[-1] in unit_secs and s[:-1].lstrip("-").isdigit():
+        delta = timedelta(seconds=int(s[:-1]) * unit_secs[s[-1]])
+        dt = datetime.now(timezone.utc) - delta
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Already in stored form (space-separated, no timezone)
+    if "T" not in s and "+" not in s and not s.endswith("Z"):
+        # Trust it as-is (e.g. "2026-06-04 12:34:56")
+        return s[:19]
+
+    # ISO-8601 — parse, convert to UTC, drop tz and fractional seconds
+    iso = s.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(iso)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 VALID_TYPES = {"project", "profile", "pattern", "decision", "standard", "requirement"}
 VALID_TIERS = {"ephemeral", "working", "canonical"}
 DEFAULT_EXPORT_DIR = "exports"
@@ -154,6 +197,9 @@ class MemoryStore:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mem_versions_time ON memory_versions(created_at)"
         )
+        # Supports the post-compact delta brief (get_memories_changed_since) —
+        # turns the updated_at range scan into an index lookup.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_updated_at ON memories(updated_at)")
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS pending_writes ("
@@ -1171,6 +1217,74 @@ class MemoryStore:
             "global_memories": global_memories,
             "other_projects": other_projects,
         }
+
+    def get_memories_changed_since(
+        self,
+        since: str,
+        project: str | None = None,
+        include_global: bool = True,
+        limit: int = 30,
+    ) -> list[dict]:
+        """Return memories updated after `since`, scoped for the post-compact delta.
+
+        Used by `brief(post_compact=True)`. `since` accepts relative shorthand
+        ("6h"/"7d") or ISO-8601 and is normalised to the stored UTC format via
+        `normalise_since`; the comparison is an exclusive bound
+        (`updated_at > since`). See that helper for why normalisation matters.
+
+        Scope mirrors `get_memories_by_project`:
+          - project given: project-tagged memories + (when include_global) global
+            memories (scope:global / scope:cross-project / profile / pattern)
+          - project None: all non-superseded memories changed in the window
+
+        Returns memory dicts ordered most-recent-first, capped at `limit`.
+        Best-effort: returns [] on parse/DB error rather than raising.
+        """
+        try:
+            since_norm = normalise_since(since)
+        except (ValueError, TypeError):
+            return []
+
+        params: list = [since_norm]
+        if project:
+            tag_value = f"project:{project}"
+            scope = "tags LIKE ?"
+            params.append(f'%"{tag_value}"%')
+            if include_global:
+                scope = (
+                    "(tags LIKE ? "
+                    "OR tags LIKE '%\"scope:global\"%' "
+                    "OR tags LIKE '%\"scope:cross-project\"%' "
+                    "OR type IN ('profile', 'pattern'))"
+                )
+            sql = f"""
+                SELECT * FROM memories
+                WHERE updated_at > ?
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                  AND {scope}
+                ORDER BY updated_at DESC
+                LIMIT ?
+            """
+        else:
+            sql = """
+                SELECT * FROM memories
+                WHERE updated_at > ?
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                ORDER BY updated_at DESC
+                LIMIT ?
+            """
+        params.append(limit)
+
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.Error as e:
+            logger.warning("get_memories_changed_since failed: %s", e)
+            return []
+        finally:
+            conn.close()
+
+        return [self._row_to_dict(r) for r in rows]
 
     def session_summary(self, session_id: str) -> str:
         """Show all memories attributed to a given session."""

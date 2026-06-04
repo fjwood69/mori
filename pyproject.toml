@@ -5,3 +5,7 @@ target-version = "py313"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]  # line length enforced by formatter, not linter
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

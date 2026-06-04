@@ -153,6 +153,17 @@ class SQLiteStore(BaseStore):
     def get_memories_by_project(self, project: str, include_global: bool = True) -> dict:
         return self._mem.get_memories_by_project(project, include_global=include_global)
 
+    def get_memories_changed_since(
+        self,
+        since: str,
+        project: str | None = None,
+        include_global: bool = True,
+        limit: int = 30,
+    ) -> list[dict]:
+        return self._mem.get_memories_changed_since(
+            since, project=project, include_global=include_global, limit=limit
+        )
+
     def session_summary(self, session_id: str) -> str:
         return self._mem.session_summary(session_id)
 

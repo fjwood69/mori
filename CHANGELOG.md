@@ -1,5 +1,37 @@
 # Changelog
 
+## v2.1.27 — `/brief --post-compact` delta re-grounding
+
+- **Why:** the `PostCompact` hook fired a plain `/brief`, which re-injects the *entire*
+  memory base right after compaction shrank the context — and runs the per-memory
+  `check_freshness` LLM scan every time. At team scale that doesn't scale and buries the
+  few things that actually changed. The dedicated flag was promised in v2.1.0 ("planned
+  for v2.1; plain /brief is the interim approach") but never built. This implements it as
+  a **delta-since-last-brief**.
+- **`brief(post_compact=True, since=…)`**: a lean path that surfaces only what changed in
+  shared state — new/updated memories (project + global), decisions **superseded** under
+  you, and fresh evictions — then a one-line dream state. It **never** runs the freshness
+  check, the full memory list, the standards dump, or the other-project index. Delta lists
+  cap at 30 with a "…N more — run a full /brief" pointer (no silent truncation, no
+  auto-escalation).
+- **New store method `get_memories_changed_since`** (SQLite + Postgres, with an
+  `updated_at` index on both) and a shared `normalise_since` helper that converts
+  `6h`/`7d`/ISO-8601 to the stored UTC form — critical so a `T`-separated ISO string
+  doesn't sort greater than every space-separated `updated_at` row and silently match
+  nothing. Exclusive `> since` bound; documented as best-effort re-grounding, not
+  exactly-once consumption.
+- **`since` is session-aware**, resolved client-side by the `/brief` skill: a
+  `.mori-last-brief` marker (stamped every brief) → session-start → the server default
+  window `MORI_POST_COMPACT_WINDOW` (`6h`).
+- **Hook + installers**: the `PostCompact` shipper now instructs `/brief --post-compact`.
+  The Cline and Cursor installers gained PostCompact parity (deploy the brief shipper +
+  register the hook), matching Claude Code and Antigravity.
+- **Tests**: new pytest suite (`tests/`) covering `normalise_since`, the delta store
+  method (boundary + scoping), and the guarantee that the post-compact path skips
+  `check_freshness`. CI now runs pytest alongside ruff.
+- **Docs fix**: corrected the v2.1.0 hook path (`~/.claude/mori-post-compact-brief.sh`,
+  was wrongly documented under `~/.claude/hooks/`).
+
 ## v2.1.26 — Reboot-safe GCE deployment
 
 - **Why:** a reboot re-runs the startup script, which fetched every secret from Secret Manager
@@ -227,7 +259,7 @@ and protection flag preservation on update.
 
 ### New: PostCompact re-grounding hook
 
-A `PostCompact` hook (`~/.claude/hooks/post-compact-brief.sh`) is now installed
+A `PostCompact` hook (`~/.claude/mori-post-compact-brief.sh`) is now installed
 alongside the other Mori lifecycle hooks. It fires after every context compression
 and injects a prompt instructing the agent to run `/brief` — re-establishing NATS
 messages, pending mori-msg items, and session state from before compaction.

@@ -18,6 +18,7 @@ HOOK_EVENTS = (
     "UserPromptSubmit",
     "Stop",
     "PreCompact",
+    "PostCompact",
 )
 
 MORI_MCP_ALLOW = [
@@ -67,7 +68,12 @@ MORI_MCP_ALLOW = [
 
 
 def _is_mori_command(cmd: str) -> bool:
-    return "mori-ship-event" in cmd or "/api/events/raw" in cmd or "/api/precompact" in cmd
+    return (
+        "mori-ship-event" in cmd
+        or "/api/events/raw" in cmd
+        or "/api/precompact" in cmd
+        or "mori-post-compact-brief" in cmd
+    )
 
 
 def _is_mori_hook(entry: dict[str, Any]) -> bool:
@@ -161,6 +167,12 @@ def merge_settings(
     raw_cmd = _hook_command(shipper, mori_url, client, api_key, "raw")
     precompact_cmd = _hook_command(shipper, mori_url, client, api_key, "precompact")
 
+    # PostCompact runs the brief-shipper (no mode args) — it lives alongside the
+    # ship-event shipper, deployed by the .sh/.ps1 installer.
+    brief_ext = ".ps1" if shipper.lower().endswith(".ps1") else ".sh"
+    brief_shipper = str(Path(shipper).parent / f"mori-post-compact-brief{brief_ext}")
+    postcompact_cmd = _hook_command(brief_shipper, mori_url, client, api_key, "postcompact")
+
     if settings_path.is_file():
         with settings_path.open(encoding="utf-8") as f:
             settings: dict[str, Any] = json.load(f)
@@ -169,7 +181,12 @@ def merge_settings(
 
     hooks = settings.setdefault("hooks", {})
     for event in HOOK_EVENTS:
-        cmd = precompact_cmd if event == "PreCompact" else raw_cmd
+        if event == "PreCompact":
+            cmd = precompact_cmd
+        elif event == "PostCompact":
+            cmd = postcompact_cmd
+        else:
+            cmd = raw_cmd
         hooks[event] = _merge_hook_list(hooks.get(event, []), cmd)
 
     perms = settings.setdefault("permissions", {})

@@ -45,7 +45,7 @@ function Write-Utf8File {
 function Test-MoriHookCommand {
     param([string]$Command)
     if ([string]::IsNullOrWhiteSpace($Command)) { return $false }
-    return ($Command -like "*mori-ship-event*" -or $Command -like "*/api/events/raw*" -or $Command -like "*/api/precompact*")
+    return ($Command -like "*mori-ship-event*" -or $Command -like "*/api/events/raw*" -or $Command -like "*/api/precompact*" -or $Command -like "*mori-post-compact-brief*")
 }
 
 function Test-MoriHookEntry {
@@ -128,9 +128,13 @@ function Update-HookEntry {
 function Merge-MoriSettings {
     param([string]$Path, [string]$ShipperPath, [string]$Url, [string]$Client, [string]$Key)
     $cmds = Get-MoriShipperCommands -ShipperPath $ShipperPath -Url $Url -Client $Client -Key $Key
+    # PostCompact runs the brief-shipper (no mode args), deployed alongside ship-event.
+    $briefPath = Join-Path (Split-Path $ShipperPath -Parent) "mori-post-compact-brief.ps1"
+    $postcompactCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$briefPath`""
     $events = @{
         PostToolUse = $cmds.raw; PostToolUseFailure = $cmds.raw
         UserPromptSubmit = $cmds.raw; Stop = $cmds.raw; PreCompact = $cmds.precompact
+        PostCompact = $postcompactCmd
     }
 
     if (Test-Path $Path) {
@@ -351,6 +355,14 @@ if (Test-Path $ShipperSrc) {
     Write-Host "  Deployed mori-ship-event.ps1" -ForegroundColor Cyan
 } else {
     Write-Host "  Warning: mori-ship-event.ps1 not found" -ForegroundColor Yellow
+}
+$BriefDst = Join-Path $ClaudeDir "mori-post-compact-brief.ps1"
+$BriefSrc = Join-Path $PSScriptRoot "mori-post-compact-brief.ps1"
+if (Test-Path $BriefSrc) {
+    Copy-Item $BriefSrc $BriefDst -Force
+    Write-Host "  Deployed mori-post-compact-brief.ps1" -ForegroundColor Cyan
+} else {
+    Write-Host "  Warning: mori-post-compact-brief.ps1 not found — PostCompact hook will not work." -ForegroundColor Yellow
 }
 try {
     Merge-MoriSettings -Path (Join-Path $ClaudeDir "settings.json") -ShipperPath $ShipperDst -Url $MoriUrl -Client $ClientName -Key $ApiKey

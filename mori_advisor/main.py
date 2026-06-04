@@ -324,11 +324,114 @@ def _build_prompt(
 # ── Brief tool (session bootstrap) ────────────────────────────────────────
 
 
+async def _post_compact_brief(project: str | None = None, since: str | None = None) -> str:
+    """Lightweight delta re-grounding after context compaction.
+
+    Surfaces only what changed in shared state since `since` — new/updated
+    memories, decisions superseded under you, and fresh evictions — and skips the
+    static bulk: the full memory base, the standards dump, and crucially the
+    per-memory LLM `check_freshness` scan. Driven by the `--post-compact` brief
+    skill flag (fired by the PostCompact hook).
+
+    `since` is the client-supplied boundary (marker file → session start →
+    default window); absent, it falls back to `MORI_POST_COMPACT_WINDOW`
+    (default "6h"). Best-effort, not exactly-once consumption — two memories at
+    the same second straddling the boundary may be missed or repeated; for
+    re-grounding that is acceptable. See `normalise_since` for boundary
+    semantics.
+    """
+    from mori_advisor.memory_store import normalise_since
+
+    cap = 30
+    raw_since = since or os.environ.get("MORI_POST_COMPACT_WINDOW", "6h")
+    try:
+        since_norm = normalise_since(raw_since)
+    except (ValueError, TypeError):
+        raw_since = "6h"
+        since_norm = normalise_since(raw_since)
+
+    header = f"**Mori Brief (post-compact delta since {since_norm} UTC)**"
+    if project:
+        header += f" — project: {project}"
+    parts: list[str] = [header]
+    changed_any = False
+
+    # Changed memories (new / updated) — store does the time + scope filtering
+    try:
+        changed = await _a(
+            memory_store.get_memories_changed_since(raw_since, project=project, limit=cap + 1)
+        )
+        if changed:
+            changed_any = True
+            lines = ["\n**Changed memories:**"]
+            for m in changed[:cap]:
+                created = str(m.get("created_at", ""))[:19]
+                marker = "+" if created and created > since_norm else "~"
+                tags = m.get("tags") or []
+                tag_str = f" [{', '.join(tags)}]" if tags else ""
+                lines.append(f"- {marker} **{m['name']}**: {m['title']}{tag_str}")
+            if len(changed) > cap:
+                lines.append(
+                    f"  …{len(changed) - cap} more — run a full /brief if you need the rest."
+                )
+            parts.append("\n".join(lines))
+    except Exception as e:
+        parts.append(f"**Changed memories:** error ({e})")
+
+    # Superseded since — highest-value signal: a decision may have been overturned
+    # under you mid-task. Time-filtered client-side on the exclusive [:19] bound.
+    try:
+        sup = await _a(store.get_superseded_memories())
+        recent = [s for s in (sup or []) if str(s.get("updated_at", ""))[:19] > since_norm]
+        if recent:
+            changed_any = True
+            lines = ["\n**⚠ Superseded since:**"]
+            for s in recent[:cap]:
+                lines.append(f"- **{s['name']}** → {s['superseded_by']} ({s['title']})")
+            if len(recent) > cap:
+                lines.append(f"  …{len(recent) - cap} more.")
+            parts.append("\n".join(lines))
+    except Exception:
+        pass
+
+    # Evicted since
+    try:
+        evicts = await _a(store.get_eviction_summary())
+        recent_e = [e for e in (evicts or []) if str(e.get("detected_at", ""))[:19] > since_norm]
+        if recent_e:
+            changed_any = True
+            lines = ["\n**Evicted since:**"]
+            for e in recent_e[:cap]:
+                lines.append(f"- **{e['memory_name']}**: {e['reason']}")
+            if len(recent_e) > cap:
+                lines.append(f"  …{len(recent_e) - cap} more.")
+            parts.append("\n".join(lines))
+    except Exception:
+        pass
+
+    if not changed_any:
+        parts.append("\nNothing changed in shared state since last brief.")
+
+    # Dream state one-liner (cheap) — no freshness check on this path
+    try:
+        from mori_advisor.dream import DreamPipeline
+
+        dp = DreamPipeline(db_path=DATA_DIR / "memories.db", bifrost_client=bifrost, store=store)
+        status = await dp.get_status()
+        parts.append(f"\n**Dream state:** {status}")
+    except Exception:
+        pass
+
+    return "\n".join(parts)
+
+
 @mcp.tool()
 async def brief(
     project: str | None = None,
     include_global: bool = True,
     include_index: bool = True,
+    post_compact: bool = False,
+    since: str | None = None,
 ) -> str:
     """Session bootstrap: load shared memories and team standards.
 
@@ -346,8 +449,18 @@ async def brief(
                         pattern memories (default True).
         include_index: Show a count-only index of memories from other projects
                        (default True).
+        post_compact: Lightweight delta re-grounding after context compaction —
+                      returns only what changed since `since`, skipping the full
+                      memory base, standards, and the LLM freshness check. Fired
+                      by the `--post-compact` brief skill flag / PostCompact hook.
+        since: Boundary for the post_compact delta — relative ("6h"/"7d") or
+               ISO-8601. Ignored unless post_compact is True. Defaults to
+               MORI_POST_COMPACT_WINDOW ("6h") when absent.
     """
     from datetime import datetime, timezone
+
+    if post_compact:
+        return await _post_compact_brief(project=project, since=since)
 
     parts: list[str] = []
 

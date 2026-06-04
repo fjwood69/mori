@@ -81,7 +81,7 @@ Small team coherence. Requires v2.0 foundation.
 
 **Shipped:**
 - v2.1.0: Named API key authentication — `MORI_API_KEYS=name:secret,...`, ASGI middleware covering all MCP tools and HTTP endpoints, backward compat with `MORI_ADVISOR_API_KEY`
-- v2.1.0: PostCompact re-grounding hook — `~/.claude/hooks/post-compact-brief.sh`, opt-out via `MORI_POST_COMPACT_BRIEF=false`
+- v2.1.0: PostCompact re-grounding hook — `~/.claude/mori-post-compact-brief.sh`, opt-out via `MORI_POST_COMPACT_BRIEF=false`
 - v2.1.6: Postgres dream transaction poisoning fix — `INSERT … ON CONFLICT DO UPDATE` upsert; origin array merging, canonical tier and protection flag preservation on update
 - v2.1.8: Async Postgres ingestion pipeline; MCP endpoint now requires API key (removed from `OPEN_PATHS`)
 - v2.1.9: Postgres `brief()` interface fixes — `get_memories_by_project()` and `check_freshness()` corrected for asyncpg
@@ -96,6 +96,7 @@ Small team coherence. Requires v2.0 foundation.
 - v2.1.24: Assistant reasoning capture — Stop hook ships a bounded transcript tail; server extracts the turn's assistant text into `session_events.assistant_text`; dream distills it
 - v2.1.25: GCE app containers (`mori-advisor`/`ingestion`/`msg`) managed by rootless **systemd Quadlet** — one declarative source of truth (units injected verbatim by Terraform), `dream` cron → `dream.timer`, CD switched to `podman pull` + `systemctl --user restart`; `mori-pg` stays imperative. Lays the substrate for horizontal worker scaling (template units)
 - v2.1.26: Reboot-safe GCE deployment — startup reuses the persisted `/data/mori-advisor/.env` on reboot (Secret Manager consulted only on first boot, so a denied/unreachable secret can't take a running instance down); system-assigned mori uid with `pgdata` ownership derived from `/etc/subuid`; `MORI_PG_PASSWORD` now a Terraform-managed secret with a durable `secretAccessor` grant
+- v2.1.27: `/brief --post-compact` delta re-grounding — `brief(post_compact=True, since=…)` surfaces only changed/superseded/evicted memories since the last brief, skipping the full base + standards + freshness scan; `get_memories_changed_since` (SQLite + Postgres, `updated_at` index); session-aware `since` (`.mori-last-brief` marker → session start → `MORI_POST_COMPACT_WINDOW`); Cline + Cursor installer parity; pytest suite + CI
 
 **Remaining:**
 
@@ -108,7 +109,6 @@ Small team coherence. Requires v2.0 foundation.
 | P1 | **GitHub inbound ingestion** — issues, PR comments, commit history → memory context |
 | P1 | **Path-aware memory surfacing** — memories tagged to file/directory paths surface in `/brief` when working in that context |
 | P1 | **Streaming SSE progress** on ingest |
-| P1 | **`/brief --post-compact`** — lightweight re-grounding after context compression; auto-invoked via `PostCompact` hook in all installer scripts |
 
 ---
 

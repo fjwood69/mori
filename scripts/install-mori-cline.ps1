@@ -83,12 +83,20 @@ $PluginPath = "$MoriRepoRoot\extensions\mori-cline-plugin"
 $ClaudeDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { "$env:USERPROFILE\.claude" }
 $ShipperSrc = "$PSScriptRoot\mori-ship-event.ps1"
 $ShipperDst = "$ClaudeDir\mori-ship-event.ps1"
+$BriefSrc = "$PSScriptRoot\mori-post-compact-brief.ps1"
+$BriefDst = "$ClaudeDir\mori-post-compact-brief.ps1"
 New-Item -ItemType Directory -Force -Path $ClaudeDir | Out-Null
 if (Test-Path $ShipperSrc) {
     Copy-Item -Path $ShipperSrc -Destination $ShipperDst -Force
     Write-Host "  Deployed mori-ship-event.ps1 to $ClaudeDir" -ForegroundColor Cyan
 } else {
     Write-Host "  Warning: mori-ship-event.ps1 not found alongside installer - hooks will not work correctly." -ForegroundColor Yellow
+}
+if (Test-Path $BriefSrc) {
+    Copy-Item -Path $BriefSrc -Destination $BriefDst -Force
+    Write-Host "  Deployed mori-post-compact-brief.ps1 to $ClaudeDir" -ForegroundColor Cyan
+} else {
+    Write-Host "  Warning: mori-post-compact-brief.ps1 not found alongside installer - PostCompact hook will not work." -ForegroundColor Yellow
 }
 
 # Write UTF-8 without BOM (required for JSON and MD files)
@@ -157,9 +165,11 @@ function Get-ClineConfigJson {
     $base = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ShipperDst`" -MoriUrl `"$MoriUrl`" -Client `"$ClientName`"${apiFlag}"
     $rawCmd  = "$base -Mode raw"
     $compCmd = "$base -Mode precompact"
+    $briefCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$BriefDst`""
 
     $entry        = @([PSCustomObject]@{ type = "command"; command = $rawCmd })
     $compactEntry = @([PSCustomObject]@{ type = "command"; command = $compCmd })
+    $briefEntry   = @([PSCustomObject]@{ type = "command"; command = $briefCmd })
 
     return [PSCustomObject]@{
         "cline.mcpServers" = [PSCustomObject]@{
@@ -174,6 +184,7 @@ function Get-ClineConfigJson {
             UserPromptSubmit   = $entry
             Stop               = $entry
             PreCompact         = $compactEntry
+            PostCompact        = $briefEntry
         }
     }
 }

@@ -98,6 +98,15 @@ class BaseStore(ABC):
     def get_memories_by_project(self, project: str, include_global: bool = True) -> dict: ...
 
     @abstractmethod
+    def get_memories_changed_since(
+        self,
+        since: str,
+        project: str | None = None,
+        include_global: bool = True,
+        limit: int = 30,
+    ) -> list[dict]: ...
+
+    @abstractmethod
     def session_summary(self, session_id: str) -> str: ...
 
     @abstractmethod

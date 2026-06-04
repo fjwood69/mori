@@ -15,9 +15,9 @@ Loads shared memories and team standards into context at the start of every sess
 - Team standards count with category breakdown (e.g. "5 standards loaded — coding=2, security=2, ethos=1")
 - Dream pipeline state (watermark, backlog)
 
-**Usage:** Runs automatically at session start. `/brief` to re-run manually — including after context compression (PostCompact hook prompts you to run `/brief` when this happens).
+**Usage:** Runs automatically at session start. `/brief` to re-run manually — including after context compression (the PostCompact hook prompts you to run `/brief --post-compact` when this happens).
 
-**After context compression:** Run `/brief` to re-ground. A dedicated `/brief --post-compact` flag is planned for v2.1 to pull the compact summary and re-ground in one step; plain `/brief` is the correct interim approach.
+**After context compression:** the PostCompact hook fires `/brief --post-compact` — a lightweight **delta** that surfaces only what changed in shared state since your last brief (new/updated memories, decisions superseded under you, fresh evictions, pending `mori-msg`, NATS traffic). It deliberately skips the full memory base, the standards dump, and the per-memory freshness scan — the working context is already preserved by the compaction summary. Delta lists cap at 30; when truncated it points you to run a full `/brief` if you need the rest.
 
 **Project-scoped loading:**
 
@@ -26,6 +26,7 @@ Loads shared memories and team standards into context at the start of every sess
 | `/brief` | Unscoped — all memories, up to limit |
 | `/brief --project mori` | Scoped to `mori` — full body for project memories, global memories always included, lightweight index of other projects |
 | `/brief --auto` | Auto-detect project from git working directory (checks `.mori-project` file → `MORI_PROJECT` env → `git rev-parse --show-toplevel`) |
+| `/brief --post-compact` | Delta re-grounding after compaction — changed/superseded/evicted since the last brief only. `since` is resolved from the `.mori-last-brief` marker → session start → `MORI_POST_COMPACT_WINDOW` (default `6h`) |
 
 Scoped briefs load full memory bodies for the target project rather than truncating at the global cap — the right memories in full, not a truncated slice of everything.
 

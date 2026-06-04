@@ -6,8 +6,26 @@
 Parse the raw input for:
 - `--project <name>`: scope the brief to a specific project
 - `--auto`: detect project from the current git working directory
+- `--post-compact`: lightweight **delta** re-grounding after a context compaction —
+  surfaces only what changed in shared state since the last brief, not the full base.
+  Fired automatically by the Mori `PostCompact` hook; can also be run manually.
 
 If no arguments: run the standard unscoped brief.
+
+## Marker file
+
+The brief boundary is tracked in a per-config-dir marker:
+
+```
+${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.mori-last-brief
+```
+
+It holds the UTC ISO-8601 timestamp of the most recent brief. Stamp it (overwrite
+with the current UTC time) at the **end** of every brief run, in all modes:
+
+```bash
+date -u +%Y-%m-%dT%H:%M:%SZ > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.mori-last-brief"
+```
 
 ## Execution
 
@@ -23,12 +41,33 @@ If no arguments: run the standard unscoped brief.
 
 ### 2. Call the MCP tool
 
+**Standard brief (default):**
 - With project: call `mori-brief` with `project=<name>`
 - Without project: call `mori-brief` (no params — loads all memories up to cap)
 
+**Post-compact brief (`--post-compact`):** resolve the `since` boundary first
+(session-aware), then call the delta tool.
+
+1. **Read the marker** `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.mori-last-brief`. If it
+   exists and is non-empty, use its contents as `since`.
+2. **Else derive session start** (best-effort): the start time of the current session
+   transcript `.jsonl` (e.g. the file's first-event timestamp, or its creation time).
+3. **Else omit `since`** and let the server default window (`MORI_POST_COMPACT_WINDOW`,
+   default `6h`) apply.
+
+Then call `mori-brief` with `post_compact=true`, plus `project=<name>` if resolved and
+`since=<resolved>` if found:
+
+```
+mori-brief(post_compact=true, project="<name>", since="<iso-or-omitted>")
+```
+
+The delta lists are capped; if the tool reports "…N more — run a full /brief if you
+need the rest", relay that pointer rather than auto-running a full brief.
+
 ### 3. Check pending messages
 
-Call `mori-msg_recv(unacked=True)`.
+Call `mori-msg_recv(unacked=True)` (both modes — new messages are part of the delta).
 
 If messages are returned, surface them after the memory summary:
 
@@ -39,6 +78,19 @@ If messages are returned, surface them after the memory summary:
 
 Skip this section silently if no pending messages or if `mori-msg_recv` fails (daemon may not be running).
 
-### 4. Report
+On `--post-compact`, also catch cross-device traffic that arrived during the session:
+call `mori-nats_sub(replay=true, wait=2)` and surface anything new.
 
-Report "Ready" — summarise what was loaded (memory counts, project scope, dream state, pending message count if any). Do not take autonomous actions.
+### 4. Stamp the marker
+
+Write the current UTC time to the marker file (see **Marker file** above). Do this in
+both modes, after the tool calls.
+
+### 5. Report
+
+**Standard brief:** report "Ready" — summarise what was loaded (memory counts, project
+scope, dream state, pending message count if any). Do not take autonomous actions.
+
+**Post-compact brief:** report a one-line **abbreviated** re-grounding summary, e.g.
+"Re-grounded — N changed, M superseded, K messages". Do not re-dump the full base; the
+working context is already preserved by the compaction summary.

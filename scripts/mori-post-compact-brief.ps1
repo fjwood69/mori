@@ -8,10 +8,10 @@ if ($env:MORI_POST_COMPACT_BRIEF -eq "false") {
 }
 
 $output = @{
-    systemMessage     = "Context compressed — running /brief to re-ground."
+    systemMessage     = "Context compressed — running /brief --post-compact to re-ground."
     hookSpecificOutput = @{
         hookEventName   = "PostCompact"
-        additionalContext = "Context was just compressed. Run /brief to re-ground before continuing -- this pulls the latest NATS messages, pending mori-msg items, and session state from before compaction."
+        additionalContext = "Context was just compressed. Run /brief --post-compact to re-ground before continuing -- a lightweight delta that surfaces only what changed in shared state since the last brief (new/superseded/evicted memories, pending mori-msg items, NATS traffic), without re-dumping the full memory base."
     }
 } | ConvertTo-Json -Depth 5 -Compress
 

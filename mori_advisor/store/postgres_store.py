@@ -108,6 +108,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_tier   ON memories (tier);
 CREATE INDEX IF NOT EXISTS idx_memories_type   ON memories (type);
 CREATE INDEX IF NOT EXISTS idx_memories_name   ON memories (name);
 CREATE INDEX IF NOT EXISTS idx_memories_tags   ON memories USING gin(tags);
+CREATE INDEX IF NOT EXISTS idx_memories_updated_at ON memories (updated_at);
 
 CREATE TABLE IF NOT EXISTS memory_versions (
     version_id          BIGSERIAL PRIMARY KEY,
@@ -643,6 +644,75 @@ class PostgresStore(BaseStore):
             "global_memories": global_memories,
             "other_projects": other_projects,
         }
+
+    async def get_memories_changed_since(
+        self,
+        since: str,
+        project: str | None = None,
+        include_global: bool = True,
+        limit: int = 30,
+    ) -> list[dict]:
+        """Postgres parity for the post-compact delta brief.
+
+        `since` accepts relative shorthand ("6h"/"7d") or ISO-8601; it is routed
+        through `normalise_since` (handles shorthand) then `_ts` to a tz-aware UTC
+        datetime, so the TIMESTAMPTZ comparison is correct regardless of the
+        client's clock representation. Exclusive bound (`updated_at > since`).
+        `updated_at` is stringified in the result to match the SQLite contract.
+        """
+        from mori_advisor.memory_store import normalise_since
+
+        self._ensure_pool()
+        try:
+            since_dt = _ts(normalise_since(since))
+        except (ValueError, TypeError):
+            return []
+        if since_dt is None:
+            return []
+
+        def _row_to_dict(row) -> dict:
+            r = dict(row)
+            raw = r.get("tags")
+            r["tags"] = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
+            if r.get("updated_at") is not None:
+                r["updated_at"] = str(r["updated_at"])
+            return r
+
+        params: list[Any] = [since_dt]
+        if project:
+            tag_value = f"project:{project}"
+            params.append(json.dumps([tag_value]))
+            if include_global:
+                scope = (
+                    "(tags @> $2::jsonb "
+                    "OR tags @> '[\"scope:global\"]'::jsonb "
+                    "OR tags @> '[\"scope:cross-project\"]'::jsonb "
+                    "OR type IN ('profile', 'pattern'))"
+                )
+            else:
+                scope = "tags @> $2::jsonb"
+            params.append(limit)
+            sql = f"""
+                SELECT * FROM memories
+                WHERE updated_at > $1
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                  AND {scope}
+                ORDER BY updated_at DESC
+                LIMIT $3
+            """
+        else:
+            params.append(limit)
+            sql = """
+                SELECT * FROM memories
+                WHERE updated_at > $1
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                ORDER BY updated_at DESC
+                LIMIT $2
+            """
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [_row_to_dict(r) for r in rows]
 
     async def session_summary(self, session_id: str) -> str:
         self._ensure_pool()
