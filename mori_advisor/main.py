@@ -2016,6 +2016,84 @@ def _map_hook_payload(raw: dict, client_override: str = "") -> EventLogEntry:
     )
 
 
+# ── Read API (REST) ──────────────────────────────────────────────────────────
+# Auth-gated JSON read endpoints for NON-MCP consumers (web dashboard, monitoring,
+# CI, curl) that can't easily speak the MCP protocol. ApiKeyMiddleware guards these
+# automatically; CORS is handled by the middleware outside auth (see http_app build).
+
+
+def _read_api_params(request: Request) -> dict:
+    """Parse + clamp the common read-API query params. Pure — unit-tested directly
+    (HTTP contract tests are too coarse for param edge cases)."""
+    qp = request.query_params
+    try:
+        limit = int(qp.get("limit", 50))
+    except (ValueError, TypeError):
+        limit = 50
+    return {
+        "query": qp.get("query") or None,
+        "type_filter": qp.get("type") or None,
+        "tag": qp.get("tag") or None,
+        "client": qp.get("client") or None,
+        "since": qp.get("since") or None,
+        "limit": max(1, min(limit, 200)),  # clamp to [1, 200]
+    }
+
+
+@mcp.custom_route("/api/memories", methods=["GET"])
+async def get_memories(request: Request) -> JSONResponse:
+    """Ranked full-text (or recency) search over the shared memory store → JSON.
+
+    `?query=&type=&tag=&client=&since=&limit=` → {"memories": [...], "count": N}.
+    """
+    try:
+        p = _read_api_params(request)
+        memories = await _a(
+            memory_store.search_json(
+                query=p["query"],
+                type_filter=p["type_filter"],
+                tag=p["tag"],
+                client=p["client"],
+                since=p["since"],
+                limit=p["limit"],
+            )
+        )
+        return JSONResponse({"memories": memories, "count": len(memories)})
+    except Exception as e:
+        logger.error("GET /api/memories failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/events", methods=["GET"])
+async def get_events(request: Request) -> JSONResponse:
+    """Read session events, newest first → JSON. Append-only log — use
+    `since_event_id` as a stable cursor for pagination.
+
+    `?session_id=&since=&since_event_id=&client=&limit=` → {"events": [...], "count": N}.
+    """
+    try:
+        qp = request.query_params
+        try:
+            limit = max(1, min(int(qp.get("limit", 50)), 200))
+        except (ValueError, TypeError):
+            limit = 50
+        sid = qp.get("since_event_id")
+        since_event_id = int(sid) if sid and sid.lstrip("-").isdigit() else None
+        events = await _a(
+            session_log.read_events(
+                session_id=qp.get("session_id") or None,
+                since_event_id=since_event_id,
+                since=qp.get("since") or None,
+                client=qp.get("client") or None,
+                limit=limit,
+            )
+        )
+        return JSONResponse({"events": events, "count": len(events)})
+    except Exception as e:
+        logger.error("GET /api/events failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @mcp.custom_route("/api/events", methods=["POST"])
 async def log_event(request: Request) -> JSONResponse:
     """Receive a lifecycle event from a hook and persist it."""
@@ -2586,14 +2664,30 @@ if __name__ == "__main__":
     init_auth()
     import uvicorn
     from starlette.middleware import Middleware
+    from starlette.middleware.cors import CORSMiddleware
 
     from mori_advisor.middleware import ApiKeyMiddleware
+
+    # CORS must sit OUTSIDE the auth middleware: a browser dashboard sends an OPTIONS
+    # preflight with the custom X-Api-Key header, which ApiKeyMiddleware would 401.
+    # CORSMiddleware answers preflight before auth runs. Origins via MORI_CORS_ORIGINS
+    # (comma-separated; default "*" — the routes are still API-key gated; no cookies).
+    _cors = os.environ.get("MORI_CORS_ORIGINS", "*").strip()
+    _cors_origins = ["*"] if _cors == "*" else [o.strip() for o in _cors.split(",") if o.strip()]
 
     # Build the ASGI app explicitly so custom_route registrations are always
     # included regardless of FastMCP version or Python version.
     app = mcp.http_app(
         transport="streamable-http",
-        middleware=[Middleware(ApiKeyMiddleware)],
+        middleware=[
+            Middleware(
+                CORSMiddleware,
+                allow_origins=_cors_origins,
+                allow_methods=["GET", "OPTIONS"],
+                allow_headers=["x-api-key", "content-type"],
+            ),
+            Middleware(ApiKeyMiddleware),
+        ],
     )
 
     uvicorn.run(

@@ -79,6 +79,16 @@ def normalise_since(since: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _since_or_none(since: str | None) -> str | None:
+    """Normalise a `since` boundary, or None if absent/unparseable (filter use)."""
+    if not since:
+        return None
+    try:
+        return normalise_since(since)
+    except (ValueError, TypeError):
+        return None
+
+
 VALID_TYPES = {"project", "profile", "pattern", "decision", "standard", "requirement"}
 VALID_TIERS = {"ephemeral", "working", "canonical"}
 DEFAULT_EXPORT_DIR = "exports"
@@ -846,6 +856,103 @@ class MemoryStore:
         lines.append(f"\nTotal: {len(rows)} memories")
         return "\n".join(lines)
 
+    def _build_search_sql(
+        self, conn, select_cols, query, type_filter, tag, client, since_iso, limit
+    ):
+        """Build (sql, params) for a memory search — shared by search() and search_json().
+
+        `select_cols` are bare memories columns; the FTS path prefixes them with the
+        joined alias. Uses FTS5 (ranked, stemmed) when a query is present and the index
+        exists; otherwise a recency-ordered query (LIKE fallback for the no-FTS build).
+        """
+        has_fts = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories_fts'"
+            ).fetchone()
+            is not None
+        )
+        match = _fts_query(query) if (query and has_fts) else ""
+        use_fts = bool(match)
+        col = "m." if use_fts else ""
+        cols = ", ".join(f"{col}{c}" for c in select_cols)
+        params: list = []
+
+        if use_fts:
+            sql = (
+                f"SELECT {cols} FROM memories_fts f JOIN memories m ON m.id = f.rowid "
+                "WHERE memories_fts MATCH ?"
+            )
+            params.append(match)
+        else:
+            sql = f"SELECT {cols} FROM memories WHERE 1=1"
+            if query:
+                sql += " AND (name LIKE ? OR title LIKE ? OR description LIKE ? OR body LIKE ?)"
+                like = f"%{query}%"
+                params.extend([like, like, like, like])
+
+        if type_filter:
+            sql += f" AND {col}type = ?"
+            params.append(type_filter)
+        if tag:
+            sql += f" AND {col}tags LIKE ?"
+            params.append(f'%"{tag}"%')
+        if client:
+            sql += f" AND {col}origin_clients LIKE ?"
+            params.append(f'%"{client}"%')
+        if since_iso:
+            sql += f" AND {col}updated_at >= ?"
+            params.append(since_iso)
+
+        if use_fts:
+            # bm25 weights name/title > description > body (lower = better); recency tiebreak.
+            sql += (
+                f" ORDER BY bm25(memories_fts, 10.0, 10.0, 5.0, 1.0), {col}updated_at DESC LIMIT ?"
+            )
+        else:
+            sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+        return sql, params
+
+    def search_json(
+        self,
+        query: str | None = None,
+        type_filter: str | None = None,
+        tag: str | None = None,
+        client: str | None = None,
+        since: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Structured search for the REST API — list of memory dicts with a stable shape
+        (name, title, type, tier, tags, updated_at, description). FTS-ranked when a query
+        is given, recency otherwise.
+
+        Intentionally does NOT bump retrieval_count: this is API surfacing for
+        dashboards/integrations, not agent recall (see search() for the recall path).
+        Don't "fix" the omission.
+        """
+        import sqlite3
+
+        cols = ["name", "title", "type", "tier", "tags", "updated_at", "description"]
+        since_iso = _since_or_none(since)
+        conn = self._get_conn()
+        try:
+            sql, params = self._build_search_sql(
+                conn, cols, query, type_filter, tag, client, since_iso, limit
+            )
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.Error as e:
+            logger.warning("search_json error: %s", e)
+            return []
+        finally:
+            conn.close()
+
+        out = []
+        for row in rows:
+            d = dict(zip(cols, row))
+            d["tags"] = self._parse_tags(d.get("tags") or "[]")
+            out.append(d)
+        return out
+
     def search(
         self,
         query: str | None = None,
@@ -860,76 +967,20 @@ class MemoryStore:
         Supports additional filtering by type, tag, client, and time frame.
         """
         import sqlite3
-        from datetime import datetime, timedelta, timezone
 
-        # Normalise the `since` shorthand ("7d"/"30d") or ISO date up front.
-        since_iso = None
-        if since:
-            try:
-                if since.endswith("d"):
-                    days = int(since[:-1])
-                    since_iso = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    )
-                else:
-                    since_iso = since
-            except (ValueError, TypeError):
-                since_iso = None
-
+        since_iso = _since_or_none(since)
         conn = self._get_conn()
         try:
-            # Use FTS5 when a query is present and the index exists (ranked, stemmed
-            # matching). Fall back to LIKE when there's no query, no usable tokens,
-            # or FTS5 isn't compiled into this SQLite build.
-            has_fts = (
-                conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories_fts'"
-                ).fetchone()
-                is not None
+            sql, params = self._build_search_sql(
+                conn,
+                ["name", "title", "type", "tags", "updated_at", "description", "body"],
+                query,
+                type_filter,
+                tag,
+                client,
+                since_iso,
+                limit,
             )
-            match = _fts_query(query) if (query and has_fts) else ""
-            use_fts = bool(match)
-            col = "m." if use_fts else ""
-            params: list = []
-
-            if use_fts:
-                sql = (
-                    "SELECT m.name, m.title, m.type, m.tags, m.updated_at, m.description, m.body "
-                    "FROM memories_fts f JOIN memories m ON m.id = f.rowid "
-                    "WHERE memories_fts MATCH ?"
-                )
-                params.append(match)
-            else:
-                sql = (
-                    "SELECT name, title, type, tags, updated_at, description, body "
-                    "FROM memories WHERE 1=1"
-                )
-                if query:
-                    sql += " AND (name LIKE ? OR title LIKE ? OR description LIKE ? OR body LIKE ?)"
-                    like = f"%{query}%"
-                    params.extend([like, like, like, like])
-
-            if type_filter:
-                sql += f" AND {col}type = ?"
-                params.append(type_filter)
-            if tag:
-                sql += f" AND {col}tags LIKE ?"
-                params.append(f'%"{tag}"%')
-            if client:
-                sql += f" AND {col}origin_clients LIKE ?"
-                params.append(f'%"{client}"%')
-            if since_iso:
-                sql += f" AND {col}updated_at >= ?"
-                params.append(since_iso)
-
-            if use_fts:
-                # bm25 weights name/title > description > body (lower score = better),
-                # recency as the tiebreaker.
-                sql += f" ORDER BY bm25(memories_fts, 10.0, 10.0, 5.0, 1.0), {col}updated_at DESC LIMIT ?"
-            else:
-                sql += " ORDER BY updated_at DESC LIMIT ?"
-            params.append(limit)
-
             rows = conn.execute(sql, params).fetchall()
         except sqlite3.Error as e:
             return f"Database error: {e}"
