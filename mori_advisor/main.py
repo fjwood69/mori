@@ -15,6 +15,7 @@ import inspect
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -2649,6 +2650,394 @@ async def ingest_git(request: Request) -> JSONResponse:
     return JSONResponse(
         {"status": "ok", "ingested": ingested, "skipped": skipped, "watermark": watermark}
     )
+
+
+# ── Write REST API (governed) ─────────────────────────────────────────────────
+# Auth-gated write/approve/reject/delete endpoints for non-MCP consumers.
+# All routes are behind ApiKeyMiddleware (automatic) + the #13 Policy:
+#   POST /api/memories       → require_role("write")
+#   GET  /api/pending        → require_role("write")
+#   POST /api/memories/{name}/approve  → require_role("dreamer")
+#   POST /api/memories/{name}/reject   → require_role("dreamer")
+#   DELETE /api/memories/{name}        → require_role("dreamer")
+#
+# Deferred to a follow-up (#16): per-key token-bucket rate-limiting + 1 MB body
+# cap in middleware, Idempotency-Key header + TTL replay cache, soft-delete
+# (deleted_at), and a structured audit table.
+
+_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+_BODY_MAX_BYTES = 64 * 1024  # 64 KB
+
+
+def _write_audit(op: str, actor_name: str, name: str, body: str) -> None:
+    """Emit a single structured audit log line for every governed write operation.
+
+    Fields: op, actor, name, content_hash (sha256 of normalised body).
+    Fires on every write/approve/reject/delete regardless of outcome — the
+    caller is responsible for only calling this after a successful store op.
+    A structured audit *table* is deferred to a follow-up (#16).
+    """
+    content_hash = hashlib.sha256(body.strip().encode("utf-8", errors="replace")).hexdigest()[:16]
+    logger.info(
+        "AUDIT op=%s actor=%s name=%s content_hash=%s",
+        op,
+        actor_name,
+        name,
+        content_hash,
+    )
+
+
+def _validate_write_payload(payload: dict) -> tuple[str | None, int]:
+    """Validate a POST /api/memories payload.
+
+    Returns (error_message, status_code) on failure, or (None, 0) on success.
+    Accepted fields: name, title, description, type, tier, body, tags, origin_clients.
+    All other fields are rejected (unexpected-field guard).
+    """
+    allowed = {"name", "title", "description", "type", "tier", "body", "tags", "origin_clients"}
+    unexpected = set(payload.keys()) - allowed
+    if unexpected:
+        return f"Unexpected fields: {', '.join(sorted(unexpected))}", 400
+
+    name = payload.get("name", "")
+    if not name or not isinstance(name, str):
+        return "Field 'name' is required and must be a non-empty string", 400
+    if not _NAME_RE.match(name):
+        return (
+            "Field 'name' must match ^[a-zA-Z0-9_-]{1,128}$ "
+            "(alphanumeric, hyphens, underscores; 1–128 chars)",
+            400,
+        )
+
+    body = payload.get("body", "")
+    if isinstance(body, str) and len(body.encode("utf-8", errors="replace")) > _BODY_MAX_BYTES:
+        return f"Field 'body' exceeds maximum size of {_BODY_MAX_BYTES // 1024} KB", 400
+
+    tags = payload.get("tags")
+    if tags is not None and not isinstance(tags, list):
+        return "Field 'tags' must be a list of strings", 400
+    if tags and not all(isinstance(t, str) for t in tags):
+        return "Field 'tags' must contain only strings", 400
+
+    origin_clients = payload.get("origin_clients")
+    if origin_clients is not None and not isinstance(origin_clients, list):
+        return "Field 'origin_clients' must be a list of strings", 400
+
+    return None, 0
+
+
+@mcp.custom_route("/api/memories", methods=["POST"])
+async def post_memory(request: Request) -> JSONResponse:
+    """Propose or write a memory entry (governed, tier-aware).
+
+    Behaviour (propose-not-overwrite):
+      - Name does not exist → insert as **working** tier directly.
+      - Name exists and is **canonical or protected** → create a **pending
+        proposal** linked to that name; the canonical row is unchanged.
+      - Name exists and is **working** → idempotent update if the same actor
+        owns it (origin_clients); otherwise a pending proposal.
+
+    Required role: write.
+
+    Body fields: name (required), title, description, type, tier, body, tags,
+    origin_clients.  Unexpected fields are rejected (400).  Body max 64 KB.
+    Name must match ^[a-zA-Z0-9_-]{1,128}$.
+    """
+    from mori_advisor.policy import PermissionDenied, current_actor, require_role
+
+    try:
+        require_role("write")
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+
+    actor = current_actor.get()
+    actor_name = actor.key_name if actor else "unknown"
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Body must be a JSON object"}, status_code=400)
+
+    err, status = _validate_write_payload(payload)
+    if err:
+        return JSONResponse({"error": err}, status_code=status)
+
+    name: str = payload["name"]
+    title: str = payload.get("title", "") or ""
+    description: str = payload.get("description", "") or ""
+    mem_type: str = payload.get("type", "project") or "project"
+    tier: str = payload.get("tier", "working") or "working"
+    body: str = payload.get("body", "") or ""
+    tags: list[str] = payload.get("tags") or []
+    origin_clients: list[str] = payload.get("origin_clients") or [actor_name]
+
+    try:
+        # Fetch the existing memory (if any) to decide branch.
+        existing = await _a(memory_store.get_memory(name))
+
+        if existing is None:
+            # New name — insert as working directly.
+            result = await _a(
+                memory_store.write(
+                    name=name,
+                    title=title,
+                    description=description,
+                    type=mem_type,
+                    tier=tier,
+                    body=body,
+                    tags=tags,
+                    origin_clients=origin_clients,
+                    client=actor_name,
+                )
+            )
+            _write_audit("propose_new", actor_name, name, body)
+            return JSONResponse(
+                {"status": "created", "name": name, "detail": result},
+                status_code=201,
+            )
+
+        existing_tier = existing.get("tier", "working")
+        existing_protected = existing.get("protected", False)
+
+        is_canonical_or_protected = existing_tier == "canonical" or existing_protected
+
+        if is_canonical_or_protected:
+            # Propose a pending write — do NOT touch the canonical row.
+            # Use queue_pending_write to bypass write() which would overwrite
+            # canonical rows that are not flagged protected=1.
+            result = await _a(
+                memory_store.queue_pending_write(
+                    name=name,
+                    title=title,
+                    description=description,
+                    type=mem_type,
+                    body=body,
+                    tags=tags,
+                    origin_clients=origin_clients,
+                    proposed_by=actor_name,
+                )
+            )
+            _write_audit("propose_pending", actor_name, name, body)
+            return JSONResponse(
+                {"status": "pending", "name": name, "detail": result},
+                status_code=202,
+            )
+
+        # Working, non-protected — idempotent update if same actor owns it.
+        existing_clients: list[str] = existing.get("origin_clients") or []
+        if actor_name in existing_clients or not existing_clients:
+            result = await _a(
+                memory_store.write(
+                    name=name,
+                    title=title,
+                    description=description,
+                    type=mem_type,
+                    tier=tier,
+                    body=body,
+                    tags=tags,
+                    origin_clients=origin_clients,
+                    client=actor_name,
+                )
+            )
+            _write_audit("update_working", actor_name, name, body)
+            return JSONResponse(
+                {"status": "updated", "name": name, "detail": result},
+                status_code=200,
+            )
+
+        # Working memory owned by a different actor — queue as pending.
+        result = await _a(
+            memory_store.queue_pending_write(
+                name=name,
+                title=title,
+                description=description,
+                type=mem_type,
+                body=body,
+                tags=tags,
+                origin_clients=origin_clients,
+                proposed_by=actor_name,
+            )
+        )
+        _write_audit("propose_pending", actor_name, name, body)
+        return JSONResponse(
+            {"status": "pending", "name": name, "detail": result},
+            status_code=202,
+        )
+
+    except Exception as e:
+        logger.error("POST /api/memories failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/pending", methods=["GET"])
+async def get_pending(request: Request) -> JSONResponse:
+    """List pending writes awaiting dreamer approval → JSON.
+
+    Unapproved agent output is not for read-only eyes — requires write role.
+    Query params: status (default "pending" — also accepts "approved", "rejected").
+    """
+    from mori_advisor.policy import PermissionDenied, require_role
+
+    try:
+        require_role("write")
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+
+    status_filter = request.query_params.get("status", "pending")
+    try:
+        raw = await _a(memory_store.pending_list(status=status_filter))
+        # pending_list returns a formatted string; wrap it for REST consumers.
+        return JSONResponse({"status": status_filter, "summary": raw})
+    except Exception as e:
+        logger.error("GET /api/pending failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/memories/{name}/approve", methods=["POST"])
+async def approve_memory(request: Request) -> JSONResponse:
+    """Approve a pending write and apply it to the memory store.
+
+    Race-safe: the underlying store uses a single connection / transaction so
+    concurrent approvals cannot duplicate canonical rows.  Requires dreamer role.
+
+    Body fields (all optional): write_id (int — approve a specific pending write),
+    note (str), reviewer (str).  If write_id is omitted, the most-recent pending
+    write for this name is approved.
+    """
+    from mori_advisor.policy import PermissionDenied, current_actor, require_role
+
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+
+    actor = current_actor.get()
+    actor_name = actor.key_name if actor else "unknown"
+    mem_name: str = request.path_params["name"]
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    write_id: int | None = payload.get("write_id")
+    note: str = payload.get("note", "") or ""
+    reviewer: str = payload.get("reviewer", "") or actor_name
+
+    if write_id is not None and not isinstance(write_id, int):
+        return JSONResponse({"error": "'write_id' must be an integer"}, status_code=400)
+
+    # If write_id not provided, look up the most-recent pending write for this name.
+    if write_id is None:
+        return JSONResponse(
+            {"error": "write_id is required — fetch from GET /api/pending and provide it"},
+            status_code=400,
+        )
+
+    try:
+        result = await _a(
+            memory_store.approve(
+                write_id=write_id,
+                note=note,
+                reviewer=reviewer,
+            )
+        )
+        if "not found" in result.lower() or "already processed" in result.lower():
+            return JSONResponse({"error": result}, status_code=404)
+        _write_audit("approve", actor_name, mem_name, note)
+        return JSONResponse({"status": "approved", "name": mem_name, "detail": result})
+    except Exception as e:
+        logger.error("POST /api/memories/%s/approve failed: %s", mem_name, e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/memories/{name}/reject", methods=["POST"])
+async def reject_memory(request: Request) -> JSONResponse:
+    """Reject a pending write without applying it.
+
+    Requires dreamer role.
+
+    Body fields (all optional): write_id (int), note (str), reviewer (str).
+    """
+    from mori_advisor.policy import PermissionDenied, current_actor, require_role
+
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+
+    actor = current_actor.get()
+    actor_name = actor.key_name if actor else "unknown"
+    mem_name: str = request.path_params["name"]
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    write_id: int | None = payload.get("write_id")
+    note: str = payload.get("note", "") or ""
+    reviewer: str = payload.get("reviewer", "") or actor_name
+
+    if write_id is not None and not isinstance(write_id, int):
+        return JSONResponse({"error": "'write_id' must be an integer"}, status_code=400)
+
+    if write_id is None:
+        return JSONResponse(
+            {"error": "write_id is required — fetch from GET /api/pending and provide it"},
+            status_code=400,
+        )
+
+    try:
+        result = await _a(
+            memory_store.reject(
+                write_id=write_id,
+                note=note,
+                reviewer=reviewer,
+            )
+        )
+        if "not found" in result.lower() or "already processed" in result.lower():
+            return JSONResponse({"error": result}, status_code=404)
+        _write_audit("reject", actor_name, mem_name, note)
+        return JSONResponse({"status": "rejected", "name": mem_name, "detail": result})
+    except Exception as e:
+        logger.error("POST /api/memories/%s/reject failed: %s", mem_name, e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/memories/{name}", methods=["DELETE"])
+async def delete_memory_rest(request: Request) -> JSONResponse:
+    """Hard-delete a memory entry by name.
+
+    Requires dreamer role (hard delete is permanent — soft-delete deferred to #16).
+    """
+    from mori_advisor.policy import PermissionDenied, current_actor, require_role
+
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+
+    actor = current_actor.get()
+    actor_name = actor.key_name if actor else "unknown"
+    mem_name: str = request.path_params["name"]
+
+    try:
+        result = await _a(memory_store.delete(mem_name))
+        if "not found" in result.lower():
+            return JSONResponse({"error": "not found", "name": mem_name}, status_code=404)
+        _write_audit("delete", actor_name, mem_name, "")
+        return JSONResponse({"status": "deleted", "name": mem_name, "detail": result})
+    except Exception as e:
+        logger.error("DELETE /api/memories/%s failed: %s", mem_name, e)
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # ── Observability endpoints ──────────────────────────────────────────────

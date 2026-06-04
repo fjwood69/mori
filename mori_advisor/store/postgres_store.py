@@ -934,6 +934,50 @@ class PostgresStore(BaseStore):
 
     # ── Approval workflow ──────────────────────────────────────────────────
 
+    async def queue_pending_write(
+        self,
+        name: str,
+        title: str = "",
+        description: str = "",
+        type: str = "project",
+        body: str = "",
+        tags: list | None = None,
+        origin_clients: list | None = None,
+        proposed_by: str = "api",
+    ) -> str:
+        """Insert a pending write proposal for an existing memory without modifying it.
+
+        Used by the write REST API for canonical and other-actor working memories
+        where propose-not-overwrite semantics are required (see #14).
+        """
+        self._ensure_pool()
+        tags_v = _tags_json(tags)
+        clients_v = _tags_json(origin_clients)
+        now = _now_utc()
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO pending_writes
+                    (memory_name, title, description, type, body, tags,
+                     origin_session_ids, origin_clients, proposed_by, proposed_at)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)
+                """,
+                name,
+                title,
+                description,
+                type,
+                body,
+                tags_v,
+                "[]",
+                clients_v,
+                proposed_by,
+                now,
+            )
+        return (
+            f"Memory '{name}' is canonical or owned by another actor — "
+            "change queued as pending write (dreamer review required)."
+        )
+
     async def pending_list(self, status: str = "pending") -> str:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
@@ -951,29 +995,36 @@ class PostgresStore(BaseStore):
         return "\n".join(lines)
 
     async def approve(self, write_id: int, note: str = "", reviewer: str = "") -> str:
+        """Approve a pending write. Race-safe: uses SELECT … FOR UPDATE inside a transaction
+        so concurrent approvals cannot both apply the same pending write."""
         self._ensure_pool()
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM pending_writes WHERE id = $1", write_id)
-            if not row:
-                return f"Pending write {write_id} not found."
-            await self.write(
-                name=row["memory_name"],
-                title=row["title"],
-                description=row["description"],
-                type=row["type"],
-                tier=row["tier"],
-                body=row["body"],
-                tags=json.loads(row["tags"] or "[]"),
-                _skip_protection=True,
-                _conn=conn,
-            )
-            await conn.execute(
-                "UPDATE pending_writes SET status='approved', review_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
-                write_id,
-                note,
-                reviewer,
-                _now_utc(),
-            )
+            async with conn.transaction():
+                # Lock the row so a concurrent approve cannot race past this check.
+                row = await conn.fetchrow(
+                    "SELECT * FROM pending_writes WHERE id = $1 AND status = 'pending' FOR UPDATE",
+                    write_id,
+                )
+                if not row:
+                    return f"Pending write {write_id} not found or already processed."
+                await self.write(
+                    name=row["memory_name"],
+                    title=row["title"],
+                    description=row["description"],
+                    type=row["type"],
+                    tier=row.get("tier", "working"),
+                    body=row["body"],
+                    tags=json.loads(row["tags"] or "[]"),
+                    _skip_protection=True,
+                    _conn=conn,
+                )
+                await conn.execute(
+                    "UPDATE pending_writes SET status='approved', review_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
+                    write_id,
+                    note,
+                    reviewer,
+                    _now_utc(),
+                )
         return f"Pending write {write_id} approved and committed."
 
     async def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str:

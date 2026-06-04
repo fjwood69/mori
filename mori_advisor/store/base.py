@@ -132,6 +132,19 @@ class BaseStore(ABC):
     # ── Approval workflow ──────────────────────────────────────────────────
 
     @abstractmethod
+    def queue_pending_write(
+        self,
+        name: str,
+        title: str = "",
+        description: str = "",
+        type: str = "project",
+        body: str = "",
+        tags: list | None = None,
+        origin_clients: list | None = None,
+        proposed_by: str = "api",
+    ) -> str: ...
+
+    @abstractmethod
     def pending_list(self, status: str = "pending") -> str: ...
 
     @abstractmethod
