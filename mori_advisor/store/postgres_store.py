@@ -838,15 +838,16 @@ class PostgresStore(BaseStore):
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT version_num, changed_at, changed_by, diff FROM memory_versions "
-                "WHERE memory_name = $1 ORDER BY version_num DESC LIMIT $2",
+                "SELECT version_id, version_note, created_at FROM memory_versions "
+                "WHERE memory_name = $1 ORDER BY version_id DESC LIMIT $2",
                 name,
                 limit,
             )
         if not rows:
-            return f"No history for '{name}'"
+            return f"No version history for '{name}'."
         lines = [
-            f"v{r['version_num']} ({r['changed_at']}) by {r['changed_by'] or '—'}" for r in rows
+            f"v{r['version_id']} ({r['created_at']}) — {r['version_note'] or '(no note)'}"
+            for r in rows
         ]
         return "\n".join(lines)
 
@@ -854,28 +855,35 @@ class PostgresStore(BaseStore):
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT version_num, diff FROM memory_versions "
-                "WHERE memory_name = $1 AND version_num IN ($2, $3)",
+                "SELECT version_id, body FROM memory_versions "
+                "WHERE memory_name = $1 AND version_id IN ($2, $3) "
+                "ORDER BY version_id ASC",
                 name,
                 from_version,
                 to_version,
             )
-        if not rows:
-            return f"No versions found for '{name}'"
-        return "\n\n".join(r["diff"] or "(no diff)" for r in rows)
+        if len(rows) < 2:
+            return f"Could not find both versions ({from_version}, {to_version}) for '{name}'."
+        import difflib
+
+        a_lines = (rows[0]["body"] or "").splitlines(keepends=True)
+        b_lines = (rows[1]["body"] or "").splitlines(keepends=True)
+        diff = "".join(difflib.unified_diff(a_lines, b_lines, fromfile="before", tofile="after"))
+        return diff or "(no differences)"
 
     async def rollback(self, name: str, version_id: int) -> str:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM memory_versions WHERE id = $1 AND memory_name = $2",
+                "SELECT * FROM memory_versions WHERE version_id = $1 AND memory_name = $2",
                 version_id,
                 name,
             )
             if not row:
-                return f"Version {version_id} not found for '{name}'"
+                return f"Version {version_id} not found for '{name}'."
             await conn.execute(
-                "UPDATE memories SET title=$2, description=$3, type=$4, tier=$5, body=$6, tags=$7::jsonb, updated_at=$8 WHERE name=$1",
+                "UPDATE memories SET title=$2, description=$3, type=$4, tier=$5, body=$6, "
+                "tags=$7::jsonb, updated_at=$8 WHERE name=$1",
                 name,
                 row["title"],
                 row["description"],
@@ -885,7 +893,7 @@ class PostgresStore(BaseStore):
                 row["tags"],
                 _now_utc(),
             )
-        return f"'{name}' rolled back to version {version_id}"
+        return f"Memory '{name}' rolled back to version {version_id}."
 
     # ── Counts / observability ─────────────────────────────────────────────
 
@@ -930,14 +938,14 @@ class PostgresStore(BaseStore):
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, proposed_name, proposed_title, proposed_by, proposed_at, status "
+                "SELECT id, memory_name, title, proposed_by, proposed_at, status "
                 "FROM pending_writes WHERE status = $1 ORDER BY proposed_at DESC",
                 status,
             )
         if not rows:
             return f"No {status} writes."
         lines = [
-            f"[{r['id']}] {r['proposed_name']} — {r['proposed_title']} (by {r['proposed_by']})"
+            f"[{r['id']}] {r['memory_name'] or '(new)'} — {r['title']} (by {r['proposed_by']})"
             for r in rows
         ]
         return "\n".join(lines)
@@ -947,10 +955,10 @@ class PostgresStore(BaseStore):
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM pending_writes WHERE id = $1", write_id)
             if not row:
-                return f"Pending write {write_id} not found"
+                return f"Pending write {write_id} not found."
             await self.write(
-                name=row["proposed_name"],
-                title=row["proposed_title"],
+                name=row["memory_name"],
+                title=row["title"],
                 description=row["description"],
                 type=row["type"],
                 tier=row["tier"],
@@ -960,25 +968,25 @@ class PostgresStore(BaseStore):
                 _conn=conn,
             )
             await conn.execute(
-                "UPDATE pending_writes SET status='approved', reviewer_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
+                "UPDATE pending_writes SET status='approved', review_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
                 write_id,
                 note,
                 reviewer,
                 _now_utc(),
             )
-        return f"Pending write {write_id} approved and committed"
+        return f"Pending write {write_id} approved and committed."
 
     async def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE pending_writes SET status='rejected', reviewer_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
+                "UPDATE pending_writes SET status='rejected', review_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
                 write_id,
                 note,
                 reviewer,
                 _now_utc(),
             )
-        return f"Pending write {write_id} rejected"
+        return f"Pending write {write_id} rejected."
 
     async def protect(self, name: str, domains=None) -> str:
         self._ensure_pool()
