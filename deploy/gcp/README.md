@@ -45,6 +45,24 @@ terraform plan
 terraform apply
 ```
 
+## Updating the startup script (out-of-band)
+
+`metadata_startup_script` is `ignore_changes` (changing it would force-replace the
+VM), so iterate on `startup.sh.tpl` and push the rendered result to the running
+instance's metadata with the helper — it runs on the next boot only:
+
+```bash
+cd deploy/gcp
+./render-metadata.sh            # render + validate to ./startup-rendered.sh
+./render-metadata.sh --push     # also back up live metadata, then push
+```
+
+Always use this helper rather than hand-extracting from `terraform console`:
+that output is wrapped in a `<<EOT … EOT` heredoc, and mis-parsing it silently
+corrupts the script (it may still pass `bash -n`). The helper strips the wrapper
+verbatim and validates before pushing. The rendered file and metadata backups
+contain secrets and are gitignored.
+
 ## Post-deploy
 
 1. **Migrate secrets** — from your local machine:

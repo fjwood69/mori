@@ -20,3 +20,7 @@ deploy/gcp/*.tfstate.backup
 # Terraform-rendered startup scripts (contain secrets — never commit)
 deploy/gcp/rendered_startup.sh
 deploy/gcp/rendered_*.sh
+
+# render-metadata.sh outputs (contain secrets)
+startup-rendered.sh
+metadata-backup-*.sh
