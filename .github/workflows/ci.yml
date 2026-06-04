@@ -90,7 +90,7 @@ jobs:
       - name: Run dual-backend tests against Postgres
         env:
           MORI_TEST_DATABASE_URL: postgresql://mori:testpw@localhost:5432/mori
-        run: pytest -q tests/test_migrations.py
+        run: pytest -q tests/test_migrations.py tests/test_search.py
 
   docker:
     name: Docker build check

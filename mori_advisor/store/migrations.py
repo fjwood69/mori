@@ -114,6 +114,45 @@ async def _baseline_postgres(conn) -> None:
     await conn.execute(_DDL)
 
 
+def _fts_sqlite(conn: sqlite3.Connection, db_path: Path) -> None:
+    # External-content FTS5 over memories(name,title,description,body). The index
+    # references memories by rowid=id (no duplicated body). Triggers keep it in
+    # sync on every INSERT/UPDATE/DELETE — so write()/delete() need no changes.
+    # porter+unicode61 gives stemming, aligning with Postgres' 'english' config.
+    # If FTS5 isn't compiled into this SQLite build, stamp anyway and let search()
+    # fall back to LIKE (probed via the memories_fts table's existence).
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5("
+            "name, title, description, body, "
+            "content='memories', content_rowid='id', tokenize='porter unicode61')"
+        )
+    except sqlite3.OperationalError as e:
+        if "fts5" in str(e).lower() or "no such module" in str(e).lower():
+            logger.warning("FTS5 unavailable in this SQLite build — search() uses LIKE fallback")
+            return
+        raise
+    conn.execute(
+        "CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN "
+        "INSERT INTO memories_fts(rowid, name, title, description, body) "
+        "VALUES (new.id, new.name, new.title, new.description, new.body); END"
+    )
+    conn.execute(
+        "CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN "
+        "INSERT INTO memories_fts(memories_fts, rowid, name, title, description, body) "
+        "VALUES ('delete', old.id, old.name, old.title, old.description, old.body); END"
+    )
+    conn.execute(
+        "CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN "
+        "INSERT INTO memories_fts(memories_fts, rowid, name, title, description, body) "
+        "VALUES ('delete', old.id, old.name, old.title, old.description, old.body); "
+        "INSERT INTO memories_fts(rowid, name, title, description, body) "
+        "VALUES (new.id, new.name, new.title, new.description, new.body); END"
+    )
+    # Backfill / reconcile from the content table — idempotent FTS5 'rebuild'.
+    conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         id=1,
@@ -177,7 +216,27 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ALTER TABLE memories ALTER COLUMN freshness_status SET NOT NULL"
         ),
     ),
-    # Stage C (FTS) appends id 6 here.
+    # ── Stage C: full-text search ──────────────────────────────────────────
+    Migration(
+        id=6,
+        name="fts_memories",
+        target="memories",
+        # SQLite: external-content FTS5 + triggers (see _fts_sqlite). Postgres:
+        # a generated STORED tsvector with weighted lexemes (name/title > desc >
+        # body) + GIN. COALESCE every column — strict concat of a NULL yields NULL
+        # → an empty tsvector → an invisible row. The column add rewrites the
+        # (small) memories table under ACCESS EXCLUSIVE; schedule low-traffic.
+        sqlite_fn=_fts_sqlite,
+        postgres_sql=(
+            "ALTER TABLE memories ADD COLUMN IF NOT EXISTS search_tsv tsvector "
+            "GENERATED ALWAYS AS ("
+            "setweight(to_tsvector('english', coalesce(name, '') || ' ' || coalesce(title, '')), 'A') || "
+            "setweight(to_tsvector('english', coalesce(description, '')), 'B') || "
+            "setweight(to_tsvector('english', coalesce(body, '')), 'D')"
+            ") STORED; "
+            "CREATE INDEX IF NOT EXISTS idx_memories_search_tsv ON memories USING GIN (search_tsv)"
+        ),
+    ),
 )
 
 
