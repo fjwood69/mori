@@ -111,7 +111,7 @@ memories are listed.
 | Input | Effect |
 |---|---|
 | `/pensieve` | Last 10 memories |
-| `/pensieve bifrost` | Search for "bifrost" |
+| `/pensieve auth` | Search for "auth" |
 | `/pensieve read infra-gotchas` | Show full entry |
 | `/pensieve --type decision` | Filter by type |
 | `/pensieve "docker" --since 7d` | Search + time filter |
@@ -131,10 +131,10 @@ Create, filter, and track project requirements with status and priority.
 | Command | Effect |
 |---|---|
 | `/req` | Dashboard — all requirements grouped by project |
-| `/req --project bifrost` | Filter by project |
-| `/req --project bifrost --status pending` | Filter by project and status |
-| `/req add "Add rate limiting" --project bifrost --pri high` | Create requirement |
-| `/req done req-bifrost-add-rate-limiting` | Mark complete |
+| `/req --project myapp` | Filter by project |
+| `/req --project myapp --status pending` | Filter by project and status |
+| `/req add "Add rate limiting" --project myapp --pri high` | Create requirement |
+| `/req done req-myapp-add-rate-limiting` | Mark complete |
 
 Requirements persist as tagged memories in the shared store. They surface automatically in `/brief` until marked done.
 
@@ -152,7 +152,7 @@ Publish and subscribe to real-time messages across Claude Code instances (requir
 |---|---|
 | `/nats ping` | Check NATS connection |
 | `/nats sub` | Show recent messages from all devices |
-| `/nats pub "deploying bifrost v2 — hold off on reboots"` | Publish a message |
+| `/nats pub "deploying v2 — hold off on reboots"` | Publish a message |
 
 Messages persist for 7 days in the JetStream store. Offline instances catch up on reconnect.
 

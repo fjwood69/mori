@@ -75,9 +75,9 @@ Parse the raw input string:
 | Input | Effect |
 |---|---|
 | `/req` | Dashboard of all requirements |
-| `/req --project bifrost` | View Bifrost requirements |
+| `/req --project myapp` | View myapp requirements |
 | `/req --project mori --status done` | Completed Mori requirements |
-| `/req add "OAuth2 login" --project bifrost --pri high --fr` | Create new FR |
-| `/req done req-bifrost-oauth2-login` | Mark as done |
-| `/req block req-bifrost-oauth2 --reason "Waiting on IAM"` | Block with reason |
-| `/req import ./specs.md --project bifrost` | Bulk import from file |
+| `/req add "OAuth2 login" --project myapp --pri high --fr` | Create new FR |
+| `/req done req-myapp-oauth2-login` | Mark as done |
+| `/req block req-myapp-oauth2 --reason "Waiting on IAM"` | Block with reason |
+| `/req import ./specs.md --project myapp` | Bulk import from file |

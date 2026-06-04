@@ -33,7 +33,7 @@ grep -E 'mori-ship-event|mori-post-compact' ~/.claude/settings.json
 
 **Do not reinstall blindly** — `install-mori-cursor` merges Mori hooks and updates shipper commands; it will not remove unrelated entries in `settings.json`.
 
-Shared memory lives on the **Mori server** — not on this laptop. Do not use `~/ai-stack/.../memories.db` or a local clone DB.
+Shared memory lives on the **Mori server** — not on this laptop. Do not use a local `memories.db` from an old clone or sidecar install — that is not the live store.
 
 ---
 

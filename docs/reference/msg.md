@@ -5,7 +5,7 @@
 ## Quick start
 
 ```
-/msg send workstation task "Extract rate limiting into its own module in bifrost/src/middleware/"
+/msg send workstation task "Extract rate limiting into its own module in src/middleware/"
 /msg inbox
 /msg ack <message-id>
 ```
@@ -40,7 +40,7 @@
 
 ```bash
 # laptop — delegate a refactor to the workstation
-/msg send workstation task "Extract rate limiting into its own module in bifrost/src/middleware/ — current impl in src/server.rs lines 140-180"
+/msg send workstation task "Extract rate limiting into its own module in src/middleware/ — current impl in src/server.rs lines 140-180"
 
 # workstation — next /brief surfaces the task:
 # [task]  from laptop  2026-05-31 14:22  id=a3f9c2b1

@@ -191,9 +191,8 @@ Install the post-push hook into each repo to automatically ingest commit message
 
 ```bash
 # From the mori repo root:
-./scripts/install-git-hooks.sh                    # mori itself
-./scripts/install-git-hooks.sh --repo ~/bifrost
-./scripts/install-git-hooks.sh --repo ~/ai-stack
+./scripts/install-git-hooks.sh                    # this repo
+./scripts/install-git-hooks.sh --repo ~/path/to/your-other-repo
 ```
 
 Add your API key to `~/.claude/.secrets` (the hook reads it automatically at push time):
