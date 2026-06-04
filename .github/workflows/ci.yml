@@ -53,6 +53,45 @@ jobs:
       - name: Run pytest
         run: pytest -q
 
+  test-postgres:
+    name: Unit tests (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mori
+          POSTGRES_PASSWORD: testpw
+          POSTGRES_DB: mori
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mori"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-asyncio
+          pip install -r requirements.txt
+
+      # Exercises the migration runner + (Stage C) FTS against a real Postgres —
+      # the SQLite `test` job above covers the default backend. MORI_TEST_DATABASE_URL
+      # un-skips the Postgres-gated tests.
+      - name: Run dual-backend tests against Postgres
+        env:
+          MORI_TEST_DATABASE_URL: postgresql://mori:testpw@localhost:5432/mori
+        run: pytest -q tests/test_migrations.py
+
   docker:
     name: Docker build check
     runs-on: ubuntu-latest

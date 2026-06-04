@@ -65,7 +65,8 @@ class JobStatus:
 # ── Global state ──────────────────────────────────────────────────────────
 
 store = get_store(DATA_DIR / "memories.db")
-store.bootstrap()
+# NOTE: bootstrap() is invoked from the async lifespan below, not at import time —
+# the Postgres backend's bootstrap is a coroutine and must run inside a loop.
 bifrost = BifrostClient(base_url=BIFROST_BASE_URL, timeout=BIFROST_TIMEOUT)
 memory_store = MemoryStore(db_path=DATA_DIR / "memories.db")
 pipeline = IngestionPipeline(
@@ -128,6 +129,12 @@ async def _worker() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global job_queue
+    # Run schema migrations before serving (async-safe for SQLite + Postgres).
+    import inspect
+
+    result = store.bootstrap()
+    if inspect.isawaitable(result):
+        await result
     store.ping()
     job_queue = asyncio.Queue()
     asyncio.create_task(_worker())

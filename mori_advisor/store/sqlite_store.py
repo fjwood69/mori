@@ -43,12 +43,14 @@ class SQLiteStore(BaseStore):
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
     def bootstrap(self) -> None:
-        from mori_advisor.memory_store import MemoryStore
-        from mori_advisor.session_log import SessionLog
+        # Schema is owned by the migration runner (single source of truth across
+        # both backends). Migration 1 ("baseline") invokes the same MemoryStore/
+        # SessionLog/MsgStore bootstrap this method used to call directly, so this
+        # is behaviour-preserving for existing databases.
+        from .migrations import MIGRATIONS, apply_sqlite
 
-        MemoryStore.bootstrap_schema(self.db_path)
-        SessionLog.bootstrap_schema(self.db_path)
-        self._msg._bootstrap()
+        apply_sqlite(self.db_path, tuple(m for m in MIGRATIONS if m.target == "memories"))
+        apply_sqlite(self._msg.db_path, tuple(m for m in MIGRATIONS if m.target == "msg"))
 
     def ping(self) -> None:
         conn = self._mem._get_conn()

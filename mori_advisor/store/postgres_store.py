@@ -270,14 +270,14 @@ class PostgresStore(BaseStore):
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
     async def bootstrap(self) -> None:
-        await self.connect()
-        async with self.pool.acquire() as conn:
-            in_recovery = await conn.fetchval("SELECT pg_is_in_recovery()")
-            if in_recovery:
-                logger.info("PostgresStore connected to read-only standby — skipping DDL")
-            else:
-                await conn.execute(_DDL)
-                logger.info("PostgresStore bootstrap complete")
+        # Schema is owned by the migration runner. apply_postgres() connects,
+        # holds one dedicated connection for the run (pg_advisory_lock is
+        # session-scoped), skips DDL on a read-only standby, and applies the
+        # baseline (the _DDL constant, via migration 1) + any pending migrations.
+        from .migrations import MIGRATIONS, apply_postgres
+
+        await apply_postgres(self, MIGRATIONS)
+        logger.info("PostgresStore bootstrap complete")
 
     async def ping(self) -> None:
         self._ensure_pool()
