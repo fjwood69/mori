@@ -83,6 +83,7 @@ powershell -File scripts/install-mori-cursor.ps1
 |-----------|-------------|---------------|
 | **Dream pipeline** | Auto-distils session events into structured memories | `/dream` |
 | **Session grounding** | Loads shared context at session start — not per-query RAG; lightweight delta re-grounding after context compaction | `/brief`, `/brief --post-compact` |
+| **Memory search** | Ranked full-text search and browse across the shared store (SQLite FTS5 / Postgres `tsvector`) | `/pensieve` |
 | **Universal ingestion** | Feed PDFs, images, git, transcripts into the memory store | `/ingest` |
 | **Strategic review** | LLM guidance with focus areas and auto-injected standards | `/consult` |
 | **Requirements tracking** | Lightweight project checklist surfaced via `/brief` | `/req` |
