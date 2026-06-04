@@ -54,7 +54,11 @@ WRITE_API_AUTH_ROUTES = [
     # Probed separately below (see _probe_write_api).
     ("POST", "/api/memories/{name}/approve"),
     ("POST", "/api/memories/{name}/reject"),
-    ("DELETE", "/api/memories/{name}"),
+    # DELETE /api/memories/{name} is NOT a static auth-gating entry: a keyed DELETE
+    # of the non-existent sentinel correctly returns 404 (route registered, key
+    # accepted, target absent), which is indistinguishable from an unregistered
+    # route under the non-404 rule. DELETE is instead proven by the POST+DELETE
+    # round-trip below (no-key 401 → keyed 200/404), which is unambiguous.
 ]
 
 
@@ -131,9 +135,20 @@ def main():
         body={"name": _probe_name, "title": "Verify probe", "body": "deployment check"},
     )
     if post_code in (200, 201, 202):
+        # Auth-gating: a no-key DELETE must be rejected (401) before the real delete.
+        del_noauth = _request("DELETE", f"{base}/api/memories/{_probe_name}")
         del_code = _request("DELETE", f"{base}/api/memories/{_probe_name}", key=key)
-        if del_code in (200, 404):
-            print(f"  OK  POST /api/memories + DELETE probe (post={post_code} del={del_code})")
+        if del_noauth == 401 and del_code in (200, 404):
+            print(
+                f"  OK  POST /api/memories + DELETE probe "
+                f"(post={post_code} del_noauth={del_noauth} del={del_code})"
+            )
+        elif del_noauth != 401:
+            print(
+                f"  XX  DELETE /api/memories/{_probe_name} no-key returned "
+                f"{del_noauth} (expected 401)"
+            )
+            fail = 1
         else:
             print(
                 f"  XX  DELETE /api/memories/{_probe_name} returned {del_code} (expected 200/404)"
