@@ -21,7 +21,7 @@ from pathlib import Path
 from fastmcp import FastMCP
 from pydantic import BaseModel
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 from mori_advisor.auth import configured_clients, generate_key, init_auth
 from mori_advisor.bifrost_client import BifrostClient
@@ -2050,6 +2050,25 @@ def _json_safe_rows(rows: list) -> list:
             if isinstance(v, (datetime, date)):
                 r[k] = v.isoformat()
     return rows
+
+
+@mcp.custom_route("/", methods=["GET"])
+async def dashboard_index(request: Request) -> Response:
+    """Serve the bundled memory-browser dashboard at the root.
+
+    Open path (no key — see OPEN_PATHS), so the page itself loads in a browser; its
+    `/api/*` calls remain key-gated. Served same-origin, so the page targets this very
+    server (the dashboard defaults its base URL to `window.location.origin`) — no
+    separate static server, no cross-origin config. The file is bundled into the image
+    (`COPY dashboard/` in the Dockerfile)."""
+    import os
+
+    path = os.path.join(os.path.dirname(__file__), "..", "dashboard", "index.html")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        return JSONResponse({"service": "mori-advisor", "dashboard": "not bundled"})
 
 
 @mcp.custom_route("/api/memories", methods=["GET"])

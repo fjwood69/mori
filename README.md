@@ -84,7 +84,7 @@ powershell -File scripts/install-mori-cursor.ps1
 | **Dream pipeline** | Auto-distils session events into structured memories | `/dream` |
 | **Session grounding** | Loads shared context at session start — not per-query RAG; lightweight delta re-grounding after context compaction | `/brief`, `/brief --post-compact` |
 | **Memory search** | Ranked full-text search and browse across the shared store (SQLite FTS5 / Postgres `tsvector`) | `/pensieve` |
-| **Web dashboard** | Standalone browser UI to search, browse, and unfurl memories over a read REST API | — |
+| **Web dashboard** | Built-in memory browser served at the mori root URL — search, browse, unfurl | — |
 | **Universal ingestion** | Feed PDFs, images, git, transcripts into the memory store | `/ingest` |
 | **Strategic review** | LLM guidance with focus areas and auto-injected standards | `/consult` |
 | **Requirements tracking** | Lightweight project checklist surfaced via `/brief` | `/req` |
@@ -239,17 +239,19 @@ the default pod stack). See [docs/reference/msg.md](docs/reference/msg.md) for f
 
 ### Web dashboard
 
-Not everyone who needs the shared memory runs a Claude Code session. A small
-**read REST API** exposes the store over HTTP, and a standalone **dashboard**
-(`dashboard/index.html`) consumes it — search, browse, and click any card to
-unfurl its full body and provenance (origin clients, tier, retrieval count,
-freshness). It's a single self-contained file (vanilla JS, no build step, no
-CDN), so it runs from any static host and points at any mori instance.
+Not everyone who needs the shared memory runs a Claude Code session. Mori serves a
+built-in **memory browser** at its own root URL — just open the server in a browser:
 
-```bash
-cd dashboard && python3 -m http.server 8055
-# open http://localhost:8055 → set base URL + API key (stored in localStorage)
 ```
+http://<your-mori-host>:8968/
+```
+
+Enter any valid API key (the same `MORI_API_KEYS` your clients use) and you can search,
+browse, and click any card to unfurl its full body and provenance (origin clients, tier,
+retrieval count, freshness). The page is served **same-origin**, so it talks to the very
+mori instance it loaded from — no base URL to configure, no separate server to run. It's a
+single dependency-free file (vanilla JS, no build step, no CDN), backed by a small read
+REST API:
 
 | Route | Returns |
 |-------|---------|
@@ -257,10 +259,11 @@ cd dashboard && python3 -m http.server 8055
 | `GET /api/memories/{name}` | One memory in full — body + provenance (lazy-loaded on unfurl) |
 | `GET /api/events?session_id=&client=&since=&limit=` | Session event log, newest first |
 
-Every route is API-key gated (`X-Api-Key`) and CORS-wrapped for cross-origin
-browser access — set `MORI_CORS_ORIGINS` to your dashboard origin(s) in
-production. The dashboard is **read-only**; write actions (delete, trusted-dreamer
-review) are deferred until the read surface is validated.
+The dashboard and its routes are **read-only** and API-key gated (`X-Api-Key`); write
+actions (delete, trusted-dreamer review) are deferred until the read surface is validated.
+The page is also available standalone (`dashboard/index.html`) if you'd rather host it
+elsewhere and point it at a mori instance — set `MORI_CORS_ORIGINS` for that cross-origin
+case (it's unnecessary for the built-in same-origin serving).
 
 ### Architecture
 

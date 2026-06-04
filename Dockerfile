@@ -50,6 +50,7 @@ COPY mori_advisor/ ./mori_advisor/
 COPY scripts/ ./scripts/
 COPY standards/ ./standards/
 COPY skills/ ./skills/
+COPY dashboard/ ./dashboard/
 ENV MORI_SKILLS_DIR=/app/skills
 
 # Data directory mounted from host, create for ownership

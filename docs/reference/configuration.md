@@ -65,12 +65,13 @@ the client's MCP config as `X-Api-Key`.
 
 ### Web dashboard
 
-The same keys authenticate the standalone web dashboard (`dashboard/`). In its
-settings, enter the server URL + any valid key; it sends the secret as `X-Api-Key`
-on every `/api/*` request, exactly like an MCP client. The dashboard is read-only,
-so any key with read access works — no special role required. Cross-origin browser
-access additionally requires `MORI_CORS_ORIGINS` to permit the dashboard's origin
-(default `*`); see the variable above.
+Mori serves the web dashboard at its **root URL** (`http://<host>:<port>/`) — open it in
+a browser and enter any valid key. It sends the secret as `X-Api-Key` on every `/api/*`
+request, exactly like an MCP client. The dashboard is read-only, so any key with read
+access works — no special role required. Because it's served same-origin, no base URL or
+CORS config is needed. (The page is also available standalone at `dashboard/index.html`
+for hosting elsewhere — that cross-origin case needs `MORI_CORS_ORIGINS` to permit the
+dashboard's origin; default `*`.)
 
 ### Open mode
 

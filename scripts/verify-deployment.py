@@ -27,7 +27,7 @@ import urllib.parse
 import urllib.request
 
 # Routes with no auth that must return 200.
-OPEN_ROUTES = ["/health", "/ready", "/metrics"]
+OPEN_ROUTES = ["/health", "/ready", "/metrics", "/"]
 
 # Auth-guarded routes: (method, path, body_or_None). Each probe is well-formed so
 # a VALID key elicits 200. The contract asserts: 401 without a key (auth enforced)

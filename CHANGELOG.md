@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.1.30 — Mori serves the dashboard at its root
+
+- **Why:** v2.1.29 shipped the dashboard as a *standalone* static file you had to serve
+  yourself and point at an instance — an unusual shape for something called a "dashboard,"
+  and a source of friction (which machine? which port? same-origin vs base URL?). A
+  dashboard should just *be there* when you open the server.
+- **What:** mori now serves the bundled dashboard at its **root URL** (`GET /`, an open
+  path). Open `http://<host>:<port>/` in a browser, enter a key, and browse — the page is
+  served same-origin, so it targets the very instance it loaded from (no base URL, no CORS
+  config). `dashboard/` is now bundled into the image (`COPY dashboard/`); the deployment
+  contract (`verify-deployment.py`) asserts `/` returns 200, so a missing page fails the
+  gate instead of 404-ing silently. The standalone file remains for hosting elsewhere.
+
 ## v2.1.29 — Read REST API + standalone memory-browser dashboard
 
 - **Why:** the shared store was MCP-only — no way for a human (or a non-agent tool) to
