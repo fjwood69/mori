@@ -100,6 +100,9 @@ The last example chains existing tooling (Snyk, linters, SAST scanners) into the
 ## `/pensieve` — Memory Search
 
 Search the shared memory store by keyword, type, tag, device, or time window.
+Keyword queries use ranked full-text search (SQLite FTS5 / Postgres `tsvector`,
+with stemming) — results are ordered by relevance; with no query, the most recent
+memories are listed.
 
 **MCP tool:** `mori-memory_search`
 
