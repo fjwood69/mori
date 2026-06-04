@@ -2040,6 +2040,18 @@ def _read_api_params(request: Request) -> dict:
     }
 
 
+def _json_safe_rows(rows: list) -> list:
+    """Convert datetime/date values to ISO strings so JSONResponse can serialize them.
+    Postgres returns TIMESTAMPTZ as datetime; SQLite returns plain strings."""
+    from datetime import date, datetime
+
+    for r in rows:
+        for k, v in list(r.items()):
+            if isinstance(v, (datetime, date)):
+                r[k] = v.isoformat()
+    return rows
+
+
 @mcp.custom_route("/api/memories", methods=["GET"])
 async def get_memories(request: Request) -> JSONResponse:
     """Ranked full-text (or recency) search over the shared memory store → JSON.
@@ -2061,6 +2073,25 @@ async def get_memories(request: Request) -> JSONResponse:
         return JSONResponse({"memories": memories, "count": len(memories)})
     except Exception as e:
         logger.error("GET /api/memories failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/memories/{name}", methods=["GET"])
+async def get_memory_detail(request: Request) -> JSONResponse:
+    """Return full detail (including body + provenance) for a single memory → JSON.
+
+    Companion lazy-load for GET /api/memories (list). Does NOT bump retrieval_count.
+    Response shape: name, title, type, tier, tags, description, body, created_at,
+    updated_at, origin_clients, retrieval_count, freshness_status.
+    """
+    name = request.path_params["name"]
+    try:
+        mem = await _a(memory_store.get_memory(name))
+        if mem is None:
+            return JSONResponse({"error": "not found", "name": name}, status_code=404)
+        return JSONResponse(_json_safe_rows([mem])[0])
+    except Exception as e:
+        logger.error("GET /api/memories/%s failed: %s", name, e)
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
@@ -2088,7 +2119,7 @@ async def get_events(request: Request) -> JSONResponse:
                 limit=limit,
             )
         )
-        return JSONResponse({"events": events, "count": len(events)})
+        return JSONResponse({"events": _json_safe_rows(events), "count": len(events)})
     except Exception as e:
         logger.error("GET /api/events failed: %s", e)
         return JSONResponse({"error": str(e)}, status_code=500)

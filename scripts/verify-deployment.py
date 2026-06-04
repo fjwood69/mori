@@ -23,6 +23,7 @@ Exit 0 = contract satisfied, 1 = violation.
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # Routes with no auth that must return 200.
@@ -88,6 +89,37 @@ def main():
                 f"-- expected noauth=401, auth=200"
             )
             fail = 1
+
+    # Dynamic detail probe: GET /api/memories/{name} — can't use a static path because
+    # ApiKeyMiddleware 401s any /api/* route it doesn't recognise, so a static empty-store
+    # probe would false-fail. Fetch the first memory from the list; skip if store is empty.
+    list_url = base + "/api/memories?limit=1"
+    list_req = urllib.request.Request(list_url, method="GET")
+    list_req.add_header("X-Api-Key", key)
+    mem_name = None
+    try:
+        with urllib.request.urlopen(list_req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode())
+            memories = payload.get("memories") or []
+            if memories:
+                mem_name = memories[0].get("name")
+    except Exception:
+        pass  # connection errors already caught by GUARDED_ROUTES above
+
+    if mem_name:
+        safe = urllib.parse.quote(mem_name, safe="")
+        noauth = _request("GET", f"{base}/api/memories/{safe}")
+        auth = _request("GET", f"{base}/api/memories/{safe}", key=key)
+        if noauth == 401 and auth == 200:
+            print(f"  OK  GET /api/memories/{{name}} (noauth={noauth} auth={auth})")
+        else:
+            print(
+                f"  XX  GET /api/memories/{{name}} (noauth={noauth} auth={auth})"
+                f" -- expected noauth=401, auth=200"
+            )
+            fail = 1
+    else:
+        print("  --  GET /api/memories/{name} SKIP (store empty, cannot probe)")
 
     print("PASS" if fail == 0 else "FAIL")
     return fail

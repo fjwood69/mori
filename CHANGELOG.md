@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.1.29 — Read REST API + standalone memory-browser dashboard
+
+- **Why:** the shared store was MCP-only — no way for a human (or a non-agent tool) to
+  browse memories without a Claude Code session. This adds a small read REST surface and a
+  zero-dependency web UI that consumes it, so the store is browsable from any browser.
+- **Read REST API (`mori_advisor/main.py`):** `GET /api/memories` (ranked FTS or recency —
+  lean list shape via `search_json`, no body), `GET /api/memories/{name}` (full detail incl.
+  body + provenance — the lazy-load companion; does **not** bump `retrieval_count`), and
+  `GET /api/events` (session event log, newest first). All auto-guarded by `ApiKeyMiddleware`
+  (`X-Api-Key`) and wrapped by `CORSMiddleware` (`MORI_CORS_ORIGINS`, default `*`) placed
+  *outside* the auth layer so browser preflight isn't 401'd. New `get_memory()` on both
+  backends returns an identical 12-key curated dict; `_json_safe_rows` converts Postgres
+  `TIMESTAMPTZ`→ISO so JSON serialization can't 500.
+- **Standalone dashboard (`dashboard/`):** one self-contained `index.html` (vanilla JS,
+  inline CSS, no build step, no CDN) — search + browse memories, click a card to unfurl the
+  full body + a provenance footer (created/updated/clients/tier/retrievals/freshness),
+  lazy-fetched once and cached. Base URL + API key in `localStorage`; every store-derived
+  string HTML-escaped. Runs via `python3 -m http.server` or any static host; points at any
+  mori instance. Read-only — delete/write deferred.
+- **Contract:** `scripts/verify-deployment.py` now probes all three read routes; the
+  by-name probe is **dynamic** (discovers a real name from the list, `SKIP`s on an empty
+  store) because `ApiKeyMiddleware` 401s unrouted `/api/*` paths too, so a static 200 probe
+  would false-fail.
+- **Fixes:** `/metrics` no longer hangs ~10s when NATS is unreachable (`collect_metrics`
+  NATS connect now `allow_reconnect=False` + `asyncio.wait_for`); `GET /api/events` no
+  longer 500s on Postgres (`TIMESTAMPTZ` now serialized via `_json_safe_rows`).
+
 ## v2.1.28 — Schema-migration runner + full-text search
 
 - **Why:** the DB schema was defined ad-hoc across four sources (three SQLite bootstrappers

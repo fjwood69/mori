@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mori — shared memory dashboard</title>
+    <style>
+        :root {
+            --bg: #0a1413;
+            --panel: #0f1d1b;
+            --panel2: #122422;
+            --line: #1c3a36;
+            --ink: #d7efe9;
+            --dim: #7fa39c;
+            --accent: #7fffd4;
+            --warn: #ffb454;
+            --err: #ff6b6b;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--ink);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.5;
+            padding: 0;
+        }
+
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background-color: var(--panel);
+            border-bottom: 1px solid var(--line);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-left {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: var(--accent);
+            font-family: 'Courier New', monospace;
+            letter-spacing: 0.05em;
+        }
+
+        .subtitle {
+            font-size: 0.75rem;
+            color: var(--dim);
+            font-weight: normal;
+        }
+
+        .header-right {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .key-button {
+            padding: 0.5rem 0.75rem;
+            background: var(--panel2);
+            border: 1px solid var(--line);
+            color: var(--dim);
+            cursor: pointer;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            transition: background 0.2s, color 0.2s;
+        }
+
+        .key-button:hover {
+            background: var(--line);
+            color: var(--accent);
+        }
+
+        main {
+            max-width: 1000px;
+            margin: 2rem auto;
+            padding: 0 2rem;
+        }
+
+
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        input[type="text"],
+        input[type="password"],
+        input[type="number"],
+        select {
+            padding: 0.75rem;
+            background-color: var(--panel2);
+            border: 1px solid var(--line);
+            color: var(--ink);
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 0.95rem;
+            transition: border-color 0.2s;
+        }
+
+        input[type="text"]:focus,
+        input[type="password"]:focus,
+        input[type="number"]:focus,
+        select:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        input[type="text"],
+        input[type="password"] {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        input[type="number"] {
+            width: 120px;
+        }
+
+        select {
+            min-width: 150px;
+        }
+
+        button {
+            padding: 0.75rem 1.5rem;
+            background-color: var(--accent);
+            border: none;
+            color: var(--bg);
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.95rem;
+            transition: opacity 0.2s, background-color 0.2s;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        button:active {
+            transform: scale(0.98);
+        }
+
+        /* Results */
+        .results {
+            margin-top: 2rem;
+        }
+
+        .meta-line {
+            color: var(--dim);
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card {
+            background-color: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            transition: border-color 0.2s;
+        }
+
+        .card:hover {
+            border-color: var(--accent);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+            margin-bottom: 0.75rem;
+            flex-wrap: wrap;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .card-header:hover {
+            opacity: 0.8;
+        }
+
+        .card-toggle {
+            display: inline-block;
+            margin-right: 0.5rem;
+            font-size: 0.9em;
+            transition: transform 0.2s;
+        }
+
+        .card.open .card-toggle {
+            transform: rotate(90deg);
+        }
+
+        .card-name {
+            font-family: 'Courier New', monospace;
+            color: var(--accent);
+            font-weight: bold;
+            font-size: 1rem;
+            word-break: break-word;
+        }
+
+        .card-updated {
+            color: var(--dim);
+            font-size: 0.85rem;
+            font-family: 'Courier New', monospace;
+            white-space: nowrap;
+        }
+
+        .card-title {
+            color: var(--ink);
+            font-size: 1rem;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+        }
+
+        .card-badges {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            background-color: var(--panel2);
+            border: 1px solid var(--line);
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: var(--dim);
+        }
+
+        .badge.type {
+            color: var(--accent);
+            border-color: var(--accent);
+        }
+
+        .badge.tier {
+            color: var(--warn);
+            border-color: var(--warn);
+        }
+
+        .card-tags {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .chip {
+            display: inline-block;
+            padding: 0.25rem 0.625rem;
+            background-color: var(--line);
+            border-radius: 4px;
+            font-size: 0.75rem;
+            color: var(--dim);
+            font-family: 'Courier New', monospace;
+        }
+
+        .card-description {
+            color: var(--dim);
+            font-size: 0.9rem;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .card-detail {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-in-out;
+        }
+
+        .card.open .card-detail {
+            max-height: 5000px;
+        }
+
+        .card-detail-body {
+            margin-top: 1rem;
+            padding: 1rem;
+            background-color: var(--panel2);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            color: var(--ink);
+            line-height: 1.4;
+        }
+
+        .card-detail-loading {
+            margin-top: 1rem;
+            padding: 1rem;
+            color: var(--dim);
+            font-size: 0.9rem;
+        }
+
+        .card-detail-error {
+            margin-top: 1rem;
+            padding: 1rem;
+            background-color: rgba(255, 107, 107, 0.1);
+            border: 1px solid var(--err);
+            border-radius: 6px;
+            color: var(--err);
+            font-size: 0.9rem;
+        }
+
+        .card-provenance {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--line);
+            font-family: 'Courier New', monospace;
+            font-size: 0.8rem;
+            color: var(--dim);
+            line-height: 1.6;
+        }
+
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            z-index: 200;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal.open {
+            display: flex;
+        }
+
+        .modal-content {
+            background-color: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 2rem;
+            max-width: 500px;
+            width: 90%;
+        }
+
+        .modal-title {
+            font-size: 1.25rem;
+            font-weight: bold;
+            color: var(--accent);
+            margin-bottom: 1.5rem;
+        }
+
+        .modal-field {
+            margin-bottom: 1.5rem;
+        }
+
+        .modal-label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: var(--dim);
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .modal-field input {
+            width: 100%;
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: flex-end;
+        }
+
+        .modal-buttons button {
+            flex: 0;
+        }
+
+        .modal-buttons .cancel-btn {
+            background-color: var(--panel2);
+            color: var(--dim);
+            border: 1px solid var(--line);
+        }
+
+        .modal-buttons .cancel-btn:hover {
+            background-color: var(--line);
+            color: var(--ink);
+        }
+
+        /* Error / success messages */
+        .message {
+            padding: 1rem;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            display: none;
+        }
+
+        .message.show {
+            display: block;
+        }
+
+        .message.error {
+            background-color: rgba(255, 107, 107, 0.1);
+            border: 1px solid var(--err);
+            color: var(--err);
+        }
+
+        .message.info {
+            background-color: rgba(127, 255, 212, 0.1);
+            border: 1px solid var(--accent);
+            color: var(--accent);
+        }
+
+        .loading {
+            text-align: center;
+            color: var(--dim);
+            padding: 2rem;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: var(--dim);
+            padding: 2rem;
+            font-style: italic;
+        }
+
+        @media (max-width: 768px) {
+            header {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .header-left {
+                width: 100%;
+            }
+
+            .header-right {
+                width: 100%;
+                justify-content: flex-end;
+            }
+
+            .controls {
+                flex-direction: column;
+            }
+
+            input[type="text"],
+            input[type="password"],
+            select {
+                width: 100%;
+            }
+
+            .card-header {
+                flex-direction: column;
+            }
+
+            .card-updated {
+                align-self: flex-start;
+            }
+
+            main {
+                padding: 0 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            <div class="logo">mori</div>
+            <div class="subtitle">shared memory dashboard</div>
+        </div>
+        <div class="header-right">
+            <button class="key-button" id="keyButton">⚙ key</button>
+        </div>
+    </header>
+
+    <main>
+        <!-- Memories -->
+        <div class="controls">
+            <input type="text" id="memoryQuery" placeholder="search memories...">
+            <select id="memoryType">
+                <option value="">any type</option>
+                <option value="project">project</option>
+                <option value="profile">profile</option>
+                <option value="pattern">pattern</option>
+                <option value="decision">decision</option>
+                <option value="standard">standard</option>
+                <option value="requirement">requirement</option>
+            </select>
+            <input type="text" id="memoryTag" placeholder="tag filter...">
+            <input type="number" id="memoryLimit" value="50" min="1" max="200">
+            <button id="memorySearch">Search</button>
+        </div>
+        <div id="memoryResults" class="results"></div>
+    </main>
+
+    <!-- Key Modal -->
+    <div id="keyModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-title">Connection Settings</div>
+            <div class="modal-field">
+                <label class="modal-label">Base URL</label>
+                <input type="text" id="baseUrlInput" placeholder="http://localhost:8970">
+            </div>
+            <div class="modal-field">
+                <label class="modal-label">API Key</label>
+                <input type="password" id="apiKeyInput" placeholder="your API key">
+            </div>
+            <div id="modalMessage" class="message"></div>
+            <div class="modal-buttons">
+                <button class="cancel-btn" id="modalCancel">Cancel</button>
+                <button id="modalSave">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ===== CONFIG & STATE =====
+        let state = {
+            baseUrl: localStorage.getItem('mori_url') || '',
+            apiKey: localStorage.getItem('mori_key') || ''
+        };
+
+        // ===== MEMORY DETAIL CACHE =====
+        const memoryDetailCache = new Map();
+
+        // ===== UTILITY: HTML ESCAPE =====
+        function esc(str) {
+            if (typeof str !== 'string') return '';
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        // ===== API WRAPPER =====
+        async function apiCall(endpoint, params = {}) {
+            if (!state.apiKey) {
+                showKeyModal();
+                throw new Error('No API key configured');
+            }
+
+            const url = new URL(state.baseUrl || window.location.origin);
+            url.pathname = endpoint;
+            Object.keys(params).forEach(key => {
+                if (params[key] !== '' && params[key] !== null && params[key] !== undefined) {
+                    url.searchParams.append(key, params[key]);
+                }
+            });
+
+            try {
+                const response = await fetch(url.toString(), {
+                    method: 'GET',
+                    headers: {
+                        'X-Api-Key': state.apiKey,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (response.status === 401) {
+                    showKeyModal();
+                    showError('Unauthorized — check your API key');
+                    throw new Error('Unauthorized');
+                }
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                return await response.json();
+            } catch (err) {
+                if (err.message !== 'Unauthorized') {
+                    showError(`Error: ${err.message}`);
+                }
+                throw err;
+            }
+        }
+
+        // ===== MESSAGE HELPERS =====
+        function showError(msg) {
+            const results = document.getElementById('memoryResults');
+            const msgEl = document.createElement('div');
+            msgEl.className = 'message error show';
+            msgEl.textContent = msg;
+            results.insertBefore(msgEl, results.firstChild);
+            setTimeout(() => msgEl.remove(), 5000);
+        }
+
+        function showInfo(msg) {
+            const results = document.getElementById('memoryResults');
+            const msgEl = document.createElement('div');
+            msgEl.className = 'message info show';
+            msgEl.textContent = msg;
+            results.insertBefore(msgEl, results.firstChild);
+            setTimeout(() => msgEl.remove(), 3000);
+        }
+
+        // ===== MEMORY DETAIL FETCH =====
+        async function fetchMemoryDetail(memName) {
+            if (memoryDetailCache.has(memName)) {
+                return memoryDetailCache.get(memName);
+            }
+
+            try {
+                const data = await apiCall('/api/memories/' + encodeURIComponent(memName));
+                memoryDetailCache.set(memName, data);
+                return data;
+            } catch (err) {
+                throw err;
+            }
+        }
+
+        // ===== ACCORDION TOGGLE =====
+        function toggleMemoryAccordion(card, memName) {
+            const isOpen = card.classList.contains('open');
+
+            if (isOpen) {
+                // Close it
+                card.classList.remove('open');
+            } else {
+                // Open and fetch if needed
+                card.classList.add('open');
+                const detailPanel = card.querySelector('.card-detail');
+
+                if (detailPanel.dataset.fetched !== 'true') {
+                    // First expand: fetch the detail
+                    detailPanel.innerHTML = '<div class="card-detail-loading">Loading…</div>';
+
+                    fetchMemoryDetail(memName)
+                        .then(data => {
+                            renderMemoryDetail(detailPanel, data);
+                            detailPanel.dataset.fetched = 'true';
+                        })
+                        .catch(err => {
+                            detailPanel.innerHTML = `<div class="card-detail-error">Error loading memory: ${esc(err.message)}</div>`;
+                        });
+                }
+            }
+        }
+
+        // ===== DETAIL RENDER =====
+        function renderMemoryDetail(detailPanel, data) {
+            detailPanel.innerHTML = '';
+
+            const bodyDiv = document.createElement('div');
+            bodyDiv.className = 'card-detail-body';
+            bodyDiv.innerHTML = esc(data.body || '');
+            detailPanel.appendChild(bodyDiv);
+
+            // Provenance footer
+            const provenanceDiv = document.createElement('div');
+            provenanceDiv.className = 'card-provenance';
+
+            const parts = [];
+
+            if (data.created_at) {
+                parts.push(`created: ${esc(data.created_at.substring(0, 16))}`);
+            }
+
+            if (data.updated_at) {
+                parts.push(`updated: ${esc(data.updated_at.substring(0, 16))}`);
+            }
+
+            if (data.origin_clients && data.origin_clients.length > 0) {
+                parts.push(`clients: ${esc(data.origin_clients.join(', '))}`);
+            }
+
+            if (data.tier) {
+                parts.push(`tier: ${esc(data.tier)}`);
+            }
+
+            if (data.retrieval_count !== undefined) {
+                parts.push(`retrieved ×${data.retrieval_count}`);
+            }
+
+            if (data.freshness_status) {
+                parts.push(`freshness: ${esc(data.freshness_status)}`);
+            }
+
+            provenanceDiv.innerHTML = parts.join(' · ') || '—';
+            detailPanel.appendChild(provenanceDiv);
+        }
+
+        // ===== MEMORIES =====
+        async function loadMemories() {
+            const query = document.getElementById('memoryQuery').value;
+            const type = document.getElementById('memoryType').value;
+            const tag = document.getElementById('memoryTag').value;
+            const limit = document.getElementById('memoryLimit').value;
+
+            const results = document.getElementById('memoryResults');
+            results.innerHTML = '<div class="loading">Searching…</div>';
+
+            try {
+                const data = await apiCall('/api/memories', {
+                    query,
+                    type,
+                    tag,
+                    limit
+                });
+
+                results.innerHTML = '';
+
+                const isRanked = query.trim().length > 0;
+                const metaText = data.count > 0
+                    ? `${data.count} result${data.count !== 1 ? 's' : ''} ${isRanked ? 'for "' + query.trim() + '" (ranked)' : '(most recent)'}`
+                    : 'No memories found.';
+
+                const meta = document.createElement('div');
+                meta.className = 'meta-line';
+                meta.textContent = metaText;
+                results.appendChild(meta);
+
+                if (data.memories && data.memories.length > 0) {
+                    data.memories.forEach(mem => {
+                        const card = document.createElement('div');
+                        card.className = 'card';
+
+                        const header = document.createElement('div');
+                        header.className = 'card-header';
+
+                        const toggleSpan = document.createElement('span');
+                        toggleSpan.className = 'card-toggle';
+                        toggleSpan.textContent = '▸';
+
+                        const nameSpan = document.createElement('span');
+                        nameSpan.className = 'card-name';
+                        nameSpan.textContent = mem.name;
+
+                        const updatedSpan = document.createElement('span');
+                        updatedSpan.className = 'card-updated';
+                        updatedSpan.textContent = (mem.updated_at || '').substring(0, 16);
+
+                        header.appendChild(toggleSpan);
+                        header.appendChild(nameSpan);
+                        header.appendChild(updatedSpan);
+
+                        // Click handler for toggle
+                        header.addEventListener('click', () => {
+                            toggleMemoryAccordion(card, mem.name);
+                        });
+
+                        card.appendChild(header);
+
+                        const title = document.createElement('div');
+                        title.className = 'card-title';
+                        title.textContent = mem.title;
+                        card.appendChild(title);
+
+                        const badges = document.createElement('div');
+                        badges.className = 'card-badges';
+                        badges.innerHTML = `
+                            <span class="badge type">${esc(mem.type)}</span>
+                            <span class="badge tier">${esc(mem.tier)}</span>
+                        `;
+                        card.appendChild(badges);
+
+                        if (mem.tags && mem.tags.length > 0) {
+                            const tagsDiv = document.createElement('div');
+                            tagsDiv.className = 'card-tags';
+                            mem.tags.forEach(t => {
+                                const chip = document.createElement('span');
+                                chip.className = 'chip';
+                                chip.textContent = t;
+                                tagsDiv.appendChild(chip);
+                            });
+                            card.appendChild(tagsDiv);
+                        }
+
+                        const desc = document.createElement('div');
+                        desc.className = 'card-description';
+                        desc.textContent = mem.description || '';
+                        card.appendChild(desc);
+
+                        // Detail panel (collapsed by default)
+                        const detailPanel = document.createElement('div');
+                        detailPanel.className = 'card-detail';
+                        detailPanel.dataset.fetched = 'false';
+                        card.appendChild(detailPanel);
+
+                        results.appendChild(card);
+                    });
+                }
+            } catch (err) {
+                // Error already displayed by apiCall
+            }
+        }
+
+        document.getElementById('memorySearch').addEventListener('click', loadMemories);
+        document.getElementById('memoryQuery').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') loadMemories();
+        });
+
+        // ===== KEY MODAL =====
+        function showKeyModal() {
+            document.getElementById('baseUrlInput').value = state.baseUrl;
+            document.getElementById('apiKeyInput').value = state.apiKey;
+            document.getElementById('keyModal').classList.add('open');
+        }
+
+        function hideKeyModal() {
+            document.getElementById('keyModal').classList.remove('open');
+            document.getElementById('modalMessage').classList.remove('show');
+        }
+
+        document.getElementById('keyButton').addEventListener('click', showKeyModal);
+
+        document.getElementById('modalCancel').addEventListener('click', hideKeyModal);
+
+        document.getElementById('modalSave').addEventListener('click', () => {
+            const baseUrl = document.getElementById('baseUrlInput').value;
+            const apiKey = document.getElementById('apiKeyInput').value;
+
+            if (!apiKey) {
+                const msg = document.getElementById('modalMessage');
+                msg.className = 'message error show';
+                msg.textContent = 'API key is required';
+                return;
+            }
+
+            state.baseUrl = baseUrl;
+            state.apiKey = apiKey;
+
+            localStorage.setItem('mori_url', baseUrl);
+            localStorage.setItem('mori_key', apiKey);
+
+            const msg = document.getElementById('modalMessage');
+            msg.className = 'message info show';
+            msg.textContent = 'Settings saved';
+
+            setTimeout(hideKeyModal, 1000);
+        });
+
+        document.getElementById('keyModal').addEventListener('click', (e) => {
+            if (e.target === document.getElementById('keyModal')) {
+                hideKeyModal();
+            }
+        });
+
+        // ===== INIT =====
+        document.addEventListener('DOMContentLoaded', () => {
+            // Load initial memories if we have a key
+            if (state.apiKey) {
+                loadMemories();
+            } else {
+                showKeyModal();
+            }
+        });
+    </script>
+</body>
+</html>

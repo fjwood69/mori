@@ -84,6 +84,7 @@ powershell -File scripts/install-mori-cursor.ps1
 | **Dream pipeline** | Auto-distils session events into structured memories | `/dream` |
 | **Session grounding** | Loads shared context at session start — not per-query RAG; lightweight delta re-grounding after context compaction | `/brief`, `/brief --post-compact` |
 | **Memory search** | Ranked full-text search and browse across the shared store (SQLite FTS5 / Postgres `tsvector`) | `/pensieve` |
+| **Web dashboard** | Standalone browser UI to search, browse, and unfurl memories over a read REST API | — |
 | **Universal ingestion** | Feed PDFs, images, git, transcripts into the memory store | `/ingest` |
 | **Strategic review** | LLM guidance with focus areas and auto-injected standards | `/consult` |
 | **Requirements tracking** | Lightweight project checklist surfaced via `/brief` | `/req` |
@@ -235,6 +236,31 @@ without any human session on the receiving end.
 
 Requires the `mori-msg` daemon running alongside `mori-advisor` (included in
 the default pod stack). See [docs/reference/msg.md](docs/reference/msg.md) for full reference.
+
+### Web dashboard
+
+Not everyone who needs the shared memory runs a Claude Code session. A small
+**read REST API** exposes the store over HTTP, and a standalone **dashboard**
+(`dashboard/index.html`) consumes it — search, browse, and click any card to
+unfurl its full body and provenance (origin clients, tier, retrieval count,
+freshness). It's a single self-contained file (vanilla JS, no build step, no
+CDN), so it runs from any static host and points at any mori instance.
+
+```bash
+cd dashboard && python3 -m http.server 8055
+# open http://localhost:8055 → set base URL + API key (stored in localStorage)
+```
+
+| Route | Returns |
+|-------|---------|
+| `GET /api/memories?query=&type=&tag=&client=&since=&limit=` | Ranked full-text (or recency) list — lean shape, no body |
+| `GET /api/memories/{name}` | One memory in full — body + provenance (lazy-loaded on unfurl) |
+| `GET /api/events?session_id=&client=&since=&limit=` | Session event log, newest first |
+
+Every route is API-key gated (`X-Api-Key`) and CORS-wrapped for cross-origin
+browser access — set `MORI_CORS_ORIGINS` to your dashboard origin(s) in
+production. The dashboard is **read-only**; write actions (delete, trusted-dreamer
+review) are deferred until the read surface is validated.
 
 ### Architecture
 

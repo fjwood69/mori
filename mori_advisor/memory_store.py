@@ -798,6 +798,44 @@ class MemoryStore:
         ]
         return "\n".join(parts)
 
+    def get_memory(self, name: str) -> dict | None:
+        """Return a curated detail dict for a single memory, or None if not found.
+
+        Does NOT bump retrieval_count (browse/API access, not agent recall).
+        Returns exactly the DETAIL_KEYS shape:
+          name, title, type, tier, tags, description, body,
+          created_at, updated_at, origin_clients, retrieval_count, freshness_status.
+        """
+        import sqlite3
+
+        conn = self._get_conn()
+        try:
+            cur = conn.execute("SELECT * FROM memories WHERE name = ?", (name,))
+            row = cur.fetchone()
+        except sqlite3.Error:
+            return None
+        finally:
+            conn.close()
+
+        if not row:
+            return None
+
+        m = self._row_to_dict(row)
+        return {
+            "name": m["name"],
+            "title": m["title"],
+            "type": m["type"],
+            "tier": m["tier"],
+            "tags": m["tags"],
+            "description": m["description"],
+            "body": m["body"],
+            "created_at": m["created_at"],
+            "updated_at": m["updated_at"],
+            "origin_clients": m["origin_clients"],
+            "retrieval_count": m["retrieval_count"],
+            "freshness_status": m["freshness_status"],
+        }
+
     def list(
         self,
         type_filter: str | None = None,
