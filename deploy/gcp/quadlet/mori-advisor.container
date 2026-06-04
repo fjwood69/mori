@@ -1,0 +1,29 @@
+# Quadlet unit for the mori-advisor MCP server (rootless, user `mori`).
+# Installed to ~mori/.config/containers/systemd/ — the podman-user-generator
+# turns this into mori-advisor.service. This file is the single source of truth
+# for how mori-advisor runs; the startup script and CD both only `systemctl`.
+[Unit]
+Description=Mori advisor — MCP server (port 8968)
+
+[Container]
+ContainerName=mori-advisor
+Image=ghcr.io/fjwood69/mori:latest
+Network=host
+User=0
+Volume=/data/mori-advisor:/data/mori-advisor:Z
+EnvironmentFile=/data/mori-advisor/.env
+Exec=python -m mori_advisor.main
+
+[Service]
+Restart=always
+RestartSec=5
+# Never give up: default StartLimitBurst would leave the unit dead after 5
+# failures in 10s — fatal while waiting for a slow Postgres.
+StartLimitIntervalSec=0
+# Readiness gate: wait for Postgres (5432) before starting. Works regardless of
+# how pg is launched (it is an imperative `podman run` container). bash /dev/tcp
+# avoids any nc/pg_isready host dependency.
+ExecStartPre=/bin/bash -c 'until (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; do sleep 2; done'
+
+[Install]
+WantedBy=default.target

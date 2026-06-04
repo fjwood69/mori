@@ -152,23 +152,40 @@ ENVEOF
 chown mori:mori /data/mori-advisor/.env
 chmod 600 /data/mori-advisor/.env
 
-# ── Start mori-advisor (8968), mori-ingestion (8969), mori-msg ───────────────
-su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --replace --name mori-advisor --restart=always --network=host \
-  --user 0 -v /data/mori-advisor:/data/mori-advisor:Z --env-file /data/mori-advisor/.env '$CONTAINER_IMAGE'"
+# ── Install Quadlet units for the mori app (single source of truth) ──────────
+# The app containers (advisor/ingestion/msg) + dream are systemd-managed via
+# Quadlet. Postgres above stays an imperative `podman run` (stable singleton).
+# Unit files are injected verbatim by Terraform from deploy/gcp/quadlet/ so the
+# VM's unit IS the repo file.
+install -d -o mori -g mori -m 700 /home/mori/.config/containers/systemd /home/mori/.config/systemd/user
+cat > /home/mori/.config/containers/systemd/mori-advisor.container <<'UNIT_ADVISOR'
+${quadlet_advisor}
+UNIT_ADVISOR
+cat > /home/mori/.config/containers/systemd/mori-ingestion.container <<'UNIT_INGESTION'
+${quadlet_ingestion}
+UNIT_INGESTION
+cat > /home/mori/.config/containers/systemd/mori-msg.container <<'UNIT_MSG'
+${quadlet_msg}
+UNIT_MSG
+cat > /home/mori/.config/systemd/user/dream.service <<'UNIT_DREAMSVC'
+${dream_service}
+UNIT_DREAMSVC
+cat > /home/mori/.config/systemd/user/dream.timer <<'UNIT_DREAMTMR'
+${dream_timer}
+UNIT_DREAMTMR
+chown -R mori:mori /home/mori/.config
 
-su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --replace --name mori-ingestion --restart=always --network=host \
-  --user 0 -v /data/mori-advisor:/data/mori-advisor:Z --env-file /data/mori-advisor/.env \
-  '$CONTAINER_IMAGE' python -m mori_advisor.ingestion_server"
+# Ensure the mori user manager is up (linger started it), then load + start.
+DBUS="DBUS_SESSION_BUS_ADDRESS=unix:path=$RUNTIME_DIR/bus"
+systemctl start "user@$(id -u mori).service" 2>/dev/null || true
+for i in $(seq 1 15); do [ -S "$RUNTIME_DIR/bus" ] && break; sleep 1; done
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR $DBUS systemctl --user daemon-reload"
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR $DBUS systemctl --user start mori-advisor mori-ingestion mori-msg"
+su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR $DBUS systemctl --user enable --now dream.timer"
+echo "Mori app units started (Quadlet); dream timer enabled."
 
-su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR podman run -d --replace --name mori-msg --restart=always --network=host \
-  --user 0 -v /data/mori-advisor:/data/mori-advisor:Z --env-file /data/mori-advisor/.env \
-  -e MORI_MSG_HEADLESS_ENABLED=false '$CONTAINER_IMAGE' python -m mori_advisor.msg_daemon"
-
-echo "Mori containers started."
-
-# ── Dream cron (every 4 hours) ───────────────────────────────────────────
-DREAM_CRON="0 */4 * * * XDG_RUNTIME_DIR=$RUNTIME_DIR podman exec mori-advisor python -m mori_advisor.dream_job 2>&1 | tee -a /data/mori-advisor/dream-cron.log | logger -t mori-dream"
-(crontab -l 2>/dev/null | grep -v mori-advisor; echo "$DREAM_CRON") | crontab -
+# Remove any legacy dream crontab line (superseded by dream.timer)
+(crontab -l 2>/dev/null | grep -v 'dream_job') | crontab - 2>/dev/null || true
 
 # ── Backup cron (daily 06:00 UTC): pg_dump → GCS via metadata-server auth ─────
 BACKUP_SCRIPT="/usr/local/bin/mori-backup.sh"

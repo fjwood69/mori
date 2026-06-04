@@ -1,0 +1,11 @@
+# Schedules dream.service every 4 hours (matches the prior `0 */4 * * *` cron).
+# Plain user systemd unit — installed to ~mori/.config/systemd/user/.
+[Unit]
+Description=Mori dream pipeline schedule (every 4h)
+
+[Timer]
+OnCalendar=*-*-* 00,04,08,12,16,20:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

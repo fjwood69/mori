@@ -1,0 +1,23 @@
+# Quadlet unit for the mori NATS message daemon (rootless, user `mori`).
+# No inbound port — a queue worker; sole writer to /data/mori-advisor/msg.db.
+[Unit]
+Description=Mori message daemon (NATS)
+
+[Container]
+ContainerName=mori-msg
+Image=ghcr.io/fjwood69/mori:latest
+Network=host
+User=0
+Volume=/data/mori-advisor:/data/mori-advisor:Z
+EnvironmentFile=/data/mori-advisor/.env
+Environment=MORI_MSG_HEADLESS_ENABLED=false
+Exec=python -m mori_advisor.msg_daemon
+
+[Service]
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+ExecStartPre=/bin/bash -c 'until (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; do sleep 2; done'
+
+[Install]
+WantedBy=default.target

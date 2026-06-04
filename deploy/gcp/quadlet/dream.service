@@ -1,0 +1,13 @@
+# Mori dream pipeline — one-shot run, triggered by dream.timer.
+# Replaces the crontab `podman exec` line. Plain user systemd unit (NOT a Quadlet
+# .container) — installed to ~mori/.config/systemd/user/.
+[Unit]
+Description=Mori dream pipeline run
+After=mori-advisor.service
+Wants=mori-advisor.service
+
+[Service]
+Type=oneshot
+# Pipe through logger so the run stays visible in Cloud Logging (mori-dream tag),
+# matching the prior cron behaviour, plus a local rolling log.
+ExecStart=/bin/sh -c 'podman exec mori-advisor python -m mori_advisor.dream_job 2>&1 | tee -a /data/mori-advisor/dream-cron.log | logger -t mori-dream'

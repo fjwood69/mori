@@ -94,6 +94,7 @@ Small team coherence. Requires v2.0 foundation.
 - v2.1.16–v2.1.19: Git commit ingestion + consult capture — `POST /api/git/ingest`, `GET /api/git/watermark`, `MORI_CONSULT_CAPTURE`; pinned FastMCP==3.2.0 + Python 3.12 to fix `custom_route` silent failure on Python 3.14
 - v2.1.20–v2.1.23: Deploy unified on rootless `--env-file --replace`; deployment contract gate (`scripts/verify-deployment.py`) shared by UAT + CD
 - v2.1.24: Assistant reasoning capture — Stop hook ships a bounded transcript tail; server extracts the turn's assistant text into `session_events.assistant_text`; dream distills it
+- v2.1.25: GCE app containers (`mori-advisor`/`ingestion`/`msg`) managed by rootless **systemd Quadlet** — one declarative source of truth (units injected verbatim by Terraform), `dream` cron → `dream.timer`, CD switched to `podman pull` + `systemctl --user restart`; `mori-pg` stays imperative. Lays the substrate for horizontal worker scaling (template units)
 
 **Remaining:**
 

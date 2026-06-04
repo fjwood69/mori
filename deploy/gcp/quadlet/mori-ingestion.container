@@ -1,0 +1,24 @@
+# Quadlet unit for the mori ingestion worker (rootless, user `mori`).
+# Single source of truth for how mori-ingestion runs; startup + CD only `systemctl`.
+# Future scaling: rename to mori-ingestion@.container and start @{1..N} once the
+# worker is portless/queue-driven (see ROADMAP — needs app support).
+[Unit]
+Description=Mori ingestion worker (port 8969)
+
+[Container]
+ContainerName=mori-ingestion
+Image=ghcr.io/fjwood69/mori:latest
+Network=host
+User=0
+Volume=/data/mori-advisor:/data/mori-advisor:Z
+EnvironmentFile=/data/mori-advisor/.env
+Exec=python -m mori_advisor.ingestion_server
+
+[Service]
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+ExecStartPre=/bin/bash -c 'until (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; do sleep 2; done'
+
+[Install]
+WantedBy=default.target

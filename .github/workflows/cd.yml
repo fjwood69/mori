@@ -88,43 +88,44 @@ jobs:
           script: |
             set -e
             VERSION="${GITHUB_REF_NAME#v}"
-            IMAGE="ghcr.io/fjwood69/mori:${VERSION}"
+            IMAGE_VERSION="ghcr.io/fjwood69/mori:${VERSION}"
+            IMAGE_LATEST="ghcr.io/fjwood69/mori:latest"
+            IMAGE_ROLLBACK="ghcr.io/fjwood69/mori:previous-rollback"
             ENVFILE="/data/mori-advisor/.env"
             MORI_UID=$(id -u mori)
             RT="XDG_RUNTIME_DIR=/run/user/${MORI_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${MORI_UID}/bus"
+            # All three mori app containers share the :latest image and are managed
+            # as rootless Quadlet units — restart them together so none drifts onto
+            # stale code (the drift class this migration exists to kill).
+            UNITS="mori-advisor mori-ingestion mori-msg"
 
-            # Containers run ROOTLESS as the mori user (matching the GCE startup
-            # script). The CD user reaches that runtime via `sudo su - mori`.
-            # All runtime config (incl. secrets) lives in $ENVFILE, written once
-            # by the startup script — CD never needs the secret values.
-
-            # Preflight guardrail: a rootful mori container (from an old CD or a
-            # manual run) would squat the host port and the rootless container
-            # could never bind it. Rootful and rootless stores are invisible to
-            # each other, so remove any rootful copy before deploying.
-            STRAY=$(sudo podman ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^mori-(advisor|ingestion)$' || true)
-            if [ -n "$STRAY" ]; then
-              echo "Removing stray ROOTFUL mori containers: $STRAY"
-              sudo podman rm -f mori-advisor mori-ingestion 2>/dev/null || true
-            fi
+            # Containers are managed by rootless systemd **Quadlet** units owned by
+            # the mori user (installed by the GCE startup script to
+            # ~mori/.config/containers/systemd/; source of truth: deploy/gcp/quadlet/).
+            # CD only refreshes the image and restarts the units — the run-spec lives
+            # in the units, not here, so the startup/CD definitions can no longer drift.
+            # The CD user reaches the mori user systemd/podman via `sudo su - mori`.
+            # All runtime config (incl. secrets) lives in $ENVFILE — CD never sees it.
 
             if [ ! -f "$ENVFILE" ]; then
               echo "FATAL: $ENVFILE missing — startup script must write it first"; exit 1
             fi
 
-            # Pull new image as mori
-            sudo su - mori -c "$RT podman pull '$IMAGE'"
+            # Rollback tag: pin the currently-running :latest before we move it, so a
+            # bad deploy reverts with
+            #   podman tag …:previous-rollback …:latest && systemctl --user restart $UNITS
+            sudo su - mori -c "$RT podman image exists '$IMAGE_LATEST'" \
+              && sudo su - mori -c "$RT podman tag '$IMAGE_LATEST' '$IMAGE_ROLLBACK'" || true
 
-            # Replace in place — atomic stop-old/start-new (no port clash, which
-            # blue/green cannot avoid under --network=host).
-            sudo su - mori -c "$RT podman run -d --replace --name mori-advisor \
-              --restart=always --network=host --user 0 \
-              -v /data/mori-advisor:/data/mori-advisor:Z \
-              --env-file $ENVFILE '$IMAGE'"
-            sudo su - mori -c "$RT podman run -d --replace --name mori-ingestion \
-              --restart=always --network=host --user 0 \
-              -v /data/mori-advisor:/data/mori-advisor:Z \
-              --env-file $ENVFILE '$IMAGE' python -m mori_advisor.ingestion_server"
+            # Pull the new build and move :latest onto it. The Quadlet units reference
+            # :latest and do NOT re-pull on restart, so retagging locally is what makes
+            # the restart pick up exactly this build (deterministic — not registry latest).
+            sudo su - mori -c "$RT podman pull '$IMAGE_VERSION'"
+            sudo su - mori -c "$RT podman tag '$IMAGE_VERSION' '$IMAGE_LATEST'"
+
+            # Restart the units — Quadlet recreates each container from the refreshed
+            # :latest. Atomic stop-old/start-new per unit (no port clash under --network=host).
+            sudo su - mori -c "$RT systemctl --user restart $UNITS"
 
             # Health gate
             for i in 1 2 3 4 5; do

@@ -198,7 +198,16 @@ locals {
   backup_bucket_name = var.backup_bucket_name != "" ? var.backup_bucket_name : "mori-advisor-backups-${var.project_id}"
   startup_template   = var.startup_template_path != "" ? var.startup_template_path : "${path.module}/startup.sh.tpl"
 
-  # Startup script: install Podman, pull image, run containers
+  # Quadlet units for the mori app, loaded byte-for-byte from the repo so the
+  # VM's unit file IS the checked-in file — one source of truth (no heredoc copy).
+  quadlet_advisor   = file("${path.module}/quadlet/mori-advisor.container")
+  quadlet_ingestion = file("${path.module}/quadlet/mori-ingestion.container")
+  quadlet_msg       = file("${path.module}/quadlet/mori-msg.container")
+  dream_service     = file("${path.module}/quadlet/dream.service")
+  dream_timer       = file("${path.module}/quadlet/dream.timer")
+
+  # Startup script: install Podman, run pg (imperative), install + start the mori
+  # app Quadlet units.
   startup_script = templatefile(local.startup_template, {
     container_image    = var.container_image
     data_bucket        = google_storage_bucket.mori_data.name
@@ -206,6 +215,11 @@ locals {
     tailscale_auth_key = var.tailscale_auth_key
     tailscale_hostname = var.tailscale_hostname
     project_id         = var.project_id
+    quadlet_advisor    = local.quadlet_advisor
+    quadlet_ingestion  = local.quadlet_ingestion
+    quadlet_msg        = local.quadlet_msg
+    dream_service      = local.dream_service
+    dream_timer        = local.dream_timer
   })
 }
 

@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.1.25 — Manage GCE app containers with systemd Quadlet
+
+- **Why:** the run-spec for `mori-advisor`/`mori-ingestion` lived in *two* places — the GCE
+  startup script and `cd.yml` — and drift between them was the root cause of the v2.1.16 404
+  incident (rootful vs rootless). It also blocks horizontal scaling (multiple ingesters/dreamers).
+- **Quadlet units (`deploy/gcp/quadlet/`)**: `mori-advisor`, `mori-ingestion`, `mori-msg` are now
+  rootless **systemd Quadlet** `.container` units — one declarative source of truth for how each
+  runs. `Restart=always` + `StartLimitIntervalSec=0` (never give up) + a `/dev/tcp` Postgres
+  readiness gate in each unit. `dream` cron → `dream.service` + `dream.timer` (every 4h).
+- **`startup.sh.tpl` + `main.tf`**: Terraform injects the checked-in unit files **verbatim**
+  (`file()` → `templatefile`), so the VM's unit *is* the repo file — the duplication is gone.
+  Startup installs the units, brings up the `mori` user manager, `daemon-reload`, starts the
+  units, enables `dream.timer`, and removes the legacy crontab line.
+- **`cd.yml`**: deploy is now `podman pull` (with a `previous-rollback` tag) + retag `:latest` +
+  `systemctl --user restart mori-advisor mori-ingestion mori-msg`. The imperative
+  `podman run --replace` blocks and the rootful-stray guardrail are removed. Health + deployment
+  contract gates unchanged.
+- **Scope:** `mori-pg` stays an imperative `podman run --restart=always` — a stable stateful
+  singleton defined in one place, with no Quadlet scaling benefit (and the one data-holding
+  container is left in its proven form). Any optional gateway sidecar is likewise out of scope.
+- **Verified live on GCE:** all five containers up; the three app units `active`; deployment
+  contract PASS; `systemctl --user restart` (CD's mechanism) works. Reboot-survival hardening is
+  tracked separately in #7.
+
 ## v2.1.24 — Capture assistant reasoning from the Stop hook
 
 - **Reasoning capture:** lifecycle hooks recorded tool calls and user prompts but never the
