@@ -49,6 +49,11 @@ def init_auth() -> None:
     else:
         logger.info("Auth enabled: %d client key(s) configured (%s)", len(_KEYS), ", ".join(_KEYS))
 
+    # Initialise the capability policy alongside auth so startup logging is ordered.
+    from mori_advisor.policy import init_policy
+
+    init_policy()
+
 
 def check_key(provided: Optional[str]) -> Optional[str]:
     """Validate a provided API key.
