@@ -34,6 +34,9 @@ delegate a precise spec with explicit success checks and hard stop conditions (n
 goal), and review what comes back — "the sub-agent said it passed" is not verification.
 A delegated result is done only when you've confirmed the outcome yourself (see *Verify the
 outcome, not the diff*). Never delegate the decision of whether the work is actually right.
+And before delegating *consequential* work, get an independent second opinion on the
+**plan** — a flawed plan caught before execution beats a flawed result caught after.
+Consult before delegating; verify after.
 
 ## Surface what you didn't do
 State assumptions, skipped steps, and unverified edges explicitly. Silence reads as
