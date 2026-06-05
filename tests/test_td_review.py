@@ -530,3 +530,105 @@ def test_low_confidence_skipped(backend, tmp_path, monkeypatch):
         assert "not found" in result.lower() or "no memory" in result.lower()
 
     _run_with_backend(backend, tmp_path, run)
+
+
+# ── 6. Regression: approve with NULL/empty tier must not violate NOT NULL ─────
+#
+# Root cause: Postgres pending_writes.tier column has no DEFAULT and can be NULL
+# (added via ALTER TABLE without NOT NULL).  SQLite MemoryStore.write() coalesces
+# via _ensure_tier(); PostgresStore.write() did not — so NULL passed through and
+# violated the memories.tier NOT NULL constraint.
+#
+# Fix: PostgresStore.write() now coalesces tier to "working" before any INSERT.
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_approve_null_tier_succeeds_and_defaults_to_working(backend, tmp_path, monkeypatch):
+    """Approving a pending write whose tier is NULL or empty string must succeed
+    and the resulting memory must have tier == 'working'.
+
+    This is the exact PROD failure path: ingestion queues a pending row without
+    a tier (NULL / empty), then approve() calls write() — which on Postgres
+    previously inserted NULL, violating memories.tier NOT NULL.
+    """
+
+    async def run(store):
+        mem_store = store._mem if hasattr(store, "_mem") else store
+
+        # Queue a pending write with no tier (simulate the ingestion path that
+        # produces a NULL/empty tier row in pending_writes).
+        await _a(
+            store.queue_pending_write(
+                name="null-tier-memory",
+                title="Null Tier Test",
+                description="Tier absent in pending row",
+                body="Should land as working tier.",
+                tier="",  # empty → stored as "" or NULL depending on backend
+                source="ingestion",
+                confidence=0.8,
+            )
+        )
+
+        items = await _a(store.pending_list_json(status="pending"))
+        item = next((i for i in items if i["name"] == "null-tier-memory"), None)
+        assert item is not None, "Pending row not inserted"
+        write_id = item["id"]
+
+        # This is the call that crashed on Postgres before the fix.
+        result = await _a(mem_store.approve(write_id, note="regression test", reviewer="td"))
+        assert "approved" in result.lower(), f"approve() failed: {result}"
+
+        # Memory must exist with tier == "working" (coalesced from NULL/"").
+        mem_result = await _a(mem_store.read("null-tier-memory"))
+        assert "null-tier-memory" in mem_result or "Null Tier Test" in mem_result, (
+            f"memory not found after approve: {mem_result}"
+        )
+        assert "working" in mem_result.lower(), (
+            f"tier should be 'working' after coalesce, got: {mem_result}"
+        )
+
+    _run_with_backend(backend, tmp_path, run)
+
+
+@requires_pg
+def test_pg_write_none_tier_coalesces_to_working(tmp_path):
+    """Direct unit test: PostgresStore.write(tier=None) must not raise and must
+    store tier='working'.  Confirms the coalesce gate in PostgresStore.write().
+
+    This test ONLY runs when MORI_TEST_DATABASE_URL is set (Postgres CI job).
+    It would have FAILED before the fix because tier=None reached the INSERT
+    and violated memories.tier NOT NULL.
+    """
+
+    async def run():
+        from mori_advisor.store.postgres_store import PostgresStore
+
+        store = PostgresStore(PG_URL)
+        await store.bootstrap()
+        async with store.pool.acquire() as conn:
+            await conn.execute(
+                "TRUNCATE memories, memory_versions, pending_writes, "
+                "eviction_queue, ingestion_log, session_events, "
+                "dream_state, dreamer_config, msg_log CASCADE"
+            )
+        try:
+            result = await store.write(
+                name="pg-tier-none-test",
+                title="PG Tier None",
+                description="Direct write with tier=None",
+                body="Coalesce must kick in.",
+                tier=None,  # type: ignore[arg-type]  — the exact bad input
+            )
+            assert "written" in result.lower(), f"write() returned error: {result}"
+
+            # Verify the stored tier.
+            async with store.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT tier FROM memories WHERE name = 'pg-tier-none-test' AND deleted_at IS NULL"
+                )
+            assert row is not None, "Row not found after write"
+            assert row["tier"] == "working", f"Expected tier='working', got '{row['tier']}'"
+        finally:
+            await store.pool.close()
+
+    asyncio.run(run())

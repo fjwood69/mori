@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mori_advisor.memory_store import FRESHNESS_CHECK_PROMPT
+from mori_advisor.memory_store import FRESHNESS_CHECK_PROMPT, VALID_TIERS
 
 from .base import BaseStore
 
@@ -329,6 +329,9 @@ class PostgresStore(BaseStore):
         sess_ids = _tags_json(origin_session_ids)
         clients = _tags_json(origin_clients or ([client] if client else []))
         now = _now_utc()
+        # Defensive coalesce: mirror SQLite's _ensure_tier — a None or unrecognised
+        # tier must never reach the DB as NULL (violates NOT NULL constraint).
+        tier = tier if tier in VALID_TIERS else "working"
 
         async def _do(conn):
             existing = await conn.fetchrow(
