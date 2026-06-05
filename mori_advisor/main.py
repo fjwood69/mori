@@ -1114,15 +1114,26 @@ async def nats_sub(replay: bool = False, wait: int = 2) -> str:
                     retention="limits",
                 )
 
+            # Show the most recent N messages (the stream TAIL), not the oldest.
+            # A fresh ephemeral consumer with DeliverPolicy.ALL re-delivered the
+            # *first* N retained messages on every call, so newly published
+            # messages never appeared (#32). Start from last_seq - (N-1) via
+            # BY_START_SEQUENCE so the tail — including a just-published message —
+            # is always returned, and the cursor advances as new messages land.
+            replay_n = 10
+            info = await js.stream_info("cc")
+            last_seq = (info.state.last_seq or 0) if info.state else 0
+            start_seq = max(1, last_seq - (replay_n - 1))
             config = ConsumerConfig(
-                deliver_policy=DeliverPolicy.ALL,
+                deliver_policy=DeliverPolicy.BY_START_SEQUENCE,
+                opt_start_seq=start_seq,
                 ack_policy=AckPolicy.NONE,
                 max_deliver=1,
             )
             psub = await js.pull_subscribe("cc.>", stream="cc", config=config)
             msgs: list[str] = []
             try:
-                batch = await psub.fetch(10, timeout=min(wait, 10))
+                batch = await psub.fetch(replay_n, timeout=min(wait, 10))
                 for msg in batch:
                     try:
                         data = json.loads(msg.data.decode())
