@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.2.9 — Agent self-view: `GET /api/pending/mine` (#16 prereq)
+
+- **feat:** new `GET /api/pending/mine` REST endpoint (write role). Returns only
+  the authenticated caller's own pending proposals, filtered by `proposed_by =
+  actor.key_name`. Agents can see their own backlog and outcomes
+  (approved/rejected) without ever seeing another actor's rows.
+- **query param `status`:** omit for all statuses; pass `pending`, `approved`, or
+  `rejected` to narrow. Missing actor (no API key, host mode) returns an empty
+  list rather than a 500.
+- **store:** `pending_list_json` on both SQLite (`MemoryStore`) and Postgres
+  (`PostgresStore`) gains optional `proposed_by: str = ""` and `status: str =
+  "pending"` parameters. When `proposed_by` is non-empty, an `AND proposed_by =
+  ?/$N` clause is appended. When `status` is empty the status filter is omitted
+  entirely (all statuses). The existing single-status call-sites are unaffected
+  (default `status="pending"`, `proposed_by=""` — identical behaviour).
+- **abstract interface:** `BaseStore.pending_list_json` updated to match.
+  `SQLiteStore` wrapper delegates the new parameters through to `MemoryStore`.
+- **test:** `tests/test_pending_mine.py` — 5 SQLite tests; PG variants via
+  `@requires_pg` (skipped unless `MORI_TEST_DATABASE_URL` is set).
+
 ## v2.2.8 — Fix: server startup crash in v2.2.6/v2.2.7 (`_lifespan` decorator)
 
 - **fix:** the #23 C cleanup-task edit inadvertently moved the

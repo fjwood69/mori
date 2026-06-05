@@ -1820,26 +1820,52 @@ class MemoryStore:
         finally:
             conn.close()
 
-    def pending_list_json(self, status: str = "pending") -> list[dict]:
+    def pending_list_json(
+        self,
+        status: str = "pending",
+        proposed_by: str = "",
+    ) -> list[dict]:
         """Return pending writes as a list of dicts (structured, for review UI).
 
         Each dict contains all enrichment fields added in #15.
+
+        Args:
+            status:      Filter to this status value.  Pass ``""`` or ``None`` to
+                         return rows across ALL statuses (approved + pending + rejected).
+            proposed_by: When non-empty, restrict results to rows where
+                         ``proposed_by`` matches exactly (used by #16 agent endpoint).
         """
         import sqlite3
+
+        # Build WHERE clause dynamically so both the dreamer review path
+        # (single status, all proposers) and the agent self-view path
+        # (all statuses, own rows only) share one method.
+        conditions: list[str] = []
+        params: list = []
+
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+
+        if proposed_by:
+            conditions.append("proposed_by = ?")
+            params.append(proposed_by)
+
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
         conn = self._get_conn()
         try:
             cur = conn.execute(
-                """
+                f"""
                 SELECT id, memory_name, title, description, type, body, tags,
                        proposed_at, proposed_by, status,
                        source, provenance, confidence, focus_mode, existing_body,
                        tier, created_at
                 FROM pending_writes
-                WHERE status = ?
+                {where}
                 ORDER BY proposed_at ASC
                 """,
-                (status,),
+                params,
             )
             rows = cur.fetchall()
         except sqlite3.Error:
