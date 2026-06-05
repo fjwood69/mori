@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.3.0 — Cursor & Antigravity hook layers + multi-client tidy-upper (plugin v0.2.0)
+## v2.2.1 — Cursor & Antigravity hook layers + multi-client tidy-upper (plugin v0.1.1)
 
 - **feat:** Cursor and Antigravity hook layers — per-client Node entrypoints over a shared `lib/` (fail-open wrapper, POST, conversation-keyed throttle, canonical-event normalizer). Cursor: `sessionStart` context + `postToolUse`/`stop` telemetry via the documented standalone `~/.cursor/hooks.json` (Cursor plugin-hook bundling is undocumented). Antigravity: `PreInvocation` once-per-conversation context (conversationId throttle) + `PostToolUse`/`Stop` telemetry via `~/.gemini/config/hooks.json`. Wired by `install-hooks-{cursor,antigravity}.mjs` with absolute paths. Each client's events are normalized client-side to Mori's canonical event schema before POST — the server stays single-schema; client extras ride in an opaque `_clientMeta`.
 - **feat:** `plugins/mori/scripts/legacy/tidy-up.mjs` — multi-client cleanup that removes ONLY Mori's bespoke-installed entries (Claude/Cursor/Antigravity MCP + hooks + permissions; skills with `--include-skills`) so the plugin installs clean. Dry-run by default; `--confirm` to write; exact-signature matching, timestamped backups, validation gates (no non-mori key removed), fail-gradual per client. Replaces the Claude-only uninstaller.
