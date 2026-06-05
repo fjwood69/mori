@@ -2,30 +2,106 @@
 
 Connect your Claude Code CLI or VS Code extension to your Mori shared memory server. This gives you access to shared memories, strategic advisor tools, and the dream pipeline for session event distillation.
 
-Mori provides automated setup scripts that guide you through an interactive configuration wizard and deploy the necessary files.
+---
+
+## Install as a Plugin (Recommended)
+
+Mori ships as a native Claude Code plugin from the `fjwood69/mori` marketplace. The plugin handles MCP connection, hooks, skills, and credentials in one step — no scripts to clone or run.
+
+### Step 1 — Add the marketplace
+
+Inside Claude Code, run:
+
+```
+/plugin marketplace add fjwood69/mori
+```
+
+### Step 2 — Install the plugin
+
+```
+/plugin install mori@mori
+```
+
+On enable, Claude Code prompts for two values:
+
+| Prompt | What to enter |
+|--------|--------------|
+| **Mori server URL** | Base URL of your mori-advisor server, e.g. `http://localhost:8968` |
+| **Mori API key** | Your named API key (`name:secret`). Leave blank if the server is unauthenticated. |
+
+The API key is marked `sensitive: true` and stored in the OS keychain — it is never written to any config file. The `MORI_API_KEY` environment variable is an alternative for headless or CI environments.
+
+### Step 3 — Reload
+
+```
+/reload-plugins
+```
+
+Or restart Claude Code. That's it — MCP tools, hooks, and skills are all live.
+
+### Local development / testing
+
+```bash
+claude --plugin-dir ./plugins/mori
+```
+
+Point `--plugin-dir` at the `plugins/mori/` package in a local clone. Useful for testing changes to hooks or skills before publishing.
 
 ---
 
-## Prerequisites
+## What the Plugin Provides
 
-- Claude Code CLI or VS Code extension installed.
-- Access to a running Mori server (e.g. at `http://localhost:8968` or via a Tailscale IP).
-- An API key if your Mori server has `MORI_API_KEYS` set (required for shared or internet-accessible deployments; optional for private Tailscale-only networks running in open mode).
+### MCP connection
+
+The plugin wires the `mori` MCP server automatically using `userConfig` substitution — you do not edit any JSON config files directly.
+
+### Hooks
+
+| Hook | Purpose |
+|------|---------|
+| `SessionStart` (`source: "compact"`) | Emits a context nudge asking the agent to run `/brief --post-compact` after compaction. Disable with `MORI_POST_COMPACT_BRIEF=false`. |
+| `SessionStart` (`source: "startup"` / `"resume"` / `"clear"`) | Optionally injects a context file via `MORI_SESSION_CONTEXT_FILE`. |
+| `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop` | Ship event payloads to `/api/events/raw`. `Stop` includes a bounded transcript tail for dream pipeline extraction. |
+| `PreCompact` | Ships a blocking pre-compaction event so the server persists state before the snapshot. |
+
+> **Note on post-compaction re-grounding**: the re-ground is triggered by a **SessionStart hook** checking `source: "compact"` — not a PostCompact hook. PostCompact fires for observability only and cannot inject context into the session. The SessionStart hook is the correct mechanism.
+
+### Skills
+
+Deployed to Claude Code's skills directory:
+
+| Command | Description |
+|---------|-------------|
+| `/brief` | Session bootstrap (full or `--post-compact` delta) |
+| `/dream` | Distil session events into memories |
+| `/consult` | Strategic review |
+| `/pensieve` | Search memory store |
+| `/ingest` | Ingest local files into remote store |
+| `/req` | Requirements tracking |
+| `/nats` | Cross-device NATS messages |
+| `/msg` | Inter-agent inbox |
+| `/wrap` | End-of-session publish + dream flush |
+
+### Permissions
+
+All `mcp__mori__*` tool names are pre-seeded in `permissions.allow` — no per-call prompts.
 
 ---
 
-## Automated Installation (Recommended)
+## Legacy Installer (Alternative Path)
 
-Run the setup script from the root of the Mori repository. The script will guide you step-by-step through configuring your server URL, API key, and client name, and then perform a connectivity test.
+> The plugin is the recommended install path. The installer scripts below are the legacy approach, now superseded. They remain documented for users who prefer a script-driven setup or cannot use the plugin marketplace (e.g. air-gapped environments).
+
+Clone the Mori repository and run the setup script. The script guides you through server URL, API key, and client name, then performs a connectivity test.
 
 ### Windows (PowerShell)
-Open PowerShell and run:
+
 ```powershell
 powershell -File scripts/install-mori-claude.ps1
 ```
 
 ### Linux / macOS (Bash)
-Open your terminal and run:
+
 ```bash
 ./scripts/install-mori-claude.sh
 ```
@@ -37,11 +113,9 @@ Open your terminal and run:
 3. **Client Name** — A name to identify this device in logs (default: hostname)
 4. **Install Target** — Whether to install for CLI, VS Code, or both
 
----
+### What the Script Does
 
-## What the Script Does
-
-### 1. Connects the MCP Server
+#### 1. Connects the MCP Server
 Adds the `mori` MCP server to your Claude Code settings:
 
 | Target | Config File |
@@ -63,19 +137,19 @@ For VS Code, the script also detects any named profiles and offers to install in
 }
 ```
 
-### 2. Enables Event Logging Hooks
-Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `PreCompact`, and `PostCompact`) to Mori's event logging endpoints (`/api/events/raw` and `/api/precompact`). Hooks are merged per-event — any existing non-Mori hooks are preserved. As of v2.1.24 the `Stop` hook also ships a bounded transcript tail, from which the server extracts the turn's assistant reasoning (plans, analysis, decisions).
+#### 2. Enables Event Logging Hooks
+Binds agent lifecycle events (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `PreCompact`) to Mori's event logging endpoints (`/api/events/raw` and `/api/precompact`). Hooks are merged per-event — any existing non-Mori hooks are preserved. As of v2.1.24 the `Stop` hook also ships a bounded transcript tail, from which the server extracts the turn's assistant reasoning (plans, analysis, decisions).
 
-The `PostCompact` hook (`~/.claude/hooks/post-compact-brief.sh`) fires after context compression and prompts you to run `/brief` to re-establish session context. It is enabled by default. To disable it:
+Post-compaction re-grounding is handled by a **SessionStart hook** that checks `source: "compact"` and prompts you to run `/brief --post-compact`. It is enabled by default. To disable it:
 
 ```bash
 export MORI_POST_COMPACT_BRIEF=false
 ```
 
-### 3. Seeds MCP Tool Permissions
+#### 3. Seeds MCP Tool Permissions
 Populates `permissions.allow` with all `mcp__mori__*` tool names so they run without per-call prompts. Entries are added additively — existing permissions are not removed.
 
-### 4. Registers Custom Skills
+#### 4. Registers Custom Skills
 Translates all `.skill.md` files from the `skills/` folder into Claude Code's `SKILL.md` format and deploys them to the skills directory. Already-present skills are skipped unless `--upgrade-skills` / `-UpgradeSkills` is passed.
 
 ```
@@ -91,18 +165,16 @@ skills/
   wrap/SKILL.md
 ```
 
----
-
-## Command Line Options (Automation)
+### Command Line Options (Automation)
 
 If you are scripting the installation or running in CI/CD, you can bypass the wizard prompts:
 
-### PowerShell Options:
+#### PowerShell Options:
 ```powershell
 powershell -File scripts/install-mori-claude.ps1 -MoriUrl "http://10.0.0.5:8968" -ApiKey "secret" -ClientName "my-client" -Target both -Force
 ```
 
-### Bash Options:
+#### Bash Options:
 ```bash
 ./scripts/install-mori-claude.sh --url "http://10.0.0.5:8968" --api-key "secret" --client "my-client" --target both --force
 ```
@@ -129,16 +201,9 @@ powershell -File scripts/install-mori-claude.ps1 -UpgradeSkills -MoriUrl "http:/
 ## Verify It's Working
 
 1. **Reload VS Code window** after installation (Command Palette → *Developer: Reload Window*).
-2. Run the doctor:
-   ```bash
-   ./scripts/install-mori-claude.sh --doctor --url "http://<your-server>:8968"
-   ```
-   ```powershell
-   powershell -File scripts/install-mori-claude.ps1 -Doctor -MoriUrl "http://<your-server>:8968"
-   ```
-3. Confirm **mori** is connected under Settings → MCP.
-4. Type `/brief` — should return memory counts and dream state from the server via MCP.
-5. Check events are flowing:
+2. Confirm **mori** is connected under Settings → MCP.
+3. Type `/brief` — should return memory counts and dream state from the server via MCP.
+4. Check events are flowing:
    ```bash
    curl http://<your-server>:8968/api/events/health
    ```
@@ -146,15 +211,21 @@ powershell -File scripts/install-mori-claude.ps1 -UpgradeSkills -MoriUrl "http:/
 
 ---
 
+## Memory Store
+
+The Mori server uses a **dual-backend** store: SQLite for solo or synchronous setups, and Postgres for team or asynchronous deployments. Shared memory lives on the server — not on your local machine. Do not use a local `memories.db` from an old clone or sidecar install.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---------|----------------|-----|
-| Permission prompt on every mori tool call | `permissions.allow` not seeded | Re-run installer; check doctor output |
-| `/brief` returns nothing / MCP error | MCP not connected | Reload window; run doctor + confirm `mcpServers.mori` in settings.json |
+| Permission prompt on every mori tool call | `permissions.allow` not seeded | Re-run installer or reinstall plugin; check doctor output |
+| `/brief` returns nothing / MCP error | MCP not connected | Reload window; confirm `mcpServers.mori` in settings.json or plugin MCP config |
 | Hooks not shipping events | Shipper script missing or hook not installed | Run doctor; check `%TEMP%\mori-hook.log` (Windows) or `/tmp/mori-hook.log` |
 | VS Code profile install ignored | No profiles found or wrong choice | Check `%APPDATA%\Code\User\profiles\`; re-run targeting the correct number |
-| Stale `/brief` skill text | Skills not upgraded | Re-run with `--upgrade-skills` / `-UpgradeSkills` |
+| Stale `/brief` skill text | Skills not upgraded | Re-run with `--upgrade-skills` / `-UpgradeSkills` or reinstall plugin |
 | Non-Mori hooks disappeared after install | Old installer version (pre-merge-fix) | Re-run current installer — hooks are now merged per-event, not replaced |
 
 ---
@@ -163,6 +234,7 @@ powershell -File scripts/install-mori-claude.ps1 -UpgradeSkills -MoriUrl "http:/
 
 - **VS Code profile skills** — Skills are deployed to the profile's own `skills/` folder. If Claude Code CLI and a VS Code profile share the same server URL, the CLI skills in `~/.claude/skills/` take precedence for the CLI; VS Code reads from its own profile folder.
 - **PostToolUseFailure hook** — Verify this hook is firing in your Claude Code version if you notice missing error events. `PostToolUse`, `UserPromptSubmit`, `PreCompact`, and `Stop` are confirmed working.
+- **Plugin hooks require Node.js 18+** — the plugin hooks are Node ESM scripts (`mori-context-hook.mjs`, `mori-ship-event.mjs`). The legacy installer scripts use shell/PowerShell instead.
 
 ---
 
@@ -174,7 +246,25 @@ Full reference and all options: [docs/reference/slash-commands.md](../reference/
 
 ---
 
-## Upgrading from an Earlier Version
+## Upgrading from the Legacy Installer to the Plugin
+
+If you previously installed Mori using `install-mori-claude.sh` / `.ps1`, run the uninstaller before enabling the plugin to avoid duplicate MCP server entries and hooks:
+
+**Linux / macOS:**
+```bash
+bash plugins/mori/scripts/legacy/uninstall-mori-claude.sh
+```
+
+**Windows (PowerShell):**
+```powershell
+.\plugins\mori\scripts\legacy\uninstall-mori-claude.ps1
+```
+
+Then follow the plugin install steps above.
+
+---
+
+## Upgrading the Legacy Installer
 
 If you installed Mori before the shipper-script update, your `settings.json` will contain inline curl hook commands like:
 
