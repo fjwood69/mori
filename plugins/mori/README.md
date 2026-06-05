@@ -1,11 +1,14 @@
 # Mori Plugin — unified multi-client package
 
 Connects **Claude Code**, **Cursor**, and **Antigravity** to a running
-[mori-advisor](../../mori_advisor) server. The plugin bundles:
+[mori-advisor](../../mori_advisor) server. The plugin ships:
 
-- **MCP connection config** — points each client at your server's `/mcp` endpoint.
-- **Skills** — shared agent skills (`/brief`, `/dream`, `/wrap`, etc.) readable by all three clients.
-- **Hooks** (Claude Code only for now) — SessionStart context re-grounding + telemetry shipping.
+- **Skills** — shared agent skills (`/brief`, `/dream`, `/pensieve`, `/wrap`, …) for all three clients.
+- **Hooks** — SessionStart context re-grounding + optional telemetry shipping.
+
+The **MCP connection is NOT bundled for Claude Code** — you add it yourself with
+`claude mcp add` (see [Install](#claude-code)), so it can never collide with the plugin.
+Cursor and Antigravity still use a bundled `mcp.json` / `mcp_config.json` you edit by hand.
 
 > **Server not included.** This package is the *client side* only. Deploy the
 > mori-advisor server separately; see the [root README](../../README.md) for
@@ -17,11 +20,10 @@ Connects **Claude Code**, **Cursor**, and **Antigravity** to a running
 
 ```
 plugins/mori/
-├── .claude-plugin/plugin.json   Claude Code manifest (userConfig prompts on enable)
+├── .claude-plugin/plugin.json   Claude Code manifest (skills + hooks; no bundled MCP)
 ├── .cursor-plugin/plugin.json   Cursor manifest
 ├── plugin.json                  Antigravity manifest
-├── .mcp.json                    Claude Code MCP config (${MORI_SERVER_URL} env-var substitution)
-├── mcp.json                     Cursor MCP config (edit url/key manually)
+├── mcp.json                     Cursor MCP config (edit url + bare-secret key manually)
 ├── mcp_config.json              Antigravity MCP config (edit url/key manually)
 ├── hooks/hooks.json             Claude Code hooks (SessionStart + telemetry)
 ├── scripts/
@@ -91,10 +93,9 @@ against it.
 > environment — set those (shell profile, or `claudeCode.environmentVariables` in VS Code)
 > for auto-capture. The skills work without them.
 
-**Option B — Project-level manual install**
-
-Copy `plugins/mori/` into your project root's `.claude/plugins/mori/`, then add to your
-project's `.mcp.json`:
+**Alternative — project-scoped, no marketplace.** Instead of `claude mcp add`, copy
+`plugins/mori/` into your project's `.claude/plugins/mori/` and add the server to the
+project's own `.mcp.json` (same bare-secret rule):
 
 ```json
 {
@@ -225,13 +226,13 @@ running the installer once:
 ```bash
 node plugins/mori/scripts/install-hooks-cursor.mjs \
   --url http://YOUR-SERVER:8968 \
-  --api-key YOUR_API_KEY
+  --api-key YOUR_BARE_SECRET
 ```
 
 Or via environment variables:
 
 ```bash
-MORI_SERVER_URL=http://YOUR-SERVER:8968 MORI_API_KEY=YOUR_API_KEY \
+MORI_SERVER_URL=http://YOUR-SERVER:8968 MORI_API_KEY=YOUR_BARE_SECRET \
   node plugins/mori/scripts/install-hooks-cursor.mjs
 ```
 
@@ -261,13 +262,13 @@ After installing the plugin (MCP + skills), wire the hooks by running:
 ```bash
 node plugins/mori/scripts/install-hooks-antigravity.mjs \
   --url http://YOUR-SERVER:8968 \
-  --api-key YOUR_API_KEY
+  --api-key YOUR_BARE_SECRET
 ```
 
 Or via environment variables:
 
 ```bash
-MORI_SERVER_URL=http://YOUR-SERVER:8968 MORI_API_KEY=YOUR_API_KEY \
+MORI_SERVER_URL=http://YOUR-SERVER:8968 MORI_API_KEY=YOUR_BARE_SECRET \
   node plugins/mori/scripts/install-hooks-antigravity.mjs
 ```
 
