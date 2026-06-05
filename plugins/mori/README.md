@@ -39,8 +39,7 @@ plugins/mori/
 │   │   ├── post.mjs         Fail-soft HTTP POST helper
 │   │   └── throttle.mjs     Once-per-conversation temp-file flag
 │   └── legacy/
-│       ├── uninstall-mori-claude.sh   Migration: remove legacy bespoke entries (Linux/macOS)
-│       └── uninstall-mori-claude.ps1  Migration: remove legacy bespoke entries (Windows)
+│       └── tidy-up.mjs                Migration: remove bespoke entries (all clients, cross-platform)
 ├── skills/                      Shared skills (copied from repo root skills/)
 └── tests/
     ├── test_plugin_hooks.mjs          Hermetic tests for Claude Code hook scripts
@@ -296,26 +295,41 @@ Existing non-mori named hooks are preserved. Restart Antigravity after running t
 
 ---
 
-## Migrating from legacy bespoke installer
+## Migration / Cleanup
 
-If you previously installed mori using the legacy `install-mori-claude.sh` script, run
-the uninstaller before enabling the plugin to avoid duplicate MCP servers and hooks:
+If you previously installed mori using any of the bespoke installer scripts
+(`install-mori-claude.sh`, `install-mori-cursor.sh`, `install-mori-antigravity.sh`,
+or their `.ps1` counterparts), run the tidy-up tool before enabling the plugin
+to remove duplicate MCP server entries, hooks, and permissions.
 
-**Linux / macOS:**
+**Preview what would be removed (dry-run, writes nothing):**
 ```bash
-bash plugins/mori/scripts/legacy/uninstall-mori-claude.sh
-# optional: pass a path if settings.json is not at the default location
-bash plugins/mori/scripts/legacy/uninstall-mori-claude.sh /path/to/settings.json
+node plugins/mori/scripts/legacy/tidy-up.mjs
 ```
 
-**Windows (PowerShell):**
-```powershell
-.\plugins\mori\scripts\legacy\uninstall-mori-claude.ps1
-# optional:
-.\plugins\mori\scripts\legacy\uninstall-mori-claude.ps1 -SettingsPath "C:\...\settings.json"
+**Apply changes for all clients:**
+```bash
+node plugins/mori/scripts/legacy/tidy-up.mjs --confirm
 ```
 
-The script prints each removed entry and writes nothing back if nothing needed removing.
+**Limit to one client:**
+```bash
+node plugins/mori/scripts/legacy/tidy-up.mjs --confirm --client claude
+node plugins/mori/scripts/legacy/tidy-up.mjs --confirm --client cursor
+node plugins/mori/scripts/legacy/tidy-up.mjs --confirm --client antigravity
+```
+
+**Also remove bespoke mori skill directories (optional — backs up first):**
+```bash
+node plugins/mori/scripts/legacy/tidy-up.mjs --confirm --include-skills
+```
+
+The tool:
+- Defaults to **dry-run** — nothing is written without `--confirm`.
+- Creates a **timestamped backup** (`<file>.mori-backup-<ISO>`) before every write.
+- Is **fail-gradual** — a missing or malformed file for one client does not stop the others.
+- Removes only exact mori signatures (MCP key, hook commands, `mcp__mori__*` permissions).
+  No other config is touched.
 
 ---
 

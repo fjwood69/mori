@@ -248,17 +248,23 @@ Full reference and all options: [docs/reference/slash-commands.md](../reference/
 
 ## Upgrading from the Legacy Installer to the Plugin
 
-If you previously installed Mori using `install-mori-claude.sh` / `.ps1`, run the uninstaller before enabling the plugin to avoid duplicate MCP server entries and hooks:
+If you previously installed Mori using any of the bespoke installer scripts
+(`install-mori-claude.sh`, `install-mori-cursor.sh`, `install-mori-antigravity.sh`,
+or their `.ps1` counterparts), run the tidy-up tool before enabling the plugin to
+remove duplicate MCP server entries, hooks, and permissions.
 
-**Linux / macOS:**
+**Preview (dry-run — writes nothing):**
 ```bash
-bash plugins/mori/scripts/legacy/uninstall-mori-claude.sh
+node plugins/mori/scripts/legacy/tidy-up.mjs
 ```
 
-**Windows (PowerShell):**
-```powershell
-.\plugins\mori\scripts\legacy\uninstall-mori-claude.ps1
+**Apply (all clients):**
+```bash
+node plugins/mori/scripts/legacy/tidy-up.mjs --confirm
 ```
+
+The tool creates a timestamped backup before each write. Use `--client claude|cursor|antigravity`
+to limit the scope, or `--include-skills` to also remove bespoke skill directories.
 
 Then follow the plugin install steps above.
 
