@@ -13,6 +13,7 @@ examples/standards/VS Code Event Shipper — Proposal.md
 
 # MCP config (device-specific)
 .mcp.json
+!plugins/**/.mcp.json
 deploy/gcp/terraform.tfvars
 deploy/gcp/.terraform/
 deploy/gcp/*.tfstate
