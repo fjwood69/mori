@@ -28,25 +28,26 @@ No third-party dependencies — uses stdlib only (`urllib`, `sqlite3`, `threadin
 
 ## Installation
 
-Install the package into hermes-agent's `plugins/memory/mori/` directory:
+hermes-agent's loader scans `$HERMES_HOME/plugins/<name>/` (e.g. `~/.hermes/plugins/mori/`)
+for an `__init__.py` exposing `register()` or a `MemoryProvider`. Not yet on PyPI, so
+install by dropping the package there:
 
 ```bash
-pip install hermes-mori-provider
+mkdir -p "$HERMES_HOME/plugins/mori"
+cp -r hermes_mori_provider/* plugin.yaml "$HERMES_HOME/plugins/mori/"
 ```
 
-Or from source (development):
-
-```bash
-cd integrations/hermes-memory-provider
-pip install -e .
-```
+The package uses relative imports, so it loads correctly as a directory drop (no pip
+install needed). Once published to PyPI: `pip install hermes-mori-provider`.
 
 ## Configuration
 
-Set the following environment variable (required):
+Set the following environment variable (required). It is the **bare secret** — the
+64-char hex string alone, **not** `name:secret`. The `name:` prefix only labels the key
+in the server's `MORI_API_KEYS`; sending it in the header returns `401 Unauthorized`.
 
 ```bash
-export MORI_API_KEY=<your-mori-write-key>
+export MORI_API_KEY=<your-64-char-bare-secret>   # must be a write-role key
 ```
 
 Optionally override the server URL (default: `http://localhost:8968`):
