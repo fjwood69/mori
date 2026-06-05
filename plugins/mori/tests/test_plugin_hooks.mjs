@@ -117,25 +117,20 @@ console.log('\n── mori-context-hook.mjs ──\n');
 }
 
 {
-  // 4. source=startup + no URL configured → emits UNCONFIGURED_MESSAGE
-  // Empty --url triggers "unconfigured" in the health gate.
+  // 4. source=startup + no URL configured → SILENT (no warning).
+  // The hook's health check is opt-in and separate from the MCP connection; an
+  // absent URL must NOT warn (it would false-fire on the claude-mcp-add setup).
   const env = { ...process.env, TMPDIR: TMP };
+  delete env.MORI_SERVER_URL;
   delete env.MORI_SESSION_CONTEXT_FILE;
   const r = spawnSync(process.execPath, [CONTEXT_HOOK, '--url', ''], {
-    input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'test-unconf-s4' }),
+    input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'test-noURL-s4' }),
     env,
     encoding: 'utf8',
     timeout: 5000,
   });
-  assert((r.status ?? -1) === 0, 'startup+unconfigured: exits 0');
-  let parsed;
-  try { parsed = JSON.parse((r.stdout ?? '').trim()); } catch { /* noop */ }
-  assert(
-    typeof parsed?.hookSpecificOutput?.additionalContext === 'string' &&
-      parsed.hookSpecificOutput.additionalContext.includes('No Mori server is configured'),
-    'startup+unconfigured: emits UNCONFIGURED_MESSAGE',
-    r.stdout,
-  );
+  assert((r.status ?? -1) === 0, 'startup+no-url: exits 0');
+  assert((r.stdout ?? '').trim() === '', 'startup+no-url: SILENT (no setup warning)', r.stdout);
 }
 
 {
@@ -364,7 +359,9 @@ console.log('\n── env-var config (MORI_SERVER_URL / MORI_API_KEY) ──\n')
 }
 
 {
-  // 16. context-hook with neither --url nor MORI_SERVER_URL → UNCONFIGURED.
+  // 16. context-hook with neither --url nor MORI_SERVER_URL → SILENT (no warning).
+  // This is the recommended claude-mcp-add setup: the connection is separate and
+  // invisible to the hook, so the hook must not inject a "not configured" warning.
   const env = { ...process.env, TMPDIR: TMP };
   delete env.MORI_SERVER_URL;
   delete env.MORI_SESSION_CONTEXT_FILE;
@@ -373,14 +370,7 @@ console.log('\n── env-var config (MORI_SERVER_URL / MORI_API_KEY) ──\n')
     env, encoding: 'utf8', timeout: 5000,
   });
   assert((r.status ?? -1) === 0, 'context-hook no-config: exits 0');
-  let parsed;
-  try { parsed = JSON.parse((r.stdout ?? '').trim()); } catch { /* noop */ }
-  assert(
-    typeof parsed?.hookSpecificOutput?.additionalContext === 'string' &&
-      parsed.hookSpecificOutput.additionalContext.includes('No Mori server is configured'),
-    'context-hook no-config: unset MORI_SERVER_URL → UNCONFIGURED',
-    r.stdout,
-  );
+  assert((r.stdout ?? '').trim() === '', 'context-hook no-config: unset MORI_SERVER_URL → SILENT', r.stdout);
 }
 
 {
