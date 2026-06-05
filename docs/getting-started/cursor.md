@@ -1,43 +1,85 @@
 # Getting Started — Mori Cursor Bridge
 
-Connect Cursor 2.4+ to your Mori shared memory server: `/brief`, `/consult`, `/dream`, event capture, and cross-device messaging. Cursor loads the same hooks and skills as Claude Code from `~/.claude/`.
+Connect Cursor 2.4+ to your Mori shared memory server: `/brief`, `/consult`, `/dream`, event capture, and cross-device messaging.
 
 ---
 
 ## Prerequisites
 
-- **Cursor 2.4+** — loads `~/.claude/settings.json` hooks and `~/.claude/skills/`.
+- **Cursor 2.4+** — loads `~/.claude/skills/` and reads the plugin's `mcp.json`.
 - **Mori server** reachable (homelab, GCE, Tailscale, etc.).
 - **Third-party skills enabled:** Settings → Rules, Skills, Subagents → **Enable third-party skills**.
 - Optional: API key if the server uses `MORI_ADVISOR_API_KEY`.
 
 ---
 
+## Install as a Plugin (Recommended)
+
+Mori ships as a unified plugin package at `plugins/mori/`. It includes a Cursor-specific manifest (`.cursor-plugin/plugin.json`), an MCP config (`mcp.json`), and shared skills — all from a single package.
+
+> **Hooks are a fast-follow for Cursor.** The Cursor hook event model is being verified against live Cursor docs before wiring. MCP tools and skills work fully today.
+
+### Install from a local clone
+
+```bash
+# Clone or pull the repo, then copy the plugin package:
+cp -r plugins/mori ~/.cursor/plugins/local/mori
+```
+
+Or symlink for easier updates (local dev only):
+
+```bash
+ln -s "$(pwd)/plugins/mori" ~/.cursor/plugins/local/mori
+```
+
+For workspace-scoped install, place it at `.cursor/plugins/mori/` in your project root instead.
+
+### Configure your server URL and API key
+
+Edit `~/.cursor/plugins/local/mori/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "mori": {
+      "type": "http",
+      "url": "http://YOUR-SERVER:8968/mcp",
+      "headers": { "x-api-key": "YOUR_KEY" }
+    }
+  }
+}
+```
+
+If you prefer not to store the key in the file, set `MORI_API_KEY` in your shell environment and omit the `x-api-key` header.
+
+### Reload Cursor
+
+Command Palette → *Developer: Reload Window*. Confirm **mori** appears under Settings → MCP.
+
+---
+
 ## Already set up via Claude Code?
 
-If you use Claude Code on this machine, **Mori skills and hooks may already be deployed** under `~/.claude/`. Cursor reuses that path — you often only need MCP in Cursor.
+If you use Claude Code on this machine, **Mori skills may already be deployed** under `~/.claude/`. Cursor reuses that path.
 
 Check what you have:
 
 ```bash
 ls ~/.claude/skills/
-grep -E 'mori-ship-event|mori-post-compact' ~/.claude/settings.json
 ```
 
 | You see | Cursor needs |
 |---------|----------------|
-| `brief`, `wrap`, `msg`, … under `~/.claude/skills/` | Skills OK — run `--upgrade-skills` after a mori repo pull to refresh |
-| `mori-ship-event.sh` in `settings.json` hooks | Event capture OK for Cursor too |
-| `mori-post-compact-brief.sh` on `PostCompact` | Re-ground after compaction OK |
-| Nothing under `~/.cursor/mcp.json` | Run the Mori installer below (or add MCP manually) |
-
-**Do not reinstall blindly** — `install-mori-cursor` merges Mori hooks and updates shipper commands; it will not remove unrelated entries in `settings.json`.
+| `brief`, `wrap`, `msg`, … under `~/.claude/skills/` | Skills OK |
+| Nothing under `~/.cursor/plugins/` | Install the plugin (above) |
 
 Shared memory lives on the **Mori server** — not on this laptop. Do not use a local `memories.db` from an old clone or sidecar install — that is not the live store.
 
 ---
 
-## Automated installation
+## Legacy Installer (Alternative Path)
+
+> The plugin package is the recommended install path. The installer scripts below are the legacy approach, now superseded. They remain documented for users who prefer a script-driven setup or cannot use the plugin marketplace.
 
 Run from the **mori** repo root.
 
@@ -72,31 +114,29 @@ powershell -File scripts/install-mori-cursor.ps1 -UpgradeSkills -MoriUrl "http:/
 
 Windows installer is pure PowerShell (no Python).
 
-### What the installer writes
+### What the legacy installer writes
 
 | Path | Purpose |
 |------|---------|
 | `~/.cursor/mcp.json` | HTTP MCP → `http://<server>:8968/mcp` |
 | `~/.claude/settings.json` | Mori hooks (`_mori_managed`) + MCP `permissions.allow` |
 | `~/.claude/mori-ship-event.*` | Event shipper |
-| `~/.claude/mori-post-compact-brief.*` | Post-compaction → `/brief --post-compact` |
 | `~/.claude/skills/<name>/` | Copies from `mori/skills/<name>/SKILL.md` |
 
-### Mori hooks (managed by installer)
+### Mori hooks (managed by legacy installer)
 
 | Hook | Purpose |
 |------|---------|
 | `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop` | Ship events → `/api/events/raw` |
 | `PreCompact` | Pre-compaction ship + dream (`--mode precompact`) |
-| `PostCompact` | Prompt to run `/brief --post-compact` |
 
-Re-runs upgrade legacy inline `curl` hooks to the shipper and set `_mori_managed: true` without removing other hook entries.
+Post-compaction re-grounding is handled by a **SessionStart hook** that checks `source: "compact"` and prompts the agent to run `/brief --post-compact`. The legacy installer deploys this as a shell script; re-runs upgrade legacy inline `curl` hooks to the shipper and set `_mori_managed: true` without removing other hook entries.
 
-Keep [`mori/scripts/mori-post-compact-brief.sh`](../../scripts/mori-post-compact-brief.sh) as the source for PostCompact re-ground text shipped to `~/.claude/`.
+---
 
-### Mori slash commands (skills)
+## Mori slash commands (skills)
 
-Deployed as `~/.claude/skills/<name>/SKILL.md`:
+Available in both plugin and legacy installs:
 
 | Command | Description |
 |---------|-------------|
@@ -114,20 +154,19 @@ See [slash-commands.md](../reference/slash-commands.md) for full options.
 
 ---
 
-## Manual MCP config
+## Memory Store
 
-Copy [.cursor/mcp.json.example](../../.cursor/mcp.json.example) to `~/.cursor/mcp.json` and set your server URL. Add hooks and skills as in [examples/settings.json](../../examples/settings.json) if not using the installer.
+The Mori server uses a **dual-backend** store: SQLite for solo or synchronous setups, and Postgres for team or asynchronous deployments. Shared memory lives on the server — not on this machine.
 
 ---
 
 ## Verify
 
 1. **Reload Cursor window** (Command Palette → *Developer: Reload Window*).
-2. **Doctor:** `./scripts/install-mori-cursor.sh --doctor --url "http://<server>:8968"`
-3. **MCP** — Settings → MCP → `mori` connected.
-4. **`/brief`** — counts + dream state from server via MCP.
-5. **Events** — `curl http://<server>:8968/api/events/health` (count increases as you use Agent).
-6. **`/dream --status`** — pipeline state on server.
+2. **MCP** — Settings → MCP → `mori` connected.
+3. **`/brief`** — counts + dream state from server via MCP.
+4. **Events** — `curl http://<server>:8968/api/events/health` (count increases as you use Agent).
+5. **`/dream --status`** — pipeline state on server.
 
 ---
 
@@ -135,19 +174,18 @@ Copy [.cursor/mcp.json.example](../../.cursor/mcp.json.example) to `~/.cursor/mc
 
 | Symptom | Likely cause | Fix |
 |---------|----------------|-----|
-| `/brief` works in Claude Code but not Cursor | `~/.cursor/mcp.json` missing | Mori installer or manual MCP; reload window |
+| `/brief` works in Claude Code but not Cursor | MCP not configured for Cursor | Install plugin or add `~/.cursor/mcp.json`; reload window |
 | Agent cites local `memories.db` | MCP not connected | Doctor; memory is server-side only |
-| Hooks work, MCP tools blocked | Half-install | Re-run Mori installer; check `permissions.allow` |
-| Stale slash commands | Old `~/.claude/skills` copy | `install-mori-cursor.sh --upgrade-skills` |
-| No re-ground after compaction | Missing `PostCompact` / brief script | Re-run Mori installer |
-| `jq` error on PostCompact (Linux) | `mori-post-compact-brief.sh` needs `jq` | Install `jq` or use Windows shipper (PowerShell) |
+| MCP tools blocked | Incomplete install | Re-check plugin `mcp.json` or legacy `permissions.allow` |
+| Stale slash commands | Old `~/.claude/skills` copy | Reinstall plugin or run `install-mori-cursor.sh --upgrade-skills` |
+| No re-ground after compaction | SessionStart hook not wired | Plugin hooks for Cursor are a fast-follow; use legacy installer for hook support now |
 
 ---
 
 ## Known limitations
 
-- **PostToolUseFailure** — not verified on Cursor; other hooks are confirmed.
-- **PostCompact on Linux/macOS** — requires `jq` for Mori brief hook script.
+- **Hooks** — Cursor hook wiring is a fast-follow; not yet confirmed stable in the plugin. MCP tools and skills work today.
+- **PostToolUseFailure** — not verified on Cursor.
 - **Third-party skills** — Cursor updates can disable this; re-check Settings → Rules, Skills, Subagents.
 
 ---
@@ -155,11 +193,13 @@ Copy [.cursor/mcp.json.example](../../.cursor/mcp.json.example) to `~/.cursor/mc
 ## Notes
 
 - Cursor reads `~/.claude/skills/` directly (also `.cursor/skills/` if you add skills there).
-- Claude Code and Cursor share one `settings.json` — the Mori installer only touches `_mori_managed` hooks.
+- The plugin's `skills/` directory is shared with Claude Code and Antigravity — no per-client copies.
 - Optional: [git-hooks.md](../reference/git-hooks.md) for NATS push notifications on `git push`.
 
 ---
 
 ## Upgrading
 
-Re-run `install-mori-cursor` (use `--upgrade-skills` to refresh skill files). Hook failures: `%TEMP%\mori-hook.log` (Windows) or `/tmp/mori-hook.log` (Linux/macOS).
+**Plugin users**: pull the repo and re-copy `plugins/mori/` to `~/.cursor/plugins/local/mori/`.
+
+**Legacy installer users**: re-run `install-mori-cursor` (use `--upgrade-skills` to refresh skill files). Hook failures: `%TEMP%\mori-hook.log` (Windows) or `/tmp/mori-hook.log` (Linux/macOS).

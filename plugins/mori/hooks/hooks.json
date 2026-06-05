@@ -1,0 +1,65 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-context-hook.mjs\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --url \"${user_config.server_url}\" --api-key \"${user_config.api_key}\" --mode raw"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --url \"${user_config.server_url}\" --api-key \"${user_config.api_key}\" --mode raw"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --url \"${user_config.server_url}\" --api-key \"${user_config.api_key}\" --mode raw"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --url \"${user_config.server_url}\" --api-key \"${user_config.api_key}\" --mode raw"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --url \"${user_config.server_url}\" --api-key \"${user_config.api_key}\" --mode precompact"
+          }
+        ]
+      }
+    ]
+  }
+}

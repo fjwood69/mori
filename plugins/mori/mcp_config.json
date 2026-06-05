@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mori": {
+      "type": "http",
+      "url": "http://localhost:8968/mcp",
+      "headers": {
+        "x-api-key": "REPLACE_WITH_YOUR_KEY"
+      }
+    }
+  }
+}
