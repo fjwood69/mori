@@ -4,11 +4,12 @@
 
 | Platform | Recommended path | Complexity |
 |----------|-----------------|------------|
+| **Cloud — one-click** | Render / Railway / Cloud Run / Fly.io | Low — see [one-click-deploy.md](../getting-started/one-click-deploy.md) |
 | Linux | Docker Compose or Podman Compose | Low |
 | macOS | Docker Desktop or native Python | Low |
 | Windows | Docker Desktop | Low |
 | Windows (advanced) | WSL2 + Podman Compose | Medium |
-| Cloud (any) | GCP Terraform ([deploy/gcp/](../deploy/gcp/)) | Medium |
+| Cloud (GCP, full) | GCP Terraform ([deploy/gcp/](../deploy/gcp/)) | Medium |
 
 ## Docker Compose (all platforms — recommended)
 

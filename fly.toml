@@ -1,0 +1,46 @@
+# Mori — Fly.io configuration
+#
+# Deploy:
+#   1. fly auth login
+#   2. fly apps create mori-<yourname>          # unique app name
+#   3. fly volumes create mori_data --size 1    # persistent memory store
+#   4. fly secrets set \
+#        MORI_API_KEY="sk-your-key" \
+#        MORI_BASE_URL="https://api.novita.ai/v3/openai" \
+#        MORI_TRUSTED_DREAMERS="$(hostname)" \
+#        MORI_API_KEYS="myname:$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+#   5. fly deploy
+#
+# Your server: https://<app-name>.fly.dev
+# Health check: curl https://<app-name>.fly.dev/health
+
+app = "mori"           # replace with the name from step 2
+primary_region = "iad" # closest region: https://fly.io/docs/reference/regions/
+
+[build]
+  image = "ghcr.io/fjwood69/mori:latest"
+
+[env]
+  # Fly.io does not inject PORT; set APP_PORT explicitly to match internal_port below.
+  APP_PORT = "8080"
+  MORI_PROVIDER_MODE = "direct"
+  MORI_ADVISOR_MODEL = "moonshotai/kimi-k2.6"
+  MORI_DREAM_INTERVAL = "60"
+  # Set secrets via `fly secrets set` — do not put keys here.
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"   # scale to zero when idle
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+    path = "/health"
+
+[[mounts]]
+  source = "mori_data"           # volume name from step 3
+  destination = "/data/mori-advisor"

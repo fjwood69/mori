@@ -1,0 +1,63 @@
+# Mori — Render Blueprint
+# Deploy to Render with one click:
+#   https://render.com/deploy?repo=https://github.com/fjwood69/mori
+#
+# What this creates:
+#   • A web service running the Mori server (ghcr.io/fjwood69/mori:latest)
+#   • A 1 GB persistent disk mounted at /data/mori-advisor (your memory store)
+#
+# You will be prompted for:
+#   MORI_API_KEY      — your LLM provider API key
+#   MORI_BASE_URL     — your provider's OpenAI-compatible base URL
+#   MORI_TRUSTED_DREAMERS — your local machine hostname (run `hostname` to find it)
+#   MORI_API_KEYS     — a name:secret pair for securing your server
+#                       (generate: python3 -c "import secrets; print(secrets.token_hex(32))")
+#                       then set: myname:<that-secret>
+#
+# Requires Render Starter plan ($7/mo) for the persistent disk.
+# After deploy, paste the service URL into your plugin's server_url.
+
+services:
+  - type: web
+    name: mori
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+
+    # Render injects PORT (10000). Mori reads APP_PORT → PORT → 8968.
+    # Do NOT set APP_PORT here — let Render's PORT be read automatically.
+
+    envVars:
+      - key: MORI_PROVIDER_MODE
+        value: direct
+
+      # --- Required: fill these in when Render prompts you ---
+
+      - key: MORI_API_KEY
+        sync: false   # Render will prompt for this — paste your provider key
+
+      - key: MORI_BASE_URL
+        value: https://api.novita.ai/v3/openai  # change to your provider's URL
+
+      - key: MORI_ADVISOR_MODEL
+        value: moonshotai/kimi-k2.6
+
+      - key: MORI_DREAM_INTERVAL
+        value: "60"
+
+      # Your machine's hostname — run `hostname` locally and paste it here.
+      # This lets your Claude Code sessions write memories without approval.
+      - key: MORI_TRUSTED_DREAMERS
+        sync: false
+
+      # Server API key — one per client, format: name:secret
+      # Generate: python3 -c "import secrets; print(secrets.token_hex(32))"
+      # Then set: myname:<that-secret>
+      # Use the same secret as the API key in your plugin config.
+      - key: MORI_API_KEYS
+        sync: false
+
+    disk:
+      name: mori-data
+      mountPath: /data/mori-advisor
+      sizeGB: 1    # $0.25/month; increase-only after creation
