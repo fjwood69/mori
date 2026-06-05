@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "mori",
+  "displayName": "Mori — shared agent memory",
+  "version": "0.1.0",
+  "description": "Shared cross-device memory for AI coding agents: dream pipeline, /brief grounding, governed memory store.",
+  "author": { "name": "fjwood69", "url": "https://github.com/fjwood69" },
+  "homepage": "https://github.com/fjwood69/mori",
+  "repository": "https://github.com/fjwood69/mori",
+  "license": "AGPL-3.0-only",
+  "keywords": ["memory", "mcp", "agents", "context", "cross-device"],
+  "userConfig": {
+    "server_url": {
+      "type": "string",
+      "title": "Mori server URL",
+      "description": "Base URL of your mori-advisor server, e.g. http://localhost:8968",
+      "required": true,
+      "default": "http://localhost:8968"
+    },
+    "api_key": {
+      "type": "string",
+      "title": "Mori API key",
+      "description": "Your named API key (name:secret). Optional if the server is unauthenticated.",
+      "sensitive": true
+    }
+  }
+}
