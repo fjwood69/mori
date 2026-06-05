@@ -39,6 +39,12 @@ from mori_advisor.metrics import (
 )
 from mori_advisor.policy import PermissionDenied, require_role
 from mori_advisor.store import get_store as _get_store
+from mori_advisor.throttle import (
+    IdempotencyState,
+    idempotency_ttls,
+    make_idempotency_store,
+    throttle_safety_warning,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,18 +178,39 @@ init_metrics()
 
 
 @asynccontextmanager
+async def _throttle_cleanup_loop():
+    """Periodically evict expired idempotency records (in-memory store hygiene)."""
+    while True:
+        await asyncio.sleep(300)
+        try:
+            await idempotency_store.cleanup()
+        except Exception as exc:  # never let cleanup crash the loop
+            logger.debug("idempotency cleanup failed: %s", exc)
+
+
 async def _lifespan(server):
     """Bootstrap the store on startup (async-safe for both SQLite and Postgres)."""
     result = store.bootstrap()
     if inspect.isawaitable(result):
         await result
-    yield
+    warning = throttle_safety_warning()
+    if warning:
+        logger.warning(warning)
+    cleanup_task = asyncio.create_task(_throttle_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
 
 
 mcp = FastMCP(MCP_SERVER_NAME, lifespan=_lifespan)
 bifrost = BifrostClient(base_url=BIFROST_BASE_URL, timeout=BIFROST_TIMEOUT)
 session_log = store._log if hasattr(store, "_log") else store
 memory_store = store._mem if hasattr(store, "_mem") else store
+
+# Idempotency store for POST /api/memories (#23 C) — in-memory by default
+# (single-instance). See throttle.make_idempotency_store for the scale-out path.
+idempotency_store = make_idempotency_store()
 
 
 async def _a(val):
@@ -2795,49 +2822,91 @@ async def post_memory(request: Request) -> JSONResponse:
     if err:
         return JSONResponse({"error": err}, status_code=status)
 
-    name: str = payload["name"]
-    title: str = payload.get("title", "") or ""
-    description: str = payload.get("description", "") or ""
-    mem_type: str = payload.get("type", "project") or "project"
-    tier: str = payload.get("tier", "working") or "working"
-    body: str = payload.get("body", "") or ""
-    tags: list[str] = payload.get("tags") or []
-    origin_clients: list[str] = payload.get("origin_clients") or [actor_name]
+    async def _do_write() -> JSONResponse:
+        name: str = payload["name"]
+        title: str = payload.get("title", "") or ""
+        description: str = payload.get("description", "") or ""
+        mem_type: str = payload.get("type", "project") or "project"
+        tier: str = payload.get("tier", "working") or "working"
+        body: str = payload.get("body", "") or ""
+        tags: list[str] = payload.get("tags") or []
+        origin_clients: list[str] = payload.get("origin_clients") or [actor_name]
 
-    try:
-        # Fetch the existing memory (if any) to decide branch.
-        existing = await _a(memory_store.get_memory(name))
+        try:
+            # Fetch the existing memory (if any) to decide branch.
+            existing = await _a(memory_store.get_memory(name))
 
-        if existing is None:
-            # New name — insert as working directly.
-            result = await _a(
-                memory_store.write(
-                    name=name,
-                    title=title,
-                    description=description,
-                    type=mem_type,
-                    tier=tier,
-                    body=body,
-                    tags=tags,
-                    origin_clients=origin_clients,
-                    client=actor_name,
+            if existing is None:
+                # New name — insert as working directly.
+                result = await _a(
+                    memory_store.write(
+                        name=name,
+                        title=title,
+                        description=description,
+                        type=mem_type,
+                        tier=tier,
+                        body=body,
+                        tags=tags,
+                        origin_clients=origin_clients,
+                        client=actor_name,
+                    )
                 )
-            )
-            await _write_audit("propose_new", actor_name, name, body)
-            return JSONResponse(
-                {"status": "created", "name": name, "detail": result},
-                status_code=201,
-            )
+                await _write_audit("propose_new", actor_name, name, body)
+                return JSONResponse(
+                    {"status": "created", "name": name, "detail": result},
+                    status_code=201,
+                )
 
-        existing_tier = existing.get("tier", "working")
-        existing_protected = existing.get("protected", False)
+            existing_tier = existing.get("tier", "working")
+            existing_protected = existing.get("protected", False)
 
-        is_canonical_or_protected = existing_tier == "canonical" or existing_protected
+            is_canonical_or_protected = existing_tier == "canonical" or existing_protected
 
-        if is_canonical_or_protected:
-            # Propose a pending write — do NOT touch the canonical row.
-            # Use queue_pending_write to bypass write() which would overwrite
-            # canonical rows that are not flagged protected=1.
+            if is_canonical_or_protected:
+                # Propose a pending write — do NOT touch the canonical row.
+                # Use queue_pending_write to bypass write() which would overwrite
+                # canonical rows that are not flagged protected=1.
+                result = await _a(
+                    memory_store.queue_pending_write(
+                        name=name,
+                        title=title,
+                        description=description,
+                        type=mem_type,
+                        body=body,
+                        tags=tags,
+                        origin_clients=origin_clients,
+                        proposed_by=actor_name,
+                    )
+                )
+                await _write_audit("propose_pending", actor_name, name, body)
+                return JSONResponse(
+                    {"status": "pending", "name": name, "detail": result},
+                    status_code=202,
+                )
+
+            # Working, non-protected — idempotent update if same actor owns it.
+            existing_clients: list[str] = existing.get("origin_clients") or []
+            if actor_name in existing_clients or not existing_clients:
+                result = await _a(
+                    memory_store.write(
+                        name=name,
+                        title=title,
+                        description=description,
+                        type=mem_type,
+                        tier=tier,
+                        body=body,
+                        tags=tags,
+                        origin_clients=origin_clients,
+                        client=actor_name,
+                    )
+                )
+                await _write_audit("update_working", actor_name, name, body)
+                return JSONResponse(
+                    {"status": "updated", "name": name, "detail": result},
+                    status_code=200,
+                )
+
+            # Working memory owned by a different actor — queue as pending.
             result = await _a(
                 memory_store.queue_pending_write(
                     name=name,
@@ -2856,50 +2925,51 @@ async def post_memory(request: Request) -> JSONResponse:
                 status_code=202,
             )
 
-        # Working, non-protected — idempotent update if same actor owns it.
-        existing_clients: list[str] = existing.get("origin_clients") or []
-        if actor_name in existing_clients or not existing_clients:
-            result = await _a(
-                memory_store.write(
-                    name=name,
-                    title=title,
-                    description=description,
-                    type=mem_type,
-                    tier=tier,
-                    body=body,
-                    tags=tags,
-                    origin_clients=origin_clients,
-                    client=actor_name,
-                )
-            )
-            await _write_audit("update_working", actor_name, name, body)
+        except Exception as e:
+            logger.error("POST /api/memories failed: %s", e)
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    # ── Idempotency-Key handling (#23 C) ──────────────────────────────────────
+    # No key → behave exactly as before. With a key → propose-once: a replay of
+    # the same key+body returns the cached response; the write runs only once.
+    idem_key = request.headers.get("Idempotency-Key")
+    if not idem_key:
+        return await _do_write()
+
+    # Scope per actor; digest the validated payload so a key reused with a
+    # different body is a 422, not a silent replay.
+    store_key = f"{actor_name}:{idem_key}"
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    claim_ttl, cache_ttl = idempotency_ttls()
+    async with idempotency_store.reserve(
+        store_key, digest, claim_ttl=claim_ttl, cache_ttl=cache_ttl
+    ) as reservation:
+        if reservation.state is IdempotencyState.REPLAY:
+            rec = reservation.record
             return JSONResponse(
-                {"status": "updated", "name": name, "detail": result},
-                status_code=200,
+                json.loads(rec.response_body),
+                status_code=rec.status_code or 200,
+                headers={"Idempotency-Replay": "true"},
             )
-
-        # Working memory owned by a different actor — queue as pending.
-        result = await _a(
-            memory_store.queue_pending_write(
-                name=name,
-                title=title,
-                description=description,
-                type=mem_type,
-                body=body,
-                tags=tags,
-                origin_clients=origin_clients,
-                proposed_by=actor_name,
+        if reservation.state is IdempotencyState.MISMATCH:
+            return JSONResponse(
+                {"error": "Idempotency-Key reused with a different request body"},
+                status_code=422,
             )
-        )
-        await _write_audit("propose_pending", actor_name, name, body)
-        return JSONResponse(
-            {"status": "pending", "name": name, "detail": result},
-            status_code=202,
-        )
-
-    except Exception as e:
-        logger.error("POST /api/memories failed: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        if reservation.state is IdempotencyState.IN_PROGRESS:
+            return JSONResponse(
+                {"error": "a request with this Idempotency-Key is already in progress"},
+                status_code=409,
+                headers={"Retry-After": str(claim_ttl)},
+            )
+        resp = await _do_write()
+        # Cache deterministic outcomes (2xx/4xx) for replay; never cache a
+        # transient 5xx — let a retry re-attempt the write.
+        if resp.status_code < 500:
+            await reservation.complete(resp.status_code, resp.body.decode())
+        return resp
 
 
 @mcp.custom_route("/api/pending", methods=["GET"])
