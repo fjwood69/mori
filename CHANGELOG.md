@@ -19,6 +19,15 @@
   `SQLiteStore` wrapper delegates the new parameters through to `MemoryStore`.
 - **test:** `tests/test_pending_mine.py` — 5 SQLite tests; PG variants via
   `@requires_pg` (skipped unless `MORI_TEST_DATABASE_URL` is set).
+- **fix(postgres):** `PostgresStore.write()` now coalesces `tier` to `"working"`
+  before any DB interaction, mirroring `MemoryStore._ensure_tier()`. A `NULL` or
+  unrecognised tier (e.g. from a pending row inserted without a tier value) can no
+  longer violate `memories.tier NOT NULL` on Postgres. The immediate trigger was
+  `approve()` applying a pending row whose `pending_writes.tier` was NULL; SQLite
+  was protected by `_ensure_tier` but Postgres was not. `VALID_TIERS` is now
+  imported into `postgres_store.py` from `memory_store` to keep the allowed set in
+  sync. Regression tests added to `tests/test_td_review.py` (SQLite + `@requires_pg`
+  Postgres variants).
 
 ## v2.2.8 — Fix: server startup crash in v2.2.6/v2.2.7 (`_lifespan` decorator)
 
