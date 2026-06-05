@@ -16,7 +16,7 @@ Rules
 * Otherwise → DURABLE: build and return a proposal payload.
 
 For DURABLE memories:
-* ``name`` is ``hermes.<memory_id>`` when a ``memory_id`` is present in the
+* ``name`` is ``hermes-<memory_id>`` when a ``memory_id`` is present in the
   frontmatter.  When absent, a stable slug is derived from the normalised body
   text (first 64 chars, slugified) — this is logged as a DEGRADED path because
   the name may drift if the content is later edited.
@@ -29,12 +29,12 @@ For DURABLE memories:
 Retraction (``action == "remove"``)
 -------------------------------------
 mori never deletes canon — a retraction is modelled as a NEW proposal whose
-body asserts the prior fact is retracted.  Name: ``hermes.<memory_id>.retracted``
-when memory_id is known, else slug with ``.retracted`` suffix.  The ``type`` is
+body asserts the prior fact is retracted.  Name: ``hermes-<memory_id>-retracted``
+when memory_id is known, else slug with ``-retracted`` suffix.  The ``type`` is
 set to "decision" to signal intent.  The original body is embedded so a reviewer
 can confirm what is being retracted.
 
-All names are namespaced under ``hermes.`` so they cannot collide with
+All names are namespaced under ``hermes-`` so they cannot collide with
 human-owned canon.
 """
 
@@ -209,11 +209,11 @@ class HermesEventNormalizer:
 
         # ── Name derivation ─────────────────────────────────────────────────
         if memory_id:
-            base_name = f"hermes.{memory_id}"
+            base_name = f"hermes-{memory_id}"
         else:
             # Degraded path — derive from content.
             slug = _slugify(body_text[:_SLUG_CONTENT_CHARS]) or "unknown"
-            base_name = f"hermes.{slug}"
+            base_name = f"hermes-{slug}"
             logger.warning(
                 "normalizer: no memory_id in frontmatter for target=%r — "
                 "using content-derived name %r (degraded path; name may drift)",
@@ -229,7 +229,7 @@ class HermesEventNormalizer:
 
         # ── Retraction branch ───────────────────────────────────────────────
         if action == "remove":
-            retraction_name = f"{base_name}.retracted"
+            retraction_name = f"{base_name}-retracted"
             retraction_body = (
                 f"RETRACTION PROPOSAL\n\n"
                 f"The hermes agent has requested removal of the memory "

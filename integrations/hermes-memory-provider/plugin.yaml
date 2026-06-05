@@ -1,5 +1,5 @@
 name: hermes-mori-provider
-version: "0.1.0"
+version: "0.1.1"
 description: >
   mori MemoryProvider for hermes-agent. Mirrors the agent's durable learnings
   to a self-hosted mori server as governed proposals (never direct canon), and
