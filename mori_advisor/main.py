@@ -3029,6 +3029,52 @@ async def get_pending_json(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@mcp.custom_route("/api/pending/mine", methods=["GET"])
+async def get_pending_mine(request: Request) -> JSONResponse:
+    """List the authenticated caller's own pending proposals.
+
+    Scoped to the actor identified by the API key — an autonomous agent can
+    read back what it proposed (and see approved/rejected outcomes) without
+    ever seeing another actor's rows.  The dreamer review queue
+    (``GET /api/pending/json``) remains separate and dreamer-role only.
+
+    Requires write role.  A missing actor (no API key in api mode) returns an
+    empty list rather than a 500 — the agent simply has nothing to inspect.
+
+    Query params:
+        status: ``pending`` | ``approved`` | ``rejected``.  Omit (or pass an
+                empty string) to return proposals across ALL statuses so the
+                agent can see outcomes, not just the live queue.
+    """
+    from mori_advisor.policy import PermissionDenied, current_actor, require_role
+
+    try:
+        require_role("write")
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+
+    actor = current_actor.get()
+    proposer: str = actor.key_name if actor else ""
+
+    if not proposer:
+        # No authenticated actor — return an empty result rather than a 500.
+        return JSONResponse({"proposer": "", "status": "all", "count": 0, "items": []})
+
+    # An empty string means "all statuses"; a named value filters to that status.
+    status_filter: str = request.query_params.get("status", "")
+    label = status_filter if status_filter else "all"
+
+    try:
+        items = await _a(store.pending_list_json(status=status_filter, proposed_by=proposer))
+        items = _json_safe_rows(items)
+        return JSONResponse(
+            {"proposer": proposer, "status": label, "count": len(items), "items": items}
+        )
+    except Exception as e:
+        logger.error("GET /api/pending/mine failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @mcp.custom_route("/api/memories/{name}/approve", methods=["POST"])
 async def approve_memory(request: Request) -> JSONResponse:
     """Approve a pending write and apply it to the memory store.

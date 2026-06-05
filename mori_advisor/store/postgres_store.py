@@ -1166,21 +1166,51 @@ class PostgresStore(BaseStore):
         ]
         return "\n".join(lines)
 
-    async def pending_list_json(self, status: str = "pending") -> list[dict]:
-        """Return pending writes as a list of dicts (structured, for review UI)."""
+    async def pending_list_json(
+        self,
+        status: str = "pending",
+        proposed_by: str = "",
+    ) -> list[dict]:
+        """Return pending writes as a list of dicts (structured, for review UI).
+
+        Args:
+            status:      Filter to this status value.  Pass ``""`` or ``None`` to
+                         return rows across ALL statuses (approved + pending + rejected).
+            proposed_by: When non-empty, restrict results to rows where
+                         ``proposed_by`` matches exactly (used by #16 agent endpoint).
+        """
         self._ensure_pool()
+
+        # Build WHERE clause and positional-parameter list dynamically so the
+        # dreamer review path (single status, all proposers) and the agent
+        # self-view path (all statuses, own rows only) share one method.
+        conditions: list[str] = []
+        params: list = []
+        idx = 1  # Postgres uses $1, $2, …
+
+        if status:
+            conditions.append(f"status = ${idx}")
+            params.append(status)
+            idx += 1
+
+        if proposed_by:
+            conditions.append(f"proposed_by = ${idx}")
+            params.append(proposed_by)
+
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT id, memory_name, title, description, type, body, tags,
                        proposed_at, proposed_by, status,
                        source, provenance, confidence, focus_mode, existing_body,
                        tier, created_at
                 FROM pending_writes
-                WHERE status = $1
+                {where}
                 ORDER BY proposed_at ASC
                 """,
-                status,
+                *params,
             )
         result = []
         for r in rows:
