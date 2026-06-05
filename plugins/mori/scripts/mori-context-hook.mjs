@@ -19,6 +19,15 @@
  *     the env var is unset, so nothing is injected. Private deployments point it
  *     at an operational-context file (kept out of this public repo).
  *
+ * Health sentinel (runs before the above for startup/resume/clear):
+ *   Checks whether the Mori server at --url is reachable. If not, injects a
+ *   setup guide instead of the normal context and exits. This prevents a raw
+ *   connection error from being the user's first experience.
+ *   - "down"         → injects SETUP_MESSAGE
+ *   - "unconfigured" → injects UNCONFIGURED_MESSAGE
+ *   - "up"           → falls through to normal behaviour
+ *   Result is cached per session_id for 5 minutes (temp file) to avoid re-pinging.
+ *
  * Design:
  *   - SessionStart fires exactly once per boundary, so there is NO per-prompt
  *     wallpaper risk and no throttle is needed (unlike a UserPromptSubmit hook).
@@ -26,13 +35,15 @@
  *     truncated by the harness — keep context files small.
  *   - Fail open: any error -> write nothing, exit 0. A crashing hook disables the
  *     entire event block, so robustness beats diagnostics here.
- *   - Node built-ins only (process, fs). No npm packages. ESM.
+ *   - Node built-ins only (process, fs, fetch). No npm packages. ESM.
  *
  * Invoked by the Claude Code harness as:
- *   node "${CLAUDE_PLUGIN_ROOT}/scripts/mori-context-hook.mjs"
+ *   node "${CLAUDE_PLUGIN_ROOT}/scripts/mori-context-hook.mjs" --url "${user_config.server_url}"
  */
 
 import { readFileSync, existsSync } from 'fs';
+import { checkServer, getCached, setCached } from './lib/health-gate.mjs';
+import { SETUP_MESSAGE, UNCONFIGURED_MESSAGE } from './lib/setup-message.mjs';
 
 function emit(additionalContext) {
   process.stdout.write(
@@ -45,7 +56,16 @@ function emit(additionalContext) {
   );
 }
 
+/** Parse --url <value> from argv. Returns '' if not found. */
+function parseUrl(argv) {
+  const idx = argv.indexOf('--url');
+  if (idx !== -1 && idx + 1 < argv.length) return argv[idx + 1];
+  return '';
+}
+
 async function main() {
+  const serverUrl = parseUrl(process.argv.slice(2));
+
   let raw = '';
   try {
     const chunks = [];
@@ -80,6 +100,40 @@ async function main() {
     );
     process.exit(0);
   }
+
+  // ── Health sentinel (startup / resume / clear) ────────────────────────────
+  //
+  // Check the server before doing anything else. A cache hit (same session_id,
+  // within 5 min) skips the fetch so repeated SessionStart events are cheap.
+  //
+  // MORI_SKIP_HEALTH_CHECK=1 bypasses the network check entirely (treats server
+  // as "up"). Intended for tests and for private deployments where the server is
+  // behind a VPN and the hook should not block on a flaky network check.
+
+  const sessionId = payload.session_id || '';
+
+  let healthState;
+  if (process.env.MORI_SKIP_HEALTH_CHECK === '1') {
+    healthState = 'up';
+  } else {
+    healthState = getCached(sessionId);
+    if (!healthState) {
+      healthState = await checkServer(serverUrl);
+      setCached(sessionId, healthState);
+    }
+  }
+
+  if (healthState === 'down') {
+    emit(SETUP_MESSAGE);
+    process.exit(0);
+  }
+
+  if (healthState === 'unconfigured') {
+    emit(UNCONFIGURED_MESSAGE);
+    process.exit(0);
+  }
+
+  // ── Server is up — normal behaviour ──────────────────────────────────────
 
   const ctxFile = process.env.MORI_SESSION_CONTEXT_FILE;
   if (ctxFile) {

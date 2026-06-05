@@ -2,7 +2,7 @@
   "name": "mori",
   "displayName": "Mori — shared agent memory",
   "version": "0.1.1",
-  "description": "Shared cross-device memory for AI coding agents: dream pipeline, /brief grounding, governed memory store.",
+  "description": "Persistent, cross-device memory for your AI coding agents — self-hosted and AGPL, so your knowledge never leaves your own infrastructure. Connect to a Mori server you run; every session distils into durable, searchable memory, so agents start informed, not cold. /brief loads context, /pensieve searches it.",
   "author": { "name": "fjwood69", "url": "https://github.com/fjwood69" },
   "homepage": "https://github.com/fjwood69/mori",
   "repository": "https://github.com/fjwood69/mori",

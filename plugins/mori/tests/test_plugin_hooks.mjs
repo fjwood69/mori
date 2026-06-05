@@ -35,10 +35,11 @@ function assert(condition, name, detail = '') {
 }
 
 /**
- * Run a script with the given stdin and env, return { status, stdout, stderr }.
+ * Run a script with the given stdin, env, and optional extra args.
+ * Returns { status, stdout, stderr }.
  */
-function run(scriptPath, { stdin = '', env = {} } = {}) {
-  const result = spawnSync(process.execPath, [scriptPath], {
+function run(scriptPath, { stdin = '', env = {}, args = [] } = {}) {
+  const result = spawnSync(process.execPath, [scriptPath, ...args], {
     input: stdin,
     env: { ...process.env, ...env },
     encoding: 'utf8',
@@ -65,6 +66,7 @@ console.log('\n── mori-context-hook.mjs ──\n');
 
 {
   // 1. source=compact → emits additionalContext nudge
+  // compact branch exits before the health gate so no --url needed
   const r = run(CONTEXT_HOOK, {
     stdin: JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact' }),
   });
@@ -93,12 +95,16 @@ console.log('\n── mori-context-hook.mjs ──\n');
 }
 
 {
-  // 3. source=startup + MORI_SESSION_CONTEXT_FILE set → injects file contents
+  // 3. source=startup + MORI_SESSION_CONTEXT_FILE set + MORI_SKIP_HEALTH_CHECK=1
+  // → injects file contents (health gate treated as "up")
+  // Note: The sandbox isolates child-process TCP from parent listeners, so we use
+  // MORI_SKIP_HEALTH_CHECK=1 to bypass the network check in this integration test.
   const ctxFile = join(TMP, 'session-context.txt');
   writeFileSync(ctxFile, 'You are operating in test mode. Hello from context file.');
   const r = run(CONTEXT_HOOK, {
-    stdin: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup' }),
-    env: { MORI_SESSION_CONTEXT_FILE: ctxFile },
+    stdin: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'test-ctx-s3' }),
+    env: { MORI_SESSION_CONTEXT_FILE: ctxFile, TMPDIR: TMP, MORI_SKIP_HEALTH_CHECK: '1' },
+    args: ['--url', 'http://127.0.0.1:8968'],
   });
   assert(r.status === 0, 'startup+ctxfile: exits 0');
   let parsed;
@@ -106,25 +112,53 @@ console.log('\n── mori-context-hook.mjs ──\n');
   assert(
     parsed?.hookSpecificOutput?.additionalContext?.includes('Hello from context file'),
     'startup+ctxfile: context injected',
+    r.stdout,
   );
 }
 
 {
-  // 4. source=startup + MORI_SESSION_CONTEXT_FILE unset → no output
-  const env = { ...process.env };
+  // 4. source=startup + no URL configured → emits UNCONFIGURED_MESSAGE
+  // Empty --url triggers "unconfigured" in the health gate.
+  const env = { ...process.env, TMPDIR: TMP };
   delete env.MORI_SESSION_CONTEXT_FILE;
-  const r = spawnSync(process.execPath, [CONTEXT_HOOK], {
-    input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup' }),
+  const r = spawnSync(process.execPath, [CONTEXT_HOOK, '--url', ''], {
+    input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'test-unconf-s4' }),
     env,
     encoding: 'utf8',
     timeout: 5000,
   });
-  assert((r.status ?? -1) === 0, 'startup+no-ctxfile: exits 0');
-  assert((r.stdout ?? '').trim() === '', 'startup+no-ctxfile: no output');
+  assert((r.status ?? -1) === 0, 'startup+unconfigured: exits 0');
+  let parsed;
+  try { parsed = JSON.parse((r.stdout ?? '').trim()); } catch { /* noop */ }
+  assert(
+    typeof parsed?.hookSpecificOutput?.additionalContext === 'string' &&
+      parsed.hookSpecificOutput.additionalContext.includes('No Mori server is configured'),
+    'startup+unconfigured: emits UNCONFIGURED_MESSAGE',
+    r.stdout,
+  );
 }
 
 {
-  // 5. non-SessionStart event → no output, exit 0
+  // 5. source=startup + server down → emits SETUP_MESSAGE
+  // Port 1 is reliably unreachable (privileged + nothing listening).
+  const r = run(CONTEXT_HOOK, {
+    stdin: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'test-down-s5' }),
+    env: { TMPDIR: TMP },
+    args: ['--url', 'http://127.0.0.1:1'],
+  });
+  assert(r.status === 0, 'startup+server-down: exits 0');
+  let parsed;
+  try { parsed = JSON.parse(r.stdout.trim()); } catch { /* noop */ }
+  assert(
+    typeof parsed?.hookSpecificOutput?.additionalContext === 'string' &&
+      parsed.hookSpecificOutput.additionalContext.includes('isn\'t reachable yet'),
+    'startup+server-down: emits SETUP_MESSAGE',
+    r.stdout,
+  );
+}
+
+{
+  // 6. non-SessionStart event → no output, exit 0
   const r = run(CONTEXT_HOOK, {
     stdin: JSON.stringify({ hook_event_name: 'PostToolUse', tool: 'Bash' }),
   });
@@ -133,14 +167,14 @@ console.log('\n── mori-context-hook.mjs ──\n');
 }
 
 {
-  // 6. empty stdin → exit 0, no output
+  // 7. empty stdin → exit 0, no output
   const r = run(CONTEXT_HOOK, { stdin: '' });
   assert(r.status === 0, 'empty-stdin: exits 0');
   assert(r.stdout.trim() === '', 'empty-stdin: no output');
 }
 
 {
-  // 7. garbage stdin → exit 0
+  // 8. garbage stdin → exit 0
   const r = run(CONTEXT_HOOK, { stdin: 'not json at all }{' });
   assert(r.status === 0, 'garbage-stdin: exits 0');
 }
@@ -150,8 +184,8 @@ console.log('\n── mori-context-hook.mjs ──\n');
 console.log('\n── mori-ship-event.mjs ──\n');
 
 {
-  // 8. Empty stdin → exit 0, no network call attempted
-  const r = run(SHIP_EVENT, {
+  // 9. Empty stdin → exit 0, no network call attempted
+  const r = run(CONTEXT_HOOK, {
     stdin: '',
     // Point at a definitely-unreachable port so any network call would fail differently
     // We just verify the script exits 0 even with no stdin
@@ -166,7 +200,7 @@ console.log('\n── mori-ship-event.mjs ──\n');
 }
 
 {
-  // 9. Stop enrichment — transcript_tail_b64 added when transcript_path is readable
+  // 10. Stop enrichment — transcript_tail_b64 added when transcript_path is readable
   const transcriptFile = join(TMP, 'transcript.jsonl');
   // Write some fake transcript content (> 0 bytes)
   writeFileSync(transcriptFile, '{"role":"assistant","content":"test turn 1"}\n'.repeat(10));
@@ -224,7 +258,7 @@ console.log('\n── mori-ship-event.mjs ──\n');
 }
 
 {
-  // 10. Non-Stop event in raw mode — no transcript enrichment, exits 0
+  // 11. Non-Stop event in raw mode — no transcript enrichment, exits 0
   const normalEvent = JSON.stringify({ hook_event_name: 'PostToolUse', tool: 'Read' });
   const result = spawnSync(process.execPath, [
     SHIP_EVENT,
@@ -241,7 +275,7 @@ console.log('\n── mori-ship-event.mjs ──\n');
 }
 
 {
-  // 11. precompact mode — exits 0 even when server is unreachable
+  // 12. precompact mode — exits 0 even when server is unreachable
   const precompactEvent = JSON.stringify({ hook_event_name: 'PreCompact' });
   const result = spawnSync(process.execPath, [
     SHIP_EVENT,
@@ -258,7 +292,7 @@ console.log('\n── mori-ship-event.mjs ──\n');
 }
 
 {
-  // 12. Malformed JSON body — exits 0 (fail-soft)
+  // 13. Malformed JSON body — exits 0 (fail-soft)
   const result = spawnSync(process.execPath, [
     SHIP_EVENT,
     '--url', 'http://127.0.0.1:19999',
@@ -273,12 +307,8 @@ console.log('\n── mori-ship-event.mjs ──\n');
 }
 
 {
-  // 13. Stop enrichment skipped when transcript_path does not exist
+  // 14. Stop enrichment skipped when transcript_path does not exist
   const missingPath = join(TMP, 'nonexistent-transcript.jsonl');
-  const stopEvent = JSON.stringify({
-    hook_event_name: 'Stop',
-    transcript_path: missingPath,
-  });
   const enrichInlineTest = `
     import { readFileSync, existsSync } from 'fs';
     function enrichStopEvent(parsed, mode) {

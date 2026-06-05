@@ -69,12 +69,14 @@ function cleanup() {
 console.log('\n── mori-context-hook-cursor.mjs ──\n');
 
 {
-  // 1. sessionStart + MORI_SESSION_CONTEXT_FILE set → emits additional_context
+  // 1. sessionStart + MORI_SESSION_CONTEXT_FILE set + skip-health → emits additional_context
+  // MORI_SKIP_HEALTH_CHECK=1 bypasses the network gate (sandbox prevents child→parent TCP).
   const ctxFile = join(TMP, 'ctx.txt');
   writeFileSync(ctxFile, 'You are in Cursor test mode. Hello from ctx file.');
   const r = run(CONTEXT_HOOK, {
     stdin: fixture('cursor-sessionStart.json'),
-    env: { MORI_SESSION_CONTEXT_FILE: ctxFile, TMPDIR: TMP },
+    env: { MORI_SESSION_CONTEXT_FILE: ctxFile, TMPDIR: TMP, MORI_SKIP_HEALTH_CHECK: '1' },
+    args: ['--url', 'http://127.0.0.1:8968'],
   });
   assert(r.status === 0, 'ctx-hook: sessionStart+ctxfile → exits 0');
   let parsed;
@@ -87,17 +89,48 @@ console.log('\n── mori-context-hook-cursor.mjs ──\n');
 }
 
 {
-  // 2. sessionStart + MORI_SESSION_CONTEXT_FILE unset → no output
+  // 2. sessionStart + no URL configured → emits UNCONFIGURED_MESSAGE
   const env = { ...process.env, TMPDIR: TMP };
   delete env.MORI_SESSION_CONTEXT_FILE;
-  const r = spawnSync(process.execPath, [CONTEXT_HOOK], {
+  const r = spawnSync(process.execPath, [CONTEXT_HOOK, '--url', ''], {
     input: fixture('cursor-sessionStart.json'),
     env,
     encoding: 'utf8',
     timeout: 5000,
   });
-  assert((r.status ?? -1) === 0, 'ctx-hook: sessionStart+no-ctxfile → exits 0');
-  assert((r.stdout ?? '').trim() === '', 'ctx-hook: sessionStart+no-ctxfile → no output');
+  assert((r.status ?? -1) === 0, 'ctx-hook: sessionStart+unconfigured → exits 0');
+  let parsed;
+  try { parsed = JSON.parse((r.stdout ?? '').trim()); } catch { /* noop */ }
+  assert(
+    typeof parsed?.additional_context === 'string' &&
+      parsed.additional_context.includes('No Mori server is configured'),
+    'ctx-hook: sessionStart+unconfigured → emits UNCONFIGURED_MESSAGE',
+    r.stdout,
+  );
+}
+
+{
+  // 2b. sessionStart + server down → emits SETUP_MESSAGE
+  // Use a distinct conversation_id to avoid cache collision with test 2 above.
+  const downEvt = JSON.stringify({
+    hook_event_name: 'sessionStart',
+    conversation_id: 'conv-down-test-cursor',
+    source: 'startup',
+  });
+  const r2 = run(CONTEXT_HOOK, {
+    stdin: downEvt,
+    env: { TMPDIR: TMP },
+    args: ['--url', 'http://127.0.0.1:1'],
+  });
+  assert(r2.status === 0, 'ctx-hook: sessionStart+server-down → exits 0');
+  let parsed2;
+  try { parsed2 = JSON.parse(r2.stdout.trim()); } catch { /* noop */ }
+  assert(
+    typeof parsed2?.additional_context === 'string' &&
+      parsed2.additional_context.includes("isn't reachable yet"),
+    'ctx-hook: sessionStart+server-down → emits SETUP_MESSAGE',
+    r2.stdout,
+  );
 }
 
 {

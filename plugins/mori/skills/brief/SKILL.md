@@ -3,6 +3,8 @@ name: brief
 description: Session bootstrap — loads shared memories and team standards from the Mori server. Use at session start, or after a context compaction with --post-compact.
 ---
 
+**If the Mori server is unreachable** (a tool call returns a connection error, ECONNREFUSED, or timeout), do not show a stack trace. Tell the user the Mori server appears to be down and that a running Mori server is required. Point them to the quickstart at https://github.com/fjwood69/mori#quickstart and suggest checking the server URL in plugin settings. Then stop.
+
 ## Argument Parsing
 
 Parse the raw input for:

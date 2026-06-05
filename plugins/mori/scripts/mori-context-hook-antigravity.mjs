@@ -13,10 +13,20 @@
  * The throttle is per-conversation (using lib/throttle.mjs) so context is injected
  * exactly once per conversation, not on every model invocation.
  *
+ * Health sentinel:
+ *   On the first invocation for a conversationId, before injecting the session
+ *   context file, checks whether the Mori server at --url is reachable. If not,
+ *   injects a setup guide instead. The health result is cached per conversationId
+ *   for 5 minutes so subsequent PreInvocation calls (after the throttle clears)
+ *   do not re-ping.
+ *   - "down"         → { "injectSteps": [{ "ephemeralMessage": SETUP_MESSAGE }] }
+ *   - "unconfigured" → { "injectSteps": [{ "ephemeralMessage": UNCONFIGURED_MESSAGE }] }
+ *   - "up"           → falls through to normal context injection
+ *
  * Always exits 0 (fail-open). Any error → { "injectSteps": [] }, exit 0.
  *
  * Usage (wired by install-hooks-antigravity.mjs into ~/.gemini/config/hooks.json):
- *   node /abs/path/mori-context-hook-antigravity.mjs
+ *   node /abs/path/mori-context-hook-antigravity.mjs --url <server_url>
  *
  * Antigravity PreInvocation input (camelCase, from stdin):
  *   conversationId     string   Unique conversation identifier
@@ -35,6 +45,8 @@
 import { readFileSync, existsSync } from 'fs';
 import { runFailOpen } from './lib/fail-open.mjs';
 import { firedOnce } from './lib/throttle.mjs';
+import { checkServer, getCached, setCached } from './lib/health-gate.mjs';
+import { SETUP_MESSAGE, UNCONFIGURED_MESSAGE } from './lib/setup-message.mjs';
 
 /** Emit the required Antigravity PreInvocation response and exit. */
 function respond(steps) {
@@ -42,7 +54,16 @@ function respond(steps) {
   process.exit(0);
 }
 
+/** Parse --url <value> from argv. Returns '' if not found. */
+function parseUrl(argv) {
+  const idx = argv.indexOf('--url');
+  if (idx !== -1 && idx + 1 < argv.length) return argv[idx + 1];
+  return '';
+}
+
 async function main() {
+  const serverUrl = parseUrl(process.argv.slice(2));
+
   // Read stdin
   let raw = '';
   try {
@@ -65,9 +86,39 @@ async function main() {
   const conversationId = payload.conversationId || payload.conversation_id || '';
   const ctxFile = process.env.MORI_SESSION_CONTEXT_FILE;
 
-  // Inject only if: context file is configured AND this is the first invocation
-  // for this conversation.
-  if (ctxFile && conversationId && firedOnce(conversationId)) {
+  // Only act on the first invocation for this conversationId (throttle gate).
+  // firedOnce returns true the first time and false for all subsequent calls.
+  if (!conversationId || !firedOnce(conversationId)) {
+    respond([]);
+  }
+
+  // ── Health sentinel (first invocation only) ───────────────────────────────
+  //
+  // MORI_SKIP_HEALTH_CHECK=1 bypasses the network check (treats server as "up").
+  // For tests and private deployments where the VPN path should not gate startup.
+
+  let healthState;
+  if (process.env.MORI_SKIP_HEALTH_CHECK === '1') {
+    healthState = 'up';
+  } else {
+    healthState = getCached(conversationId);
+    if (!healthState) {
+      healthState = await checkServer(serverUrl);
+      setCached(conversationId, healthState);
+    }
+  }
+
+  if (healthState === 'down') {
+    respond([{ ephemeralMessage: SETUP_MESSAGE }]);
+  }
+
+  if (healthState === 'unconfigured') {
+    respond([{ ephemeralMessage: UNCONFIGURED_MESSAGE }]);
+  }
+
+  // ── Server is up — inject context file if configured ─────────────────────
+
+  if (ctxFile) {
     try {
       if (existsSync(ctxFile)) {
         const body = readFileSync(ctxFile, 'utf8').trim();

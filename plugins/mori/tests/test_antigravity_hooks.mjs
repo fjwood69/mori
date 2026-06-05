@@ -78,13 +78,15 @@ console.log('\n── mori-context-hook-antigravity.mjs ──\n');
 const CONV_ID = 'ag-conv-xyz-789';
 
 {
-  // 1. PreInvocation — first call + ctx file set → injectSteps with ephemeralMessage
+  // 1. PreInvocation — first call + ctx file set + skip-health → injectSteps with ephemeralMessage
+  // MORI_SKIP_HEALTH_CHECK=1 bypasses the network gate (sandbox prevents child→parent TCP).
   clearThrottleFlag(CONV_ID);
   const ctxFile = join(TMP, 'ag-ctx.txt');
   writeFileSync(ctxFile, 'Antigravity session context: test mode active.');
   const r = run(CONTEXT_HOOK, {
     stdin: fixture('antigravity-PreInvocation.json'),
-    env: { MORI_SESSION_CONTEXT_FILE: ctxFile, TMPDIR: TMP },
+    env: { MORI_SESSION_CONTEXT_FILE: ctxFile, TMPDIR: TMP, MORI_SKIP_HEALTH_CHECK: '1' },
+    args: ['--url', 'http://127.0.0.1:8968'],
   });
   assert(r.status === 0, 'ctx-ag: first PreInvocation+ctxfile → exits 0');
   let parsed;
@@ -120,23 +122,52 @@ const CONV_ID = 'ag-conv-xyz-789';
 }
 
 {
-  // 3. PreInvocation — MORI_SESSION_CONTEXT_FILE unset → injectSteps empty
+  // 3. PreInvocation — no URL configured → injectSteps emits UNCONFIGURED_MESSAGE
+  // When the server URL is not set, the health gate returns "unconfigured" and the
+  // hook surfaces the setup guide in injectSteps. (No ctx file needed — the setup
+  // message takes priority.)
   clearThrottleFlag('ag-conv-no-ctx');
   const env = { ...process.env, TMPDIR: TMP };
   delete env.MORI_SESSION_CONTEXT_FILE;
   const input = JSON.stringify({ conversationId: 'ag-conv-no-ctx', stepIdx: 0 });
-  const r = spawnSync(process.execPath, [CONTEXT_HOOK], {
+  const r = spawnSync(process.execPath, [CONTEXT_HOOK, '--url', ''], {
     input,
     env,
     encoding: 'utf8',
     timeout: 5000,
   });
-  assert((r.status ?? -1) === 0, 'ctx-ag: no-ctxfile → exits 0');
+  assert((r.status ?? -1) === 0, 'ctx-ag: no-ctxfile+unconfigured → exits 0');
   let parsed;
   try { parsed = JSON.parse((r.stdout ?? '').trim()); } catch { /* noop */ }
   assert(
-    Array.isArray(parsed?.injectSteps) && parsed.injectSteps.length === 0,
-    'ctx-ag: no-ctxfile → injectSteps empty',
+    Array.isArray(parsed?.injectSteps) &&
+      parsed.injectSteps.length > 0 &&
+      parsed.injectSteps[0]?.ephemeralMessage?.includes('No Mori server is configured'),
+    'ctx-ag: no-ctxfile+unconfigured → injectSteps emits UNCONFIGURED_MESSAGE',
+    r.stdout,
+  );
+}
+
+{
+  // 3b. PreInvocation — skip-health + no ctx file → injectSteps empty
+  // When server is up but no ctx file is configured, nothing is injected.
+  clearThrottleFlag('ag-conv-no-ctx-skip');
+  const env2 = { ...process.env, TMPDIR: TMP };
+  delete env2.MORI_SESSION_CONTEXT_FILE;
+  const input2 = JSON.stringify({ conversationId: 'ag-conv-no-ctx-skip', stepIdx: 0 });
+  const r2 = spawnSync(process.execPath, [CONTEXT_HOOK, '--url', 'http://127.0.0.1:8968'], {
+    input: input2,
+    env: { ...env2, MORI_SKIP_HEALTH_CHECK: '1' },
+    encoding: 'utf8',
+    timeout: 5000,
+  });
+  assert((r2.status ?? -1) === 0, 'ctx-ag: skip-health+no-ctxfile → exits 0');
+  let parsed2;
+  try { parsed2 = JSON.parse((r2.stdout ?? '').trim()); } catch { /* noop */ }
+  assert(
+    Array.isArray(parsed2?.injectSteps) && parsed2.injectSteps.length === 0,
+    'ctx-ag: skip-health+no-ctxfile → injectSteps empty',
+    r2.stdout,
   );
 }
 
