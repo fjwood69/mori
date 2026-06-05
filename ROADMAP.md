@@ -56,6 +56,9 @@ Updated with each release.
 ### v2.2.0
 - **Cross-tool plugin distribution** — unified `plugins/mori/` package for Claude Code (complete + marketplace-ready), Cursor, and Antigravity; `SessionStart` re-ground hook replacing PostCompact additionalContext (closes #17); bespoke Claude installer moved to `scripts/legacy/`; see #24
 
+### v2.2.2
+- **Onboarding gap closed** — session-start server **health sentinel** (pings only the user's own server, cached, fail-open) injects honest setup guidance (self-hosted Docker + LLM-provider-key path) when the server is unreachable, before the user hits a broken `/brief`; silent when up. Skill-level backstops; value-first plugin-manager description. Default localhost is health-checked, not mis-reported.
+
 ### v2.2.1
 - **Cursor & Antigravity hook layers** — per-client Node hooks over a shared `lib/` (canonical-event normalizer, fail-open, conversation-keyed throttle); installed via the documented standalone hooks configs; client events normalized to Mori's schema before POST. **Multi-client tidy-upper** (`scripts/legacy/tidy-up.mjs`) — dry-run-default cleanup of bespoke installs across all three clients, exact-signature matching with backups. Plugin v0.1.1.
 

@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-context-hook.mjs\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-context-hook.mjs\" --url \"${user_config.server_url}\""
           }
         ]
       }

@@ -94,7 +94,7 @@ function main() {
 
   // Build the "mori" named-hook block
   const moriHook = {
-    PreInvocation: [hookEntry(`node "${contextHook}"`, 10)],
+    PreInvocation: [hookEntry(`node "${contextHook}" --url "${args.url}"`, 10)],
     PostToolUse:   [hookEntry(`${baseShip} --event PostToolUse`, 15)],
     Stop:          [hookEntry(`${baseShip} --event Stop`, 20)],
   };

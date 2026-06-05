@@ -41,7 +41,8 @@ platforms. Docker Compose is the fastest path:
 git clone https://github.com/fjwood69/mori.git
 cd mori
 cp deploy/homelab/.env.example deploy/homelab/.env
-# Edit .env with your provider API key
+# Edit .env: set MORI_API_KEY to your provider key (Novita, DeepInfra, OpenAI, …)
+# and MORI_BASE_URL to the provider's OpenAI-compatible endpoint.
 docker compose -f deploy/homelab/docker-compose.yml up -d
 ```
 

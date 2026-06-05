@@ -93,7 +93,7 @@ function main() {
 
   // New mori hook entries
   const contextEntry = {
-    command: `node "${contextHook}"`,
+    command: `node "${contextHook}" --url "${args.url}"`,
     matcher: '*',
     timeout: 10,
   };
