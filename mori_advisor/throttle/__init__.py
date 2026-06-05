@@ -61,15 +61,17 @@ __all__ = [
     "make_rate_limit_store",
     "make_idempotency_store",
     "throttle_safety_warning",
-    "DEFAULT_RATE_LIMIT",
+    "RECOMMENDED_RATE_LIMIT",
     "DEFAULT_CLAIM_TTL",
     "DEFAULT_CACHE_TTL",
 ]
 
-# Recommended default: 120 writes/min/key. Generous enough that no interactive
-# human or well-behaved agent notices it, low enough to cap a runaway autonomous
-# writer (a loop hammering POST /api/memories) before it floods the store.
-DEFAULT_RATE_LIMIT = "120/min"
+# Rate limiting is OPT-IN: disabled unless MORI_RATE_LIMIT is set. The limiter
+# covers all writes (including the high-volume POST /api/events telemetry stream),
+# so enabling it without thought could throttle legitimate ingestion. This is the
+# RECOMMENDED value to set once you've sized it: 120 writes/min/key — generous for
+# interactive use, low enough to cap a runaway autonomous writer.
+RECOMMENDED_RATE_LIMIT = "120/min"
 DEFAULT_CLAIM_TTL = 30  # seconds — short, so a crashed in-progress write self-heals
 DEFAULT_CACHE_TTL = 86_400  # 24h — a completed response stays replayable this long
 
@@ -90,8 +92,12 @@ class RateLimitConfig:
 
 
 def rate_limit_config() -> RateLimitConfig:
-    """Read + validate rate-limit config from the environment (fail loud on typos)."""
-    parsed = parse_rate_limit(os.environ.get("MORI_RATE_LIMIT", DEFAULT_RATE_LIMIT))
+    """Read + validate rate-limit config from the environment (fail loud on typos).
+
+    Opt-in: an unset/empty ``MORI_RATE_LIMIT`` means disabled (see
+    ``RECOMMENDED_RATE_LIMIT`` for the suggested value once you enable it).
+    """
+    parsed = parse_rate_limit(os.environ.get("MORI_RATE_LIMIT", ""))
     scope = parse_scope(os.environ.get("MORI_RATE_LIMIT_SCOPE"))
     if parsed is None:
         return RateLimitConfig(None, None, scope)

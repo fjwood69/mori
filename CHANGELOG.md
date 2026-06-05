@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.2.7 — Per-key rate limiting (#23 D)
+
+- **feat:** `ApiKeyMiddleware` enforces a per-API-key **token-bucket rate limit**
+  after authentication. A denied request is rejected `429` + `Retry-After`
+  before the handler runs. Keyed on the authenticated key name; `OPEN_PATHS`
+  (`/health`, `/ready`, `/metrics`, …) are never limited.
+- **config:** rate limiting is **opt-in** (disabled unless `MORI_RATE_LIMIT` is
+  set — recommended `120/min` once sized; `0`/`off` disables). Default-off
+  because the limiter covers *all* writes including the high-volume
+  `POST /api/events` telemetry stream, so enabling it blindly could throttle
+  legitimate ingestion. `MORI_RATE_LIMIT_SCOPE` (`writes` default — only
+  POST/PUT/PATCH/DELETE count, targeting runaway autonomous writers; `all` limits
+  every guarded request).
+  In-memory store (single-instance) via `MORI_THROTTLE_STORE`; the shared
+  Postgres adapter for horizontal scale-out is deferred (a startup warning fires
+  if `memory` runs with `>1` worker). Idle buckets are evicted periodically.
+- **note:** completes #23 (write-API hardening). With #13/#14 (governed write +
+  roles), #23 A/B (audit + soft-delete) and C (idempotency), the write surface is
+  now role-scoped, audited, reversible, replay-safe, and rate-limited.
+- **test:** `tests/test_rate_limit_middleware.py` (7) — limit→429+Retry-After,
+  scope (writes vs all), per-key isolation, disabled-config, 401-before-limit,
+  open-paths exempt.
+
 ## v2.2.6 — Idempotency for POST /api/memories (#23 C) + throttle foundation
 
 - **feat:** `mori_advisor/throttle/` — a pluggable throttling foundation (the

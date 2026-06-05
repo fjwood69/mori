@@ -85,7 +85,7 @@ Core hardening. Remaining items before v2.0 is complete. Target: one shared inst
   - Webhook support — push notifications on significant memory writes
   - OpenAPI spec
   - Foundation for dashboard and third-party integrations — ✅ dashboard shipped v2.1.29
-- API rate limiting — per-key limits
+- API rate limiting — per-key limits — ✅ shipped v2.2.7 (#23 D)
 - Headless CC cost guards — per-message spend caps
 
 ---
@@ -120,6 +120,7 @@ Small team coherence. Requires v2.0 foundation.
 - v2.1.33: dual-backend **MCP-tool test suite** — exercises every MCP tool on SQLite *and* Postgres (the gap that let the #12 crash ship); caught + fixed five further Postgres-only crashes (history/diff/rollback/pending/approve/reject column mismatches)
 - v2.1.34: **API key capability scoping** — `read`/`write`/`dreamer` roles (`MORI_API_KEY_ROLES`) + `MORI_TD_MODE` host→api trusted-dreamer switch; a unified `Policy` + `ContextVar` enforces identically on the REST and MCP surfaces (no bypass). Foundation for the governed write API + review queue. Closes #13.
 - v2.1.35: **Governed write REST API** — `POST /api/memories` (propose-not-overwrite, tier-aware), `GET /api/pending`, `GET /api/pending/json`, `POST /api/memories/{name}/approve`, `POST /api/memories/{name}/reject`, `DELETE /api/memories/{name}`; race-safe upsert; `_write_audit` log line; audit trail table deferred to #23. Closes #14.
+- v2.2.7: **Per-key rate limiting** (#23 D) — `ApiKeyMiddleware` token-bucket limit per API key, applied after auth → `429` + `Retry-After`; `MORI_RATE_LIMIT` (e.g. `120/min`, `off` to disable) + `MORI_RATE_LIMIT_SCOPE` (`writes` default targets autonomous writers, `all` covers everything); `OPEN_PATHS` exempt; in-memory store (Postgres adapter deferred). Completes #23 — the write surface is now role-scoped, audited, reversible, replay-safe, and rate-limited.
 - v2.2.6: **Idempotency for `POST /api/memories`** (#23 C) + pluggable throttle foundation (`mori_advisor/throttle/`, in-memory adapters; Postgres adapter deferred to a scale-out issue) — `Idempotency-Key` header makes the write propose-once (replay returns the cached response, runs the write exactly once; same key + different body → 422; in-progress → 409 + `Retry-After`; per-actor scope); self-healing claim (short TTL + steal + token guard); startup safety warning for memory-store-with-multiple-workers. Unit + dual-backend route tests.
 - v2.2.5: **Persistent audit trail + soft-delete** (#23 A+B) — `write_audit` table (Migration 8, dual-backend); `_write_audit()` now async and inserts a row on every governed op (propose/approve/reject/delete); `GET /api/audit` (dreamer, filterable, paginated); soft-delete via `deleted_at` (Migration 9 — SQLite table recreation removes inline `UNIQUE(name)`, Postgres atomic `DROP CONSTRAINT` + partial unique index `WHERE deleted_at IS NULL`); `DELETE /api/memories/{name}` soft by default, `?hard=true` to purge; `POST /api/memories/{name}/restore` (dreamer, renames on collision); tombstone filter centralised as `_ACTIVE`/`deleted_at IS NULL` in every read path; FTS filtered at query time. Dual-backend tests; `verify-deployment.py` probes updated.
 

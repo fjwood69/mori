@@ -94,12 +94,19 @@ def test_should_limit():
 # ── env config readers ────────────────────────────────────────────────────────
 
 
-def test_rate_limit_config_defaults(monkeypatch):
+def test_rate_limit_config_opt_in_disabled_by_default(monkeypatch):
+    # Rate limiting is opt-in — unset MORI_RATE_LIMIT means disabled.
     monkeypatch.delenv("MORI_RATE_LIMIT", raising=False)
     monkeypatch.delenv("MORI_RATE_LIMIT_SCOPE", raising=False)
     cfg = rate_limit_config()
+    assert not cfg.enabled and cfg.limit is None
+    assert cfg.scope == "writes"  # scope still resolves (used once enabled)
+
+
+def test_rate_limit_config_enabled_when_set(monkeypatch):
+    monkeypatch.setenv("MORI_RATE_LIMIT", "120/min")
+    cfg = rate_limit_config()
     assert cfg.enabled and cfg.limit == 120 and cfg.window_seconds == 60
-    assert cfg.scope == "writes"
 
 
 def test_rate_limit_config_disabled(monkeypatch):

@@ -179,13 +179,16 @@ init_metrics()
 
 @asynccontextmanager
 async def _throttle_cleanup_loop():
-    """Periodically evict expired idempotency records (in-memory store hygiene)."""
+    """Periodically evict expired idempotency records + idle rate-limit buckets."""
+    from mori_advisor import middleware as _mw  # lazy — avoid import cycle
+
     while True:
         await asyncio.sleep(300)
         try:
             await idempotency_store.cleanup()
+            await _mw.rate_limit_store.cleanup()
         except Exception as exc:  # never let cleanup crash the loop
-            logger.debug("idempotency cleanup failed: %s", exc)
+            logger.debug("throttle cleanup failed: %s", exc)
 
 
 async def _lifespan(server):
