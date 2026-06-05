@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.2.2 — Onboarding: server health sentinel + honest setup guidance (plugin v0.1.2)
+
+- **feat:** Session-start server **health sentinel** — the SessionStart hook pings the configured server's `/health` (600ms–2s bound, cached 5 min per session, fail-open, and **only ever the user's own URL — no phone-home**). If the server is unreachable or unconfigured, it injects a clear, honest setup message *before* the user hits a broken `/brief`; if the server is up, it stays silent. Skill-level backstop in `/brief` and `/pensieve` for mid-session outages.
+- **feat:** Honest onboarding copy — the setup message names the real requirements (a Docker host **and** an LLM provider key) and links the quickstart; no "one-command" overstatement. Plugin-manager `description` rewritten value-first with the self-hosted/AGPL privacy framing.
+- **fix:** the default `localhost:8968` is now health-checked, not short-circuited to "unconfigured" — a running local server (the most common setup) is no longer mis-reported as unconfigured.
+- **test:** 96 tests across the health-gate and the three client hook suites.
+
 ## v2.2.1 — Cursor & Antigravity hook layers + multi-client tidy-upper (plugin v0.1.1)
 
 - **feat:** Cursor and Antigravity hook layers — per-client Node entrypoints over a shared `lib/` (fail-open wrapper, POST, conversation-keyed throttle, canonical-event normalizer). Cursor: `sessionStart` context + `postToolUse`/`stop` telemetry via the documented standalone `~/.cursor/hooks.json` (Cursor plugin-hook bundling is undocumented). Antigravity: `PreInvocation` once-per-conversation context (conversationId throttle) + `PostToolUse`/`Stop` telemetry via `~/.gemini/config/hooks.json`. Wired by `install-hooks-{cursor,antigravity}.mjs` with absolute paths. Each client's events are normalized client-side to Mori's canonical event schema before POST — the server stays single-schema; client extras ride in an opaque `_clientMeta`.
