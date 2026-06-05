@@ -54,25 +54,35 @@ curl http://localhost:8968/health
 
 ### 3. Connect your agent
 
+**Claude Code — install as a plugin (recommended).** Inside Claude Code, run:
+
+```
+/plugin marketplace add fjwood69/mori
+/plugin install mori@mori
+```
+
+You'll be prompted for your Mori server URL and API key on enable (the key is stored
+in your OS keychain, not in `settings.json`). Then `/reload-plugins` or restart.
+
+The same plugin package (`plugins/mori/`) also targets **Cursor** and **Google
+Antigravity** — MCP connection and skills work on all three; client-specific hooks
+land per platform. See the platform guides.
+
+**Or use the legacy installer scripts** (bespoke; being superseded by the plugin):
+
 ```bash
-# Claude Code — automated installer:
-./scripts/install-mori-claude.sh
-
-# Cursor — automated installer:
-./scripts/install-mori-cursor.sh
-
-# Windows:
-powershell -File scripts/install-mori-claude.ps1
-powershell -File scripts/install-mori-cursor.ps1
+./scripts/install-mori-claude.sh      # Claude Code
+./scripts/install-mori-cursor.sh      # Cursor
+powershell -File scripts/install-mori-claude.ps1   # Windows
 ```
 
 ### Platform guides
 
-| Platform | Installer | Full guide |
-|----------|-----------|------------|
-| Claude Code | `./scripts/install-mori-claude.sh` | [docs/getting-started/claude-code.md](docs/getting-started/claude-code.md) |
-| Cursor | `./scripts/install-mori-cursor.sh` | [docs/getting-started/cursor.md](docs/getting-started/cursor.md) |
-| Google Antigravity IDE | `./scripts/install-mori-antigravity.sh` | [docs/getting-started/antigravity.md](docs/getting-started/antigravity.md) |
+| Platform | Install | Full guide |
+|----------|---------|------------|
+| Claude Code | Plugin: `/plugin marketplace add fjwood69/mori` → `/plugin install mori@mori` (or `./scripts/install-mori-claude.sh`) | [docs/getting-started/claude-code.md](docs/getting-started/claude-code.md) |
+| Cursor | Plugin package `plugins/mori/` (or `./scripts/install-mori-cursor.sh`) | [docs/getting-started/cursor.md](docs/getting-started/cursor.md) |
+| Google Antigravity IDE | Plugin package `plugins/mori/` (or `./scripts/install-mori-antigravity.sh`) | [docs/getting-started/antigravity.md](docs/getting-started/antigravity.md) |
 | Cline | `./scripts/install-mori-cline.sh` | [docs/getting-started/cline.md](docs/getting-started/cline.md) |
 
 ---
@@ -101,13 +111,13 @@ Full reference: [docs/reference/slash-commands.md](docs/reference/slash-commands
 
 ### Dream pipeline
 
-Session events are captured via Claude Code lifecycle hooks and distilled into
-structured memories by a configurable LLM.
+Session events are captured via agent lifecycle hooks (Claude Code, Cursor,
+Antigravity) and distilled into structured memories by a configurable LLM.
 
 ![Dream Pipeline](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-1-dream-pipeline.svg)
 
 ```
-Hook fires  →  POST /api/events/raw  →  SQLite events table
+Hook fires  →  POST /api/events/raw  →  events table (SQLite/Postgres)
                                              ↓
 PreCompact  →  POST /api/precompact  →  dream_run() reads since watermark
                                              ↓
@@ -121,12 +131,12 @@ PreCompact  →  POST /api/precompact  →  dream_run() reads since watermark
 The `PreCompact` hook triggers an immediate synchronous dream before context
 compression — so nothing is lost at the moment it matters most.
 
-Its counterpart, the `PostCompact` hook, fires `/brief --post-compact` **after**
-compression — a lightweight *delta* that surfaces only what changed in the shared
-store since your last brief (new, superseded, and evicted memories), skipping the
-full base reload and the freshness scan. PreCompact preserves what this session
-learned; PostCompact re-grounds it on what every other instance changed while it
-was busy.
+Its counterpart works **after** compression: a `SessionStart` hook fires when the
+session resumes post-compaction (`source: "compact"`) and runs `/brief --post-compact`
+— a lightweight *delta* that surfaces only what changed in the shared store since
+your last brief (new, superseded, and evicted memories), skipping the full base
+reload and the freshness scan. PreCompact preserves what this session learned;
+SessionStart re-grounds it on what every other instance changed while it was busy.
 
 **What it captures:** `PostToolUse`, `PostToolUseFailure`, `PreCompact`,
 `UserPromptSubmit`, `Stop` — tool calls, prompts, errors, stop reasons,
@@ -138,7 +148,8 @@ each turn.
 
 ![The Forest Remembers](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-2-the-forest-remembers.svg)
 
-Memories live in SQLite (`memories.db`) with three tiers:
+Memories live in the store — SQLite (`memories.db`) for solo/sync deployments,
+Postgres for team/async — with three tiers:
 
 | Tier | Scope | Lifecycle |
 |------|-------|-----------|
