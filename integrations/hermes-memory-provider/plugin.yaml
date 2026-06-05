@@ -1,0 +1,40 @@
+name: hermes-mori-provider
+version: "0.1.0"
+description: >
+  mori MemoryProvider for hermes-agent. Mirrors the agent's durable learnings
+  to a self-hosted mori server as governed proposals (never direct canon), and
+  lets the agent recall from mori. Requires write-role API key.
+author: fjwood69
+license: AGPL-3.0-only
+homepage: https://github.com/fjwood69/mori
+repository: https://github.com/fjwood69/mori/tree/main/integrations/hermes-memory-provider
+
+# hermes-agent hook list — the agent calls these if the provider exposes them.
+hooks:
+  - prefetch            # called before each turn; returns context string
+  - sync_turn           # called after each turn (no-op in this provider)
+  - on_session_end      # best-effort outbox flush
+  - system_prompt_block # static note injected into the system prompt
+  - on_pre_compress     # called before context compression (no-op)
+  - on_memory_write     # called when hermes writes to MEMORY.md / USER.md
+  - shutdown            # graceful drainer thread stop
+
+# Read-only tools exposed to the agent.
+tools:
+  - mori_search          # full-text search over the shared memory store
+  - mori_list_pending    # list this agent's own pending proposals
+  - mori_proposal_status # check governance status of a specific proposal
+
+# Required environment variable (secret — stored in .env by hermes-agent).
+env:
+  - MORI_API_KEY
+
+# Optional environment variable (override default server URL).
+env_optional:
+  - MORI_SERVER_URL
+
+install:
+  # Install into hermes-agent's plugins/memory/mori/ directory.
+  target: plugins/memory/mori/
+  # From the package source directory:
+  source: hermes_mori_provider/
