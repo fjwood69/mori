@@ -119,6 +119,8 @@ powershell -File scripts/legacy/install-mori-claude.ps1   # Windows
 | **Strategic review** | LLM guidance with focus areas and auto-injected standards | `/consult` |
 | **Requirements tracking** | Lightweight project checklist surfaced via `/brief` | `/req` |
 | **Governance** | Capability-scoped API keys (read/write/dreamer roles), versioning, trusted dreamers, rollback, attribution | — |
+| **Curation queue** | Ingestion's canonical/standard proposals await trusted-dreamer sign-off in a review UI (`/review`, with source/diff/approve-reject) before becoming canonical — memory that's *curated*, not just accumulated | — |
+| **One-click deploy** | Stand up your own server on Render / Railway / Fly / Cloud Run (or free managed Postgres + any stateless host) | — |
 | **NATS messaging** | Real-time cross-device awareness | `/nats` |
 | **Inter-agent messaging** | Send tasks, questions, and decisions across the device network | `/msg` |
 | **Skill deployment** | Push slash commands to all devices in one step | `/update` |

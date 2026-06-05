@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.2.4 — nats_sub replay fix · TD review-UI polish · plugin compatibility
+
+- **feat:** TD `/review` UI — proposals are now **concertina cards** (compact header: name · source · tier · category · confidence · age; click `>` to expand body + diff + approve/reject) with a **filter-by-category** (focus_mode) control — more fits on screen.
+- **fix:** `nats_sub(replay)` reads the stream **tail** (`BY_START_SEQUENCE` from `last_seq − N`) instead of the oldest retained messages, so freshly published messages now appear in `/nats` replay (closes #32). Verified live.
+- **fix:** dropped `displayName` from the plugin manifests — added in Claude Code v2.1.143, older clients reject it as a hard validation error that blocks install. It's cosmetic (falls back to `name`). Added a top-level marketplace description (clears the marketplace validate warning). Plugin v0.1.2 → v0.1.3.
+- **docs:** README Capabilities adds the Curation queue (#15) and One-click deploy (#30) rows.
+
 ## v2.2.3 — Trusted-Dreamer review queue (#15)
 
 - **feat:** Governance loop closed — ingestion's `canonical`/`standard` candidates route to a pending queue (`queue_pending_write`) for trusted-dreamer review instead of writing directly; `working`-tier writes stay direct (the TD is never asked to review high-volume working dreams). `dream.py` is unchanged and ingestion runs independently of the dream pipeline (no shared mutable state — concurrent `/ingest` never interferes with scheduled dreams). `MORI_CURATE=false` preserves direct-write behaviour.
