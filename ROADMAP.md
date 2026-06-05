@@ -56,6 +56,9 @@ Updated with each release.
 ### v2.2.0
 - **Cross-tool plugin distribution** — unified `plugins/mori/` package for Claude Code (complete + marketplace-ready), Cursor, and Antigravity; `SessionStart` re-ground hook replacing PostCompact additionalContext (closes #17); bespoke Claude installer moved to `scripts/legacy/`; see #24
 
+### v2.2.4
+- **Polish + fixes** — TD `/review` concertina cards + category filter; `nats_sub(replay)` reads the stream tail so fresh messages appear (#32); dropped `displayName` from plugin manifests for Claude Code <2.1.143 compatibility + a marketplace description (plugin v0.1.3).
+
 ### v2.2.3
 - **Trusted-Dreamer review queue (#15)** — ingestion's canonical/standard candidates route to a pending queue for trusted-dreamer sign-off (working stays direct); a standalone dreamer-gated `review.html` with source/provenance/diff + approve/reject; `GET /api/pending/json`; migration 7 (partial pending index, dual-backend). Closes the governance loop — memory that's *curated*, not just *accumulated*.
 
