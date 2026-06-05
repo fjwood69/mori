@@ -57,35 +57,24 @@ jobs:
       - name: Validate marketplace manifest
         run: claude plugin validate .
 
-      # Config-regression guard: the Claude Code MCP config must be parameterised
-      # by ENV VARS (${MORI_SERVER_URL} / ${MORI_API_KEY}), not `userConfig` and not
-      # a hardcoded localhost. `userConfig` was abandoned because its install prompt
-      # never fires on `claude plugin install` (the CLI path most users take), so
-      # self-hosted users silently hit the default and got ConnectionRefused. The
-      # env-var pattern is what claude-mem and the official GitHub/Greptile plugins
-      # ship and what works on CLI install. This guard pins that decision.
-      - name: Guard — .mcp.json uses MORI_* env vars (no userConfig, no localhost)
+      # Packaging guard: the plugin must NOT bundle an MCP server. A bundled
+      # `.mcp.json` registers a second `mori` server that collides with the user's
+      # own `claude mcp add mori` connection (both resolve to mcp__mori__* tools),
+      # leaving both red. The connection belongs to `claude mcp add`; the plugin
+      # ships skills + hooks only. This guard pins that decision.
+      - name: Guard — plugin ships no bundled MCP (skills + hooks only)
         run: |
           python3 - <<'PY'
-          import json, sys
+          import json, os, sys
           errs = []
-          mcp = json.load(open("plugins/mori/.mcp.json"))
-          srv = mcp.get("mcpServers", {}).get("mori", {})
-          blob = json.dumps(srv)
-          if "${MORI_SERVER_URL}" not in srv.get("url", ""):
-              errs.append(".mcp.json `mori.url` must use ${MORI_SERVER_URL}.")
-          if "${MORI_API_KEY}" not in json.dumps(srv.get("headers", {})):
-              errs.append(".mcp.json `mori.headers` must use ${MORI_API_KEY}.")
-          if "user_config" in blob:
-              errs.append(".mcp.json still references ${user_config.*} — userConfig was abandoned for env vars.")
-          if "localhost" in blob or "127.0.0.1" in blob:
-              errs.append(".mcp.json hardcodes localhost/127.0.0.1 — must be ${MORI_SERVER_URL}.")
+          if os.path.exists("plugins/mori/.mcp.json"):
+              errs.append("plugins/mori/.mcp.json exists — the plugin must not bundle an MCP server (it collides with the user's `claude mcp add mori`).")
           if "userConfig" in json.load(open("plugins/mori/.claude-plugin/plugin.json")):
-              errs.append("plugin.json still declares `userConfig` — config is via MORI_* env vars now.")
+              errs.append("plugin.json declares `userConfig` — the plugin no longer takes connection config; the MCP server is added via `claude mcp add`.")
           for e in errs:
               print(f"::error::{e}")
           sys.exit(1 if errs else 0)
-          print("OK: .mcp.json is env-var parameterised; no userConfig, no localhost.")
+          print("OK: plugin is skills + hooks only; no bundled MCP, no userConfig.")
           PY
 
   test:

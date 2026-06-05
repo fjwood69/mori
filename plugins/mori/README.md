@@ -61,35 +61,35 @@ plugins/mori/
 
 ### Claude Code
 
-**1. Install the plugin**
+The plugin ships **skills + hooks only**. The mori **connection** is a standard Claude
+Code MCP server you add separately — so there's nothing to configure inside the plugin
+and no second server to collide with.
+
+**1. Add your mori server.** The `x-api-key` is the **bare secret** — *not* `name:secret`
+(the `name:` belongs only in the server's `MORI_API_KEYS`; the client sends the secret
+alone, or it 401s):
 
 ```bash
-# From the marketplace:
+claude mcp add --transport http mori http://YOUR-SERVER:8968/mcp \
+  --header "x-api-key: YOUR-64-CHAR-SECRET" --scope user
+```
+
+**2. Install the plugin** for the skills (`/brief`, `/dream`, `/pensieve`, …):
+
+```bash
 /plugin marketplace add fjwood69/mori
 /plugin install mori@mori
 # Or point Claude at a local checkout:
 claude --plugin-dir plugins/mori
 ```
 
-**2. Point it at your server — two environment variables**
+**3. Reload the window.** `claude mcp list` should show `mori ✓ Connected`; the skills run
+against it.
 
-The plugin reads its server URL and key from the environment. This is the pattern the
-official GitHub/Greptile plugins and `claude-mem` ship, and — unlike a `userConfig`
-prompt — it works on `claude plugin install` from the CLI (where that prompt never
-fires):
-
-```bash
-export MORI_SERVER_URL="http://localhost:8968"   # the mori-advisor server you run
-export MORI_API_KEY="name:secret"                # your named key; omit if unauthenticated
-```
-
-Add them to your shell profile (`~/.bashrc`, `~/.zshrc`) so they persist, then reload
-Claude Code. **Windows (PowerShell):** `setx MORI_SERVER_URL "http://host:8968"` and
-`setx MORI_API_KEY "name:secret"`, then restart the terminal and Claude Code.
-
-`.mcp.json` and `hooks/hooks.json` substitute `${MORI_SERVER_URL}` / `${MORI_API_KEY}` at
-runtime — you do not edit those files. If `MORI_SERVER_URL` is unset, the SessionStart
-hook tells you how to set it instead of failing silently.
+> **Optional telemetry hooks.** The SessionStart/event hooks ship session events to your
+> server. They read `MORI_SERVER_URL` and `MORI_API_KEY` (the **bare secret**) from the
+> environment — set those (shell profile, or `claudeCode.environmentVariables` in VS Code)
+> for auto-capture. The skills work without them.
 
 **Option B — Project-level manual install**
 
