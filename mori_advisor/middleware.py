@@ -14,10 +14,22 @@ from starlette.responses import JSONResponse
 
 from mori_advisor.auth import check_key
 from mori_advisor.policy import Actor, current_actor, role_for
+from mori_advisor.throttle import (
+    RateLimitConfig,
+    make_rate_limit_store,
+    rate_limit_config,
+    should_limit,
+)
 
 logger = logging.getLogger(__name__)
 
 OPEN_PATHS = {"/health", "/ready", "/metrics", "/", "/review"}
+
+# Rate limiting (#23 D) — config read once at import (fail-loud on a bad spec);
+# in-memory store is the single-instance default. Both are module-level so tests
+# can monkeypatch them. Disabled unless MORI_RATE_LIMIT is configured to enable.
+_rate_cfg: RateLimitConfig = rate_limit_config()
+rate_limit_store = make_rate_limit_store()
 
 # Return 404 for OAuth discovery so CC stops treating mori as an OAuth server
 # and falls back to using the X-Api-Key header directly
@@ -79,6 +91,28 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         # direct access to the request object).
         actor = Actor(key_name=client_name, role=role_for(client_name))
         request.state.actor = actor
+
+        # Rate limit (#23 D) — keyed on the authenticated key name, applied after
+        # auth so only known callers are counted. Scope decides which methods
+        # count (writes-only by default). A denied request is rejected before the
+        # handler runs; replays of idempotent requests still count (documented).
+        if _rate_cfg.enabled and should_limit(request.method, _rate_cfg.scope):
+            verdict = await rate_limit_store.check(
+                client_name, _rate_cfg.limit, _rate_cfg.window_seconds
+            )
+            if not verdict.allowed:
+                return JSONResponse(
+                    {
+                        "error": "Too Many Requests",
+                        "detail": (
+                            f"rate limit exceeded "
+                            f"({_rate_cfg.limit} per {_rate_cfg.window_seconds}s)"
+                        ),
+                    },
+                    status_code=429,
+                    headers={"Retry-After": str(max(1, int(verdict.retry_after) + 1))},
+                )
+
         token = current_actor.set(actor)
         try:
             response = await call_next(request)
