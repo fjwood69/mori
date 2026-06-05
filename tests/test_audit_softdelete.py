@@ -15,6 +15,7 @@ Both backends via @requires_pg for store-mutating tests.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -228,11 +229,9 @@ def test_audit_row_on_write(backend, tmp_path, monkeypatch):
             resp = await post_memory(req2)
         assert resp.status_code in (200, 201, 202)
 
-        rows = (
-            await asyncio.coroutine(lambda: store.get_audit_log(memory_name="audit-write-test"))()
-            if asyncio.iscoroutinefunction(store.get_audit_log)
-            else store.get_audit_log(memory_name="audit-write-test")
-        )
+        rows = store.get_audit_log(memory_name="audit-write-test")
+        if inspect.isawaitable(rows):
+            rows = await rows
         assert len(rows) >= 1
         assert rows[0]["memory_name"] == "audit-write-test"
         assert rows[0]["op"] in ("propose_new", "update_working", "propose_pending")
@@ -245,8 +244,6 @@ def test_audit_row_on_different_actor_pending(backend, tmp_path, monkeypatch):
     """Regression: the 'working memory owned by a different actor -> pending' branch
     of post_memory must still write an audit row.  The _write_audit() call there was
     previously not awaited, so the coroutine was discarded and no row was written."""
-    import inspect
-
     from mori_advisor.main import post_memory
 
     _patch_policy(monkeypatch, "api")
@@ -306,11 +303,9 @@ def test_audit_row_on_soft_delete(backend, tmp_path, monkeypatch):
             resp = await delete_memory_rest(req)
         assert resp.status_code == 200
 
-        rows = (
-            await asyncio.coroutine(lambda: store.get_audit_log(memory_name="audit-del-test"))()
-            if asyncio.iscoroutinefunction(store.get_audit_log)
-            else store.get_audit_log(memory_name="audit-del-test")
-        )
+        rows = store.get_audit_log(memory_name="audit-del-test")
+        if inspect.isawaitable(rows):
+            rows = await rows
         ops = [r["op"] for r in rows]
         assert "soft_delete" in ops
 
