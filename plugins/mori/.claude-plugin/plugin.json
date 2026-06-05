@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "mori",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Persistent, cross-device memory for your AI coding agents — self-hosted and AGPL, so your knowledge never leaves your own infrastructure. Connect to a Mori server you run; every session distils into durable, searchable memory, so agents start informed, not cold. /brief loads context, /pensieve searches it.",
   "author": { "name": "fjwood69", "url": "https://github.com/fjwood69" },
   "homepage": "https://github.com/fjwood69/mori",
