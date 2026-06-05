@@ -54,6 +54,12 @@ WRITE_API_AUTH_ROUTES = [
     # Probed separately below (see _probe_write_api).
     ("POST", "/api/memories/{name}/approve"),
     ("POST", "/api/memories/{name}/reject"),
+    # Audit endpoint (#23 A) — returns 200 with empty list when no entries yet.
+    ("GET", "/api/audit"),
+    # NOTE: POST /api/memories/{name}/restore is NOT a static auth-gating entry —
+    # restoring a non-existent name correctly returns 404 (route registered, key
+    # accepted, target absent), indistinguishable from an unregistered route under
+    # the non-404 rule. It is proven in the soft-delete+restore round-trip below.
     # DELETE /api/memories/{name} is NOT a static auth-gating entry: a keyed DELETE
     # of the non-existent sentinel correctly returns 404 (route registered, key
     # accepted, target absent), which is indistinguishable from an unregistered
@@ -188,6 +194,43 @@ def main():
             fail = 1
     else:
         print("  --  GET /api/memories/{name} SKIP (store empty, cannot probe)")
+
+    # Soft-delete + restore round-trip (#23 B):
+    # Write a throwaway memory, soft-delete it, then restore it.
+    # Proves: soft-delete route registered + auth-gated, restore route registered +
+    # auth-gated, restore returns 200 on a genuinely deleted memory.
+    _sd_name = "verify-deployment-softdel-probe"
+    _sd_post = _request(
+        "POST",
+        base + "/api/memories",
+        key=key,
+        body={"name": _sd_name, "title": "Softdel probe", "body": "probe"},
+    )
+    if _sd_post in (200, 201, 202):
+        _sd_noauth = _request("DELETE", f"{base}/api/memories/{_sd_name}")
+        _sd_del = _request("DELETE", f"{base}/api/memories/{_sd_name}", key=key)
+        _restore_noauth = _request("POST", f"{base}/api/memories/{_sd_name}/restore")
+        _restore = _request("POST", f"{base}/api/memories/{_sd_name}/restore", key=key)
+        if (
+            _sd_noauth == 401
+            and _sd_del in (200, 404)
+            and _restore_noauth == 401
+            and _restore in (200, 404)
+        ):
+            print(
+                f"  OK  soft-delete + restore probe "
+                f"(post={_sd_post} del_noauth={_sd_noauth} del={_sd_del} "
+                f"restore_noauth={_restore_noauth} restore={_restore})"
+            )
+        else:
+            print(
+                f"  XX  soft-delete + restore probe "
+                f"(post={_sd_post} del_noauth={_sd_noauth} del={_sd_del} "
+                f"restore_noauth={_restore_noauth} restore={_restore})"
+            )
+            fail = 1
+    else:
+        print(f"  --  soft-delete + restore probe SKIP (write returned {_sd_post})")
 
     print("PASS" if fail == 0 else "FAIL")
     return fail

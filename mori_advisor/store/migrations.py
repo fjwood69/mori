@@ -171,6 +171,103 @@ def _fts_sqlite(conn: sqlite3.Connection, db_path: Path) -> None:
     conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
 
 
+def _soft_delete_sqlite(conn: sqlite3.Connection, db_path: Path) -> None:
+    """Migration 9 — soft-delete: add deleted_at + replace inline UNIQUE(name).
+
+    SQLite has no DROP CONSTRAINT, so we recreate the memories table without the
+    inline UNIQUE(name) and add deleted_at TEXT (NULL = active).  A partial unique
+    index replaces the old constraint.  The runner holds BEGIN IMMEDIATE before
+    calling us, so the entire sequence is atomic — crash-safe.
+
+    FTS5 triggers must be rebuilt after the rename; the old triggers reference the
+    table by name and are dropped with the original table.
+    """
+    cur = conn.execute("PRAGMA table_info(memories)")
+    existing_cols = {row[1] for row in cur.fetchall()}
+    if "deleted_at" in existing_cols:
+        return  # idempotent — already migrated
+
+    # 1. Drop FTS triggers + virtual table before dropping memories.
+    for trig in ("memories_fts_ai", "memories_fts_ad", "memories_fts_au"):
+        conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+    conn.execute("DROP TABLE IF EXISTS memories_fts")
+
+    # 2. Create replacement table: identical schema, no inline UNIQUE(name), + deleted_at.
+    conn.execute(
+        "CREATE TABLE memories_new ("
+        "  id                   INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  name                 TEXT NOT NULL,"
+        "  title                TEXT NOT NULL DEFAULT '',"
+        "  description          TEXT NOT NULL DEFAULT '',"
+        "  type                 TEXT NOT NULL DEFAULT 'project',"
+        "  body                 TEXT NOT NULL DEFAULT '',"
+        "  tags                 TEXT NOT NULL DEFAULT '[]',"
+        "  origin_session_id    TEXT,"
+        "  created_at           TEXT NOT NULL DEFAULT (datetime('now')),"
+        "  updated_at           TEXT NOT NULL DEFAULT (datetime('now')),"
+        "  origin_session_ids   TEXT NOT NULL DEFAULT '[]',"
+        "  origin_clients       TEXT NOT NULL DEFAULT '[]',"
+        "  protected            INTEGER NOT NULL DEFAULT 0,"
+        "  protected_domains    TEXT NOT NULL DEFAULT '[]',"
+        "  tier                 TEXT NOT NULL DEFAULT 'working',"
+        "  last_retrieved_at    TEXT,"
+        "  retrieval_count      INTEGER NOT NULL DEFAULT 0,"
+        "  freshness_status     TEXT NOT NULL DEFAULT 'unknown',"
+        "  freshness_checked_at TEXT,"
+        "  superseded_by        TEXT,"
+        "  deleted_at           TEXT"
+        ")"
+    )
+
+    # 3. Copy rows — only columns that exist in both tables (handles schema drift).
+    new_cols = {row[1] for row in conn.execute("PRAGMA table_info(memories_new)").fetchall()}
+    common = [c for c in existing_cols if c in new_cols]
+    col_list = ", ".join(common)
+    conn.execute(f"INSERT INTO memories_new ({col_list}) SELECT {col_list} FROM memories")
+
+    # 4. Swap tables.
+    conn.execute("DROP TABLE memories")
+    conn.execute("ALTER TABLE memories_new RENAME TO memories")
+
+    # 5. Recreate indexes.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_name_active "
+        "ON memories (name) WHERE deleted_at IS NULL"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_updated_at ON memories (updated_at)")
+
+    # 6. Recreate FTS5 virtual table + triggers + index rebuild (mirrors migration 6).
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5("
+            "name, title, description, body, "
+            "content='memories', content_rowid='id', tokenize='porter unicode61')"
+        )
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN "
+            "INSERT INTO memories_fts(rowid, name, title, description, body) "
+            "VALUES (new.id, new.name, new.title, new.description, new.body); END"
+        )
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN "
+            "INSERT INTO memories_fts(memories_fts, rowid, name, title, description, body) "
+            "VALUES ('delete', old.id, old.name, old.title, old.description, old.body); END"
+        )
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN "
+            "INSERT INTO memories_fts(memories_fts, rowid, name, title, description, body) "
+            "VALUES ('delete', old.id, old.name, old.title, old.description, old.body); "
+            "INSERT INTO memories_fts(rowid, name, title, description, body) "
+            "VALUES (new.id, new.name, new.title, new.description, new.body); END"
+        )
+        conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+    except sqlite3.OperationalError as exc:
+        if "fts5" in str(exc).lower() or "no such module" in str(exc).lower():
+            logger.warning("FTS5 unavailable — search uses LIKE fallback after migration 9")
+        else:
+            raise
+
+
 def _pending_writes_td_sqlite(conn: sqlite3.Connection, db_path: Path) -> None:
     """Add TD-enrichment columns to pending_writes (SQLite).
 
@@ -317,6 +414,67 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW(); "
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_writes_name_pending "
             "ON pending_writes (memory_name) WHERE status = 'pending'"
+        ),
+    ),
+    # ── Stage E: persistent audit trail + soft-delete (#23 A+B) ──────────
+    Migration(
+        id=8,
+        name="write_audit_table",
+        target="memories",
+        # Persistent audit trail for governed writes — closes the log-only gap.
+        # Purely additive on both backends (CREATE TABLE IF NOT EXISTS).
+        sqlite_sql=(
+            "CREATE TABLE IF NOT EXISTS write_audit ("
+            "  id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  ts             TEXT    NOT NULL DEFAULT (datetime('now')),"
+            "  actor_key_name TEXT    NOT NULL DEFAULT '',"
+            "  op             TEXT    NOT NULL,"
+            "  memory_name    TEXT    NOT NULL DEFAULT '',"
+            "  content_hash   TEXT    NOT NULL DEFAULT '',"
+            "  detail         TEXT    NOT NULL DEFAULT ''"
+            ")",
+            "CREATE INDEX IF NOT EXISTS idx_write_audit_ts   ON write_audit (ts)",
+            "CREATE INDEX IF NOT EXISTS idx_write_audit_name ON write_audit (memory_name)",
+        ),
+        postgres_sql=(
+            "CREATE TABLE IF NOT EXISTS write_audit ("
+            "  id             BIGSERIAL   PRIMARY KEY,"
+            "  ts             TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+            "  actor_key_name TEXT        NOT NULL DEFAULT '',"
+            "  op             TEXT        NOT NULL,"
+            "  memory_name    TEXT        NOT NULL DEFAULT '',"
+            "  content_hash   TEXT        NOT NULL DEFAULT '',"
+            "  detail         TEXT        NOT NULL DEFAULT ''"
+            "); "
+            "CREATE INDEX IF NOT EXISTS idx_write_audit_ts   ON write_audit (ts); "
+            "CREATE INDEX IF NOT EXISTS idx_write_audit_name ON write_audit (memory_name)"
+        ),
+    ),
+    Migration(
+        id=9,
+        name="soft_delete",
+        target="memories",
+        # Add deleted_at + replace inline UNIQUE(name) with a partial unique index
+        # UNIQUE(name) WHERE deleted_at IS NULL on both backends.
+        #
+        # SQLite: table recreation required (no DROP CONSTRAINT).  The sqlite_fn
+        # recreates memories without the inline UNIQUE, copies rows, swaps tables,
+        # and rebuilds the partial unique index + FTS triggers.  Runner holds
+        # BEGIN IMMEDIATE so the whole sequence is atomic.
+        #
+        # Postgres: ADD COLUMN + DROP CONSTRAINT + partial unique index in one
+        # transaction (no CONCURRENTLY — table is small, atomicity wins).
+        sqlite_fn=_soft_delete_sqlite,
+        postgres_sql=(
+            "ALTER TABLE memories ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ; "
+            # DROP CASCADE: memory_versions_memory_name_fkey references memories_name_key
+            # via the unique index. Partial indexes cannot be FK targets, so after we
+            # replace the full UNIQUE with a partial unique index the old FK is no longer
+            # valid anyway. hard_delete() now explicitly deletes memory_versions rows
+            # before removing the memory row — preserving the same semantic (no orphans).
+            "ALTER TABLE memories DROP CONSTRAINT IF EXISTS memories_name_key CASCADE; "
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_name_active "
+            "ON memories (name) WHERE deleted_at IS NULL"
         ),
     ),
 )

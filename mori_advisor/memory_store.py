@@ -89,6 +89,11 @@ def _since_or_none(since: str | None) -> str | None:
         return None
 
 
+# Tombstone filter — appended to every WHERE clause that reads active memories.
+# Always use this constant, never inline the string, so a grep for _ACTIVE finds
+# every filtered call site and a future index change only needs one edit.
+_ACTIVE = "deleted_at IS NULL"
+
 VALID_TYPES = {"project", "profile", "pattern", "decision", "standard", "requirement"}
 VALID_TIERS = {"ephemeral", "working", "canonical"}
 DEFAULT_EXPORT_DIR = "exports"
@@ -370,7 +375,7 @@ class MemoryStore:
         """Total memory count, optionally filtered by tier and/or protected status."""
         import sqlite3
 
-        q = "SELECT COUNT(*) FROM memories WHERE 1=1"
+        q = f"SELECT COUNT(*) FROM memories WHERE {_ACTIVE}"
         params = []
         if tier is not None:
             q += " AND tier = ?"
@@ -646,7 +651,8 @@ class MemoryStore:
             # Check if existing memory exists and is protected
             try:
                 existing_cur = conn.execute(
-                    "SELECT * FROM memories WHERE name = ?", (effective_name,)
+                    f"SELECT * FROM memories WHERE name = ? AND {_ACTIVE}",
+                    (effective_name,),
                 )
                 existing_row = existing_cur.fetchone()
             except sqlite3.Error:
@@ -730,7 +736,7 @@ class MemoryStore:
                         (name, title, description, type, tier, body, tags, origin_session_id,
                          origin_session_ids, origin_clients, protected, protected_domains)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(name) DO UPDATE SET
+                    ON CONFLICT(name) WHERE deleted_at IS NULL DO UPDATE SET
                         title               = excluded.title,
                         description         = excluded.description,
                         type                = excluded.type,
@@ -774,7 +780,7 @@ class MemoryStore:
 
         conn = self._get_conn()
         try:
-            cur = conn.execute("SELECT * FROM memories WHERE name = ?", (name,))
+            cur = conn.execute(f"SELECT * FROM memories WHERE name = ? AND {_ACTIVE}", (name,))
             row = cur.fetchone()
         except sqlite3.Error as e:
             return f"Database error: {e}"
@@ -810,7 +816,7 @@ class MemoryStore:
 
         conn = self._get_conn()
         try:
-            cur = conn.execute("SELECT * FROM memories WHERE name = ?", (name,))
+            cur = conn.execute(f"SELECT * FROM memories WHERE name = ? AND {_ACTIVE}", (name,))
             row = cur.fetchone()
         except sqlite3.Error:
             return None
@@ -847,7 +853,7 @@ class MemoryStore:
         """List memories, optionally filtered by type, tag, session, or client."""
         import sqlite3
 
-        query = "SELECT name, title, type, tags, updated_at FROM memories WHERE 1=1"
+        query = f"SELECT name, title, type, tags, updated_at FROM memories WHERE {_ACTIVE}"
         params: list = []
 
         if type_filter:
@@ -918,11 +924,11 @@ class MemoryStore:
         if use_fts:
             sql = (
                 f"SELECT {cols} FROM memories_fts f JOIN memories m ON m.id = f.rowid "
-                "WHERE memories_fts MATCH ?"
+                f"WHERE memories_fts MATCH ? AND m.{_ACTIVE}"
             )
             params.append(match)
         else:
-            sql = f"SELECT {cols} FROM memories WHERE 1=1"
+            sql = f"SELECT {cols} FROM memories WHERE {_ACTIVE}"
             if query:
                 sql += " AND (name LIKE ? OR title LIKE ? OR description LIKE ? OR body LIKE ?)"
                 like = f"%{query}%"
@@ -1062,20 +1068,164 @@ class MemoryStore:
         return "\n".join(lines)
 
     def delete(self, name: str) -> str:
-        """Delete a memory entry by name."""
+        """Soft-delete a memory (sets deleted_at).  Use hard_delete() for permanent removal."""
+        return self.soft_delete(name)
+
+    def soft_delete(self, name: str) -> str:
+        """Soft-delete: set deleted_at = now on the active row with this name.
+
+        The row remains in the database; restore_memory() reverses it.
+        Does nothing if the name is already tombstoned or does not exist.
+        """
         import sqlite3
 
         conn = self._get_conn()
         try:
-            cur = conn.execute("DELETE FROM memories WHERE name = ?", (name,))
+            cur = conn.execute(
+                f"UPDATE memories SET deleted_at = datetime('now'), updated_at = datetime('now') "
+                f"WHERE name = ? AND {_ACTIVE}",
+                (name,),
+            )
             conn.commit()
             if cur.rowcount == 0:
                 return self._memory_not_found(name)
-            return f"Deleted memory '{name}'."
+            return f"Memory '{name}' soft-deleted."
         except sqlite3.Error as e:
             return f"Database error: {e}"
         finally:
             conn.close()
+
+    def hard_delete(self, name: str) -> str:
+        """Permanently remove a memory row (active or tombstoned) and its versions.
+
+        memory_versions FK was dropped by migration 9 (partial indexes cannot be FK
+        targets). Versions are cleaned up here to prevent orphans.
+        """
+        import sqlite3
+
+        conn = self._get_conn()
+        try:
+            conn.execute("DELETE FROM memory_versions WHERE memory_name = ?", (name,))
+            cur = conn.execute("DELETE FROM memories WHERE name = ?", (name,))
+            conn.commit()
+            if cur.rowcount == 0:
+                return self._memory_not_found(name)
+            return f"Memory '{name}' permanently deleted."
+        except sqlite3.Error as e:
+            return f"Database error: {e}"
+        finally:
+            conn.close()
+
+    def restore_memory(self, name: str) -> tuple[str, str]:
+        """Restore a soft-deleted memory.
+
+        If an active memory already holds ``name``, the restored row is renamed
+        to ``{name}_restored_{ts}`` (no clobber of the superseding row).
+
+        Returns (final_name, message) so callers can audit with the real name.
+        """
+        import sqlite3
+        from datetime import datetime, timezone
+
+        conn = self._get_conn()
+        try:
+            # Find most-recently deleted row with this name.
+            row = conn.execute(
+                "SELECT id FROM memories WHERE name = ? AND deleted_at IS NOT NULL "
+                "ORDER BY deleted_at DESC LIMIT 1",
+                (name,),
+            ).fetchone()
+            if not row:
+                return name, f"Memory '{name}' not found or not deleted."
+
+            row_id = row[0]
+
+            # Check for active collision.
+            collision = conn.execute(
+                f"SELECT 1 FROM memories WHERE name = ? AND {_ACTIVE}", (name,)
+            ).fetchone()
+
+            if collision:
+                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+                final_name = f"{name}_restored_{ts}"
+                try:
+                    conn.execute(
+                        "UPDATE memories SET name = ?, deleted_at = NULL, "
+                        "updated_at = datetime('now') WHERE id = ?",
+                        (final_name, row_id),
+                    )
+                    conn.commit()
+                except sqlite3.IntegrityError:
+                    return name, "Restore failed: name collision could not be resolved."
+                return final_name, f"Restored '{name}' as '{final_name}' (name taken)."
+            else:
+                conn.execute(
+                    "UPDATE memories SET deleted_at = NULL, updated_at = datetime('now') "
+                    "WHERE id = ?",
+                    (row_id,),
+                )
+                conn.commit()
+                return name, f"Memory '{name}' restored."
+        except sqlite3.Error as e:
+            return name, f"Database error: {e}"
+        finally:
+            conn.close()
+
+    def insert_audit(
+        self, op: str, actor: str, name: str, content_hash: str, detail: str = ""
+    ) -> None:
+        """Insert a row into write_audit.  Silently no-ops if the table is absent
+        (pre-migration 8 databases — migration runs on startup but tests may skip it).
+        """
+        import sqlite3
+
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO write_audit (actor_key_name, op, memory_name, content_hash, detail) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (actor, op, name, content_hash, detail),
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e).lower():
+                pass  # migration 8 not yet applied (e.g. test with bare schema)
+            else:
+                raise
+        finally:
+            conn.close()
+
+    def get_audit_log(
+        self,
+        memory_name: str = "",
+        actor: str = "",
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return recent write_audit rows, newest first.  Max 500 rows."""
+        import sqlite3
+
+        limit = min(max(1, limit), 500)
+        sql = "SELECT id, ts, actor_key_name, op, memory_name, content_hash, detail FROM write_audit WHERE 1=1"
+        params: list = []
+        if memory_name:
+            sql += " AND memory_name = ?"
+            params.append(memory_name)
+        if actor:
+            sql += " AND actor_key_name = ?"
+            params.append(actor)
+        sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+        params.append(limit)
+
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError:
+            return []  # table not yet created
+        finally:
+            conn.close()
+
+        cols = ["id", "ts", "actor_key_name", "op", "memory_name", "content_hash", "detail"]
+        return [dict(zip(cols, r)) for r in rows]
 
     def export(self, name: str, output_path: str | None = None) -> str:
         """Export a memory to a .md file with YAML frontmatter.
@@ -1281,6 +1431,7 @@ class MemoryStore:
                 WHERE tags LIKE ?
                   AND tier IN ('canonical', 'working')
                   AND (superseded_by IS NULL OR superseded_by = '')
+                  AND deleted_at IS NULL
                 ORDER BY
                   CASE tier WHEN 'canonical' THEN 0 ELSE 1 END ASC,
                   updated_at DESC
@@ -1301,6 +1452,7 @@ class MemoryStore:
                         OR type IN ('profile', 'pattern')
                     )
                     AND (superseded_by IS NULL OR superseded_by = '')
+                    AND deleted_at IS NULL
                     AND tags NOT LIKE ?
                     ORDER BY tier DESC, updated_at DESC
                     """,
@@ -1315,6 +1467,7 @@ class MemoryStore:
                 WHERE tags LIKE '%"project:%"'
                   AND tags NOT LIKE ?
                   AND (superseded_by IS NULL OR superseded_by = '')
+                  AND deleted_at IS NULL
                 """,
                 (f'%"{tag_value}"%',),
             )
@@ -1390,6 +1543,7 @@ class MemoryStore:
                 SELECT * FROM memories
                 WHERE updated_at > ?
                   AND (superseded_by IS NULL OR superseded_by = '')
+                  AND deleted_at IS NULL
                   AND {scope}
                 ORDER BY updated_at DESC
                 LIMIT ?
@@ -1399,6 +1553,7 @@ class MemoryStore:
                 SELECT * FROM memories
                 WHERE updated_at > ?
                   AND (superseded_by IS NULL OR superseded_by = '')
+                  AND deleted_at IS NULL
                 ORDER BY updated_at DESC
                 LIMIT ?
             """
@@ -1876,7 +2031,7 @@ class MemoryStore:
         conn = self._get_conn()
         try:
             cur = conn.execute(
-                "SELECT protected, protected_domains FROM memories WHERE name = ?",
+                f"SELECT protected, protected_domains FROM memories WHERE name = ? AND {_ACTIVE}",
                 (name,),
             )
             row = cur.fetchone()
@@ -1934,6 +2089,7 @@ class MemoryStore:
                 SELECT * FROM memories
                 WHERE tier = 'canonical'
                   AND freshness_status IN ('unknown', 'fresh')
+                  AND deleted_at IS NULL
                   AND ({like_clauses})
                 ORDER BY freshness_checked_at IS NULL DESC, freshness_checked_at ASC
                 LIMIT ?
@@ -2012,6 +2168,7 @@ class MemoryStore:
                   AND last_retrieved_at IS NOT NULL
                   AND last_retrieved_at < datetime('now', ?)
                   AND protected = 0
+                  AND deleted_at IS NULL
                 ORDER BY last_retrieved_at ASC
                 """,
                 (f"-{days} days",),

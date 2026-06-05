@@ -1678,7 +1678,7 @@ async def memory_search(
 
 @mcp.tool()
 async def memory_delete(name: str) -> str:
-    """Permanently delete a memory entry by its name.
+    """Soft-delete a memory entry (sets deleted_at; reversible via restore).
 
     Args:
         name: The unique kebab-case name of the memory to delete.
@@ -1687,7 +1687,7 @@ async def memory_delete(name: str) -> str:
         require_role("write")
     except PermissionDenied as exc:
         return str(exc)
-    return await _a(memory_store.delete(name))
+    return await _a(store.soft_delete(name))
 
 
 @mcp.tool()
@@ -2696,13 +2696,12 @@ _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 _BODY_MAX_BYTES = 64 * 1024  # 64 KB
 
 
-def _write_audit(op: str, actor_name: str, name: str, body: str) -> None:
-    """Emit a single structured audit log line for every governed write operation.
+async def _write_audit(op: str, actor_name: str, name: str, body: str, *, detail: str = "") -> None:
+    """Emit a structured audit log line AND insert a row into write_audit.
 
-    Fields: op, actor, name, content_hash (sha256 of normalised body).
-    Fires on every write/approve/reject/delete regardless of outcome — the
-    caller is responsible for only calling this after a successful store op.
-    A structured audit *table* is deferred to a follow-up (#16).
+    Fires on every governed write/approve/reject/delete after a successful store
+    op.  Audit insert failure is logged but never raised — it must not roll back
+    the primary operation.
     """
     content_hash = hashlib.sha256(body.strip().encode("utf-8", errors="replace")).hexdigest()[:16]
     logger.info(
@@ -2712,6 +2711,10 @@ def _write_audit(op: str, actor_name: str, name: str, body: str) -> None:
         name,
         content_hash,
     )
+    try:
+        await _a(store.insert_audit(op, actor_name, name, content_hash, detail or ""))
+    except Exception as exc:
+        logger.warning("audit insert failed (op=%s name=%s): %s", op, name, exc)
 
 
 def _validate_write_payload(payload: dict) -> tuple[str | None, int]:
@@ -2820,7 +2823,7 @@ async def post_memory(request: Request) -> JSONResponse:
                     client=actor_name,
                 )
             )
-            _write_audit("propose_new", actor_name, name, body)
+            await _write_audit("propose_new", actor_name, name, body)
             return JSONResponse(
                 {"status": "created", "name": name, "detail": result},
                 status_code=201,
@@ -2869,7 +2872,7 @@ async def post_memory(request: Request) -> JSONResponse:
                     client=actor_name,
                 )
             )
-            _write_audit("update_working", actor_name, name, body)
+            await _write_audit("update_working", actor_name, name, body)
             return JSONResponse(
                 {"status": "updated", "name": name, "detail": result},
                 status_code=200,
@@ -2888,7 +2891,7 @@ async def post_memory(request: Request) -> JSONResponse:
                 proposed_by=actor_name,
             )
         )
-        _write_audit("propose_pending", actor_name, name, body)
+        await _write_audit("propose_pending", actor_name, name, body)
         return JSONResponse(
             {"status": "pending", "name": name, "detail": result},
             status_code=202,
@@ -3006,7 +3009,7 @@ async def approve_memory(request: Request) -> JSONResponse:
         )
         if "not found" in result.lower() or "already processed" in result.lower():
             return JSONResponse({"error": result}, status_code=404)
-        _write_audit("approve", actor_name, mem_name, note)
+        await _write_audit("approve", actor_name, mem_name, note)
         return JSONResponse({"status": "approved", "name": mem_name, "detail": result})
     except Exception as e:
         logger.error("POST /api/memories/%s/approve failed: %s", mem_name, e)
@@ -3062,7 +3065,7 @@ async def reject_memory(request: Request) -> JSONResponse:
         )
         if "not found" in result.lower() or "already processed" in result.lower():
             return JSONResponse({"error": result}, status_code=404)
-        _write_audit("reject", actor_name, mem_name, note)
+        await _write_audit("reject", actor_name, mem_name, note)
         return JSONResponse({"status": "rejected", "name": mem_name, "detail": result})
     except Exception as e:
         logger.error("POST /api/memories/%s/reject failed: %s", mem_name, e)
@@ -3071,9 +3074,48 @@ async def reject_memory(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/api/memories/{name}", methods=["DELETE"])
 async def delete_memory_rest(request: Request) -> JSONResponse:
-    """Hard-delete a memory entry by name.
+    """Soft-delete a memory entry by name (sets deleted_at).
 
-    Requires dreamer role (hard delete is permanent — soft-delete deferred to #16).
+    Add ?hard=true to permanently purge the row.  Both require dreamer role.
+    Soft-deleted memories are invisible to all reads but can be restored via
+    POST /api/memories/{name}/restore.
+    """
+    from mori_advisor.policy import PermissionDenied, current_actor, require_role
+
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+
+    actor = current_actor.get()
+    actor_name = actor.key_name if actor else "unknown"
+    mem_name: str = request.path_params["name"]
+    hard = request.query_params.get("hard", "").lower() in ("true", "1", "yes")
+
+    try:
+        if hard:
+            result = await _a(store.hard_delete(mem_name))
+            op = "hard_delete"
+        else:
+            result = await _a(store.soft_delete(mem_name))
+            op = "soft_delete"
+
+        if "not found" in result.lower():
+            return JSONResponse({"error": "not found", "name": mem_name}, status_code=404)
+        await _write_audit(op, actor_name, mem_name, "")
+        status_word = "hard_deleted" if hard else "soft_deleted"
+        return JSONResponse({"status": status_word, "name": mem_name, "detail": result})
+    except Exception as e:
+        logger.error("DELETE /api/memories/%s failed: %s", mem_name, e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/memories/{name}/restore", methods=["POST"])
+async def restore_memory_rest(request: Request) -> JSONResponse:
+    """Restore a soft-deleted memory.
+
+    If an active memory already holds the same name, the restored row is
+    renamed to {name}_restored_{ts}.  Requires dreamer role.
     """
     from mori_advisor.policy import PermissionDenied, current_actor, require_role
 
@@ -3087,13 +3129,52 @@ async def delete_memory_rest(request: Request) -> JSONResponse:
     mem_name: str = request.path_params["name"]
 
     try:
-        result = await _a(memory_store.delete(mem_name))
-        if "not found" in result.lower():
-            return JSONResponse({"error": "not found", "name": mem_name}, status_code=404)
-        _write_audit("delete", actor_name, mem_name, "")
-        return JSONResponse({"status": "deleted", "name": mem_name, "detail": result})
+        final_name, msg = await _a(store.restore_memory(mem_name))
+        if "not found" in msg.lower() or "not deleted" in msg.lower():
+            return JSONResponse({"error": msg, "name": mem_name}, status_code=404)
+        if "failed" in msg.lower():
+            return JSONResponse({"error": msg, "name": mem_name}, status_code=409)
+        op = "restore_renamed" if final_name != mem_name else "restore"
+        await _write_audit(op, actor_name, final_name, "", detail=f"original={mem_name}")
+        return JSONResponse({"status": "restored", "name": final_name, "detail": msg})
     except Exception as e:
-        logger.error("DELETE /api/memories/%s failed: %s", mem_name, e)
+        logger.error("POST /api/memories/%s/restore failed: %s", mem_name, e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/audit", methods=["GET"])
+async def get_audit_log_rest(request: Request) -> JSONResponse:
+    """Return recent write_audit entries.
+
+    Query params:
+        memory_name — filter by memory name (optional)
+        actor       — filter by actor key name (optional)
+        limit       — max rows, default 100, max 500
+
+    Requires dreamer role.
+    """
+    from mori_advisor.policy import PermissionDenied, require_role
+
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+
+    memory_name = request.query_params.get("memory_name", "")
+    actor_filter = request.query_params.get("actor", "")
+    try:
+        limit = min(int(request.query_params.get("limit", "100")), 500)
+    except ValueError:
+        limit = 100
+
+    try:
+        rows = await _a(
+            store.get_audit_log(memory_name=memory_name, actor=actor_filter, limit=limit)
+        )
+        rows = _json_safe_rows(rows)
+        return JSONResponse({"count": len(rows), "items": rows})
+    except Exception as e:
+        logger.error("GET /api/audit failed: %s", e)
         return JSONResponse({"error": str(e)}, status_code=500)
 
 

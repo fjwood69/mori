@@ -1,5 +1,48 @@
 # Changelog
 
+## v2.1.36 — Persistent audit trail + soft-delete (#23 A+B)
+
+- **Migration 8 (`write_audit_table`):** new `write_audit` table (id, ts, actor_key_name,
+  op, memory_name, content_hash, detail) on both SQLite and Postgres — purely additive,
+  transactional, idempotent.
+- **Migration 9 (`soft_delete`):** adds `deleted_at` (nullable) to `memories` and replaces
+  the inline `UNIQUE(name)` with a partial unique index `WHERE deleted_at IS NULL` on both
+  backends. SQLite requires table recreation (no `DROP CONSTRAINT`) — handled via `sqlite_fn`
+  that rebuilds the table, indexes, and FTS5 triggers atomically under the runner's
+  `BEGIN IMMEDIATE`. Postgres uses one atomic transaction: `ADD COLUMN`, `DROP CONSTRAINT
+  memories_name_key`, `CREATE UNIQUE INDEX ... WHERE deleted_at IS NULL`.
+- **`_write_audit()` promoted to `async def`** and now inserts a row into `write_audit` on
+  every governed operation (propose_new, propose_pending, update_working, approve, reject,
+  soft_delete, hard_delete, restore, restore_renamed). All 7 call sites updated to `await`.
+  Audit insert failure is logged but never raised — the primary operation is not rolled back.
+- **`GET /api/audit`** (dreamer role): returns recent audit rows, filterable by `memory_name`
+  and `actor`, paginated (default 100, max 500).
+- **`DELETE /api/memories/{name}`** now **soft-deletes by default** (sets `deleted_at`);
+  `?hard=true` permanently purges the row. Both paths require dreamer role. Audit op is
+  `soft_delete` or `hard_delete` accordingly.
+- **`POST /api/memories/{name}/restore`** (dreamer): clears `deleted_at`. If an active row
+  already holds the name (supersession), the restored row is renamed to
+  `{name}_restored_{ts}` — the superseding row is never clobbered. Both cases are audited.
+- **Tombstone filtering centralised** — `_ACTIVE = "deleted_at IS NULL"` sentinel in
+  `memory_store.py`; used in every read path: `read`, `get_memory`, `list`, `count`,
+  `search` / `_build_search_sql` (FTS JOIN + LIKE fallback), `get_memories_by_project`,
+  `get_memories_changed_since`, `check_freshness`, `scan_orphans`, `protect`. Postgres paths
+  use `deleted_at IS NULL` inline. `_row_to_dict` is not changed — deleted rows are
+  filtered before reaching it.
+- **FTS + tombstones:** filtered at query time (`AND m.deleted_at IS NULL` in the FTS JOIN;
+  `AND deleted_at IS NULL` in the LIKE fallback). The `AFTER UPDATE` FTS5 trigger keeps the
+  index content fresh for a soft-deleted row, but it is never surfaced in search results.
+- **Supersession:** the partial unique index only constrains active rows, so a new active
+  write can freely reuse a tombstoned name — the "old payments-auth standard superseded by
+  the new one" pattern.
+- **Dual-backend tests** (`tests/test_audit_softdelete.py`): audit row on write/delete;
+  soft-delete invisible from read/list/FTS; partial index allows name reuse; restore simple
+  + collision-rename; hard-delete purges; role enforcement on audit/restore/delete endpoints.
+  `@requires_pg` gates Postgres-specific cases.
+- **`scripts/verify-deployment.py` updated:** `/api/audit` and `/api/memories/{name}/restore`
+  added to `WRITE_API_AUTH_ROUTES` so both UAT and CD gates assert the new routes are
+  registered and auth-gated.
+
 ## v2.2.4 — nats_sub replay fix · TD review-UI polish · plugin compatibility
 
 - **feat:** TD `/review` UI — proposals are now **concertina cards** (compact header: name · source · tier · category · confidence · age; click `>` to expand body + diff + approve/reject) with a **filter-by-category** (focus_mode) control — more fits on screen.

@@ -84,6 +84,23 @@ class BaseStore(ABC):
     def delete(self, name: str) -> str: ...
 
     @abstractmethod
+    def soft_delete(self, name: str) -> str: ...
+
+    @abstractmethod
+    def hard_delete(self, name: str) -> str: ...
+
+    @abstractmethod
+    def restore_memory(self, name: str) -> tuple: ...
+
+    @abstractmethod
+    def insert_audit(
+        self, op: str, actor: str, name: str, content_hash: str, detail: str = ""
+    ) -> None: ...
+
+    @abstractmethod
+    def get_audit_log(self, memory_name: str = "", actor: str = "", limit: int = 100) -> list: ...
+
+    @abstractmethod
     def export(self, name: str, output_path=None) -> str: ...
 
     @abstractmethod
