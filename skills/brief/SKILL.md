@@ -1,5 +1,7 @@
-- name: brief
-- description: Session bootstrap — load shared knowledge from the Mori server via MCP
+---
+name: brief
+description: Session bootstrap — loads shared memories and team standards from the Mori server. Use at session start, or after a context compaction with --post-compact.
+---
 
 ## Argument Parsing
 

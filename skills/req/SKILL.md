@@ -1,3 +1,8 @@
+---
+name: req
+description: Lightweight project requirements checklist surfaced via /brief. Use to track or update outstanding project tasks.
+---
+
 # /req — Project Requirements and Delivery Tracking
 
 When the user runs `/req`, parse the arguments and call the `mori_advisor-memory_req` MCP tool, or perform CRUD operations on `type=requirement` memories.

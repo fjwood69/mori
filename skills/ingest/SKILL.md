@@ -1,5 +1,7 @@
-- name: ingest
-- description: Universal ingestion — extract durable memories from PDFs, images, transcripts, git history, and code
+---
+name: ingest
+description: Bootstraps the memory store from existing material (repos, PDFs, transcripts). Use to seed memory from a project or document.
+---
 
 ## Filesystem mode (server-local paths)
 

@@ -1,5 +1,7 @@
-- name: consult
-- description: Get strategic guidance from the advisor model
+---
+name: consult
+description: Strategic guidance from the advisor model on a question, with optional focus area and depth. Use before consequential decisions or to review a plan.
+---
 
 1. Parse the user's input:
    - First positional argument is the `question`

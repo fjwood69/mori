@@ -1,5 +1,7 @@
-- name: pensieve
-- description: Search the shared memory store
+---
+name: pensieve
+description: Ranked full-text search and browse over the shared memory store. Use to recall past decisions, patterns, or project context.
+---
 
 1. Parse the user's input:
    - First positional is the search `query`

@@ -1,5 +1,7 @@
-- name: nats
-- description: Cross-device message bus commands
+---
+name: nats
+description: Cross-device messaging over the NATS bus — ping, publish, subscribe. Use to broadcast status or catch up on what other devices are doing.
+---
 
 1. Parse the user's input:
    - `ping`: call `mori-nats_ping` and report connection status
