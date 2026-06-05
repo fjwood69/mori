@@ -56,6 +56,9 @@ Updated with each release.
 ### v2.2.0
 - **Cross-tool plugin distribution** — unified `plugins/mori/` package for Claude Code (complete + marketplace-ready), Cursor, and Antigravity; `SessionStart` re-ground hook replacing PostCompact additionalContext (closes #17); bespoke Claude installer moved to `scripts/legacy/`; see #24
 
+### v2.2.3
+- **Trusted-Dreamer review queue (#15)** — ingestion's canonical/standard candidates route to a pending queue for trusted-dreamer sign-off (working stays direct); a standalone dreamer-gated `review.html` with source/provenance/diff + approve/reject; `GET /api/pending/json`; migration 7 (partial pending index, dual-backend). Closes the governance loop — memory that's *curated*, not just *accumulated*.
+
 ### v2.2.2
 - **Onboarding gap closed** — session-start server **health sentinel** (pings only the user's own server, cached, fail-open) injects honest setup guidance (self-hosted Docker + LLM-provider-key path) when the server is unreachable, before the user hits a broken `/brief`; silent when up. Skill-level backstops; value-first plugin-manager description. Default localhost is health-checked, not mis-reported.
 

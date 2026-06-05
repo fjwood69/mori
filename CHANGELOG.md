@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.2.3 — Trusted-Dreamer review queue (#15)
+
+- **feat:** Governance loop closed — ingestion's `canonical`/`standard` candidates route to a pending queue (`queue_pending_write`) for trusted-dreamer review instead of writing directly; `working`-tier writes stay direct (the TD is never asked to review high-volume working dreams). `dream.py` is unchanged and ingestion runs independently of the dream pipeline (no shared mutable state — concurrent `/ingest` never interferes with scheduled dreams). `MORI_CURATE=false` preserves direct-write behaviour.
+- **feat:** `dashboard/review.html` — a standalone, dreamer-gated admin page (separate from the read-only dashboard): lists pending proposals with source / provenance / confidence and a diff against the existing canonical; approve/reject wired to the race-safe `POST /api/memories/{name}/approve|reject`.
+- **feat:** `GET /api/pending/json` (dreamer-gated) + `pending_list_json()` returning enriched pending rows (source, provenance, confidence, focus_mode, existing_body for the diff, created_at).
+- **db:** migration 7 (additive, idempotent) — `pending_writes` gains source/provenance/confidence/focus_mode/existing_body/created_at; a **partial** unique index (`memory_name WHERE status='pending'`) on both backends prevents duplicate pending proposals while allowing a memory to be re-proposed and re-approved over its life.
+- **fix:** Postgres parity — partial pending-only index + matching `ON CONFLICT` inference (the upsert previously inferred a non-existent partial index → would error on Postgres; a full unique constraint would collide on re-approval). Dual-backend re-approve regression test added.
+- Verified: UAT (migration applies on seeded Postgres; deployment contract green on both backends) + CI Postgres job.
+
 ## v2.2.2 — Onboarding: server health sentinel + honest setup guidance (plugin v0.1.2)
 
 - **feat:** Session-start server **health sentinel** — the SessionStart hook pings the configured server's `/health` (600ms–2s bound, cached 5 min per session, fail-open, and **only ever the user's own URL — no phone-home**). If the server is unreachable or unconfigured, it injects a clear, honest setup message *before* the user hits a broken `/brief`; if the server is up, it stays silent. Skill-level backstop in `/brief` and `/pensieve` for mid-session outages.

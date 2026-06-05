@@ -201,6 +201,11 @@ class SQLiteStore(BaseStore):
         tags: list | None = None,
         origin_clients: list | None = None,
         proposed_by: str = "api",
+        source: str = "",
+        provenance: str | None = None,
+        confidence: float | None = None,
+        focus_mode: str = "",
+        tier: str = "",
     ) -> str:
         return self._mem.queue_pending_write(
             name=name,
@@ -211,10 +216,18 @@ class SQLiteStore(BaseStore):
             tags=tags,
             origin_clients=origin_clients,
             proposed_by=proposed_by,
+            source=source,
+            provenance=provenance,
+            confidence=confidence,
+            focus_mode=focus_mode,
+            tier=tier,
         )
 
     def pending_list(self, status: str = "pending") -> str:
         return self._mem.pending_list(status=status)
+
+    def pending_list_json(self, status: str = "pending") -> list[dict]:
+        return self._mem.pending_list_json(status=status)
 
     def approve(self, write_id: int, note: str = "", reviewer: str = "") -> str:
         return self._mem.approve(write_id, note=note, reviewer=reviewer)

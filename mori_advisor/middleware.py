@@ -17,7 +17,7 @@ from mori_advisor.policy import Actor, current_actor, role_for
 
 logger = logging.getLogger(__name__)
 
-OPEN_PATHS = {"/health", "/ready", "/metrics", "/"}
+OPEN_PATHS = {"/health", "/ready", "/metrics", "/", "/review"}
 
 # Return 404 for OAuth discovery so CC stops treating mori as an OAuth server
 # and falls back to using the X-Api-Key header directly

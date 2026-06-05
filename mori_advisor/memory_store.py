@@ -1564,25 +1564,78 @@ class MemoryStore:
         tags: list | None = None,
         origin_clients: list | None = None,
         proposed_by: str = "api",
+        # TD enrichment fields (Deliverable 2 — #15)
+        source: str = "",
+        provenance: str | None = None,
+        confidence: float | None = None,
+        focus_mode: str = "",
+        tier: str = "",
     ) -> str:
-        """Insert a pending write proposal for an existing memory without modifying it.
+        """Insert or update a pending write proposal for an existing memory.
 
-        Used by the write REST API for canonical and other-actor working memories
-        where propose-not-overwrite semantics are required (see #14).
+        For canonical/standard memories that must be reviewed before committing.
+        On a second proposal for the same name (while a pending row still exists),
+        the existing pending row is UPDATED so the latest candidate wins — no
+        duplicate-pending pileup (idempotent via INSERT OR REPLACE on the
+        partial unique index idx_pending_writes_name_pending).
+
+        Captures existing_body at enqueue time so the review UI can diff.
 
         Returns a human-readable string describing the outcome.
         """
         import sqlite3
 
         tags_json = self._format_tags(tags or [])
+        provenance_json = (
+            provenance
+            if isinstance(provenance, str)
+            else (json.dumps(provenance) if provenance else None)
+        )
+
+        # Capture the current body of any existing memory with this name for diff.
+        existing_body: str | None = None
+        try:
+            conn_read = self._get_conn()
+            try:
+                row = conn_read.execute(
+                    "SELECT body FROM memories WHERE name = ?", (name,)
+                ).fetchone()
+                if row:
+                    existing_body = row[0]
+            finally:
+                conn_read.close()
+        except Exception:
+            pass  # non-fatal; diff just won't be available
+
         conn = self._get_conn()
         try:
+            # INSERT OR REPLACE uses the partial unique index
+            # idx_pending_writes_name_pending (WHERE status='pending') so
+            # a second proposal for the same name replaces the pending row.
+            # Rows with status='approved'/'rejected' are unaffected.
             conn.execute(
                 """
                 INSERT INTO pending_writes
                     (memory_name, title, description, type, body, tags,
-                     origin_session_ids, origin_clients, proposed_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     origin_session_ids, origin_clients, proposed_by,
+                     source, provenance, confidence, focus_mode, existing_body, tier)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(memory_name) WHERE status = 'pending' DO UPDATE SET
+                    title          = excluded.title,
+                    description    = excluded.description,
+                    type           = excluded.type,
+                    body           = excluded.body,
+                    tags           = excluded.tags,
+                    origin_clients = excluded.origin_clients,
+                    proposed_by    = excluded.proposed_by,
+                    source         = excluded.source,
+                    provenance     = excluded.provenance,
+                    confidence     = excluded.confidence,
+                    focus_mode     = excluded.focus_mode,
+                    existing_body  = excluded.existing_body,
+                    tier           = excluded.tier,
+                    proposed_at    = datetime('now'),
+                    status         = 'pending'
                 """,
                 (
                     name,
@@ -1594,17 +1647,99 @@ class MemoryStore:
                     "[]",
                     self._format_tags(origin_clients or []),
                     proposed_by,
+                    source or "",
+                    provenance_json,
+                    confidence,
+                    focus_mode or "",
+                    existing_body,
+                    tier or "",
                 ),
             )
             conn.commit()
             return (
-                f"Memory '{name}' is canonical or owned by another actor — "
-                "change queued as pending write (dreamer review required)."
+                f"Memory '{name}' queued as pending write "
+                "(dreamer review required via review.html or POST /api/memories/{name}/approve)."
             )
         except sqlite3.Error as e:
             return f"Database error queuing pending write: {e}"
         finally:
             conn.close()
+
+    def pending_list_json(self, status: str = "pending") -> list[dict]:
+        """Return pending writes as a list of dicts (structured, for review UI).
+
+        Each dict contains all enrichment fields added in #15.
+        """
+        import sqlite3
+
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                """
+                SELECT id, memory_name, title, description, type, body, tags,
+                       proposed_at, proposed_by, status,
+                       source, provenance, confidence, focus_mode, existing_body,
+                       tier, created_at
+                FROM pending_writes
+                WHERE status = ?
+                ORDER BY proposed_at ASC
+                """,
+                (status,),
+            )
+            rows = cur.fetchall()
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
+
+        result = []
+        for row in rows:
+            (
+                wid,
+                memory_name,
+                title,
+                description,
+                mtype,
+                body,
+                tags_raw,
+                proposed_at,
+                proposed_by,
+                row_status,
+                source,
+                provenance_raw,
+                confidence,
+                focus_mode,
+                existing_body,
+                tier,
+                created_at,
+            ) = row
+            tags = self._parse_tags(tags_raw) if tags_raw else []
+            try:
+                provenance = json.loads(provenance_raw) if provenance_raw else None
+            except (json.JSONDecodeError, TypeError):
+                provenance = provenance_raw
+            result.append(
+                {
+                    "id": wid,
+                    "name": memory_name,
+                    "title": title,
+                    "description": description,
+                    "type": mtype,
+                    "body": body or "",
+                    "tags": tags,
+                    "source": source or "",
+                    "provenance": provenance,
+                    "confidence": confidence,
+                    "focus_mode": focus_mode or "",
+                    "existing_body": existing_body,
+                    "tier": tier or "",
+                    "proposed_at": proposed_at,
+                    "proposed_by": proposed_by,
+                    "status": row_status,
+                    "created_at": created_at or proposed_at,
+                }
+            )
+        return result
 
     def pending_list(self, status: str = "pending") -> str:
         """List pending writes awaiting approval."""

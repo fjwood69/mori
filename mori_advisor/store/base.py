@@ -142,10 +142,18 @@ class BaseStore(ABC):
         tags: list | None = None,
         origin_clients: list | None = None,
         proposed_by: str = "api",
+        source: str = "",
+        provenance: str | None = None,
+        confidence: float | None = None,
+        focus_mode: str = "",
+        tier: str = "",
     ) -> str: ...
 
     @abstractmethod
     def pending_list(self, status: str = "pending") -> str: ...
+
+    @abstractmethod
+    def pending_list_json(self, status: str = "pending") -> list[dict]: ...
 
     @abstractmethod
     def approve(self, write_id: int, note: str = "", reviewer: str = "") -> str: ...
