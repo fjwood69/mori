@@ -4,12 +4,15 @@
     "name": "fjwood69",
     "url": "https://github.com/fjwood69"
   },
+  "metadata": {
+    "description": "Self-hosted, cross-device memory for AI coding agents \u2014 the Mori plugin connects Claude Code, Cursor, and Antigravity to a Mori server you run."
+  },
   "plugins": [
     {
       "name": "mori",
       "source": "./plugins/mori",
-      "description": "Persistent, cross-device memory for your AI coding agents — self-hosted and AGPL, so your knowledge never leaves your own infrastructure. Connect to a Mori server you run; every session distils into durable, searchable memory, so agents start informed, not cold. /brief loads context, /pensieve searches it.",
-      "version": "0.1.2"
+      "description": "Persistent, cross-device memory for your AI coding agents \u2014 self-hosted and AGPL, so your knowledge never leaves your own infrastructure. Connect to a Mori server you run; every session distils into durable, searchable memory, so agents start informed, not cold. /brief loads context, /pensieve searches it.",
+      "version": "0.1.3"
     }
   ]
 }
