@@ -102,7 +102,7 @@ project's `.mcp.json`:
     "mori": {
       "type": "http",
       "url": "http://YOUR-SERVER:8968/mcp",
-      "headers": { "x-api-key": "YOUR_KEY" }
+      "headers": { "x-api-key": "YOUR-64-CHAR-BARE-SECRET" }
     }
   }
 }
@@ -123,7 +123,7 @@ Edit `mcp.json` with your server URL and API key:
     "mori": {
       "type": "http",
       "url": "http://YOUR-SERVER:8968/mcp",
-      "headers": { "x-api-key": "YOUR_KEY" }
+      "headers": { "x-api-key": "YOUR-64-CHAR-BARE-SECRET" }
     }
   }
 }
@@ -132,10 +132,9 @@ Edit `mcp.json` with your server URL and API key:
 Cursor reads `.cursor-plugin/plugin.json` as the manifest and `mcp.json` for the MCP
 connection. Skills in `skills/` are auto-discovered.
 
-> **No userConfig substitution in Cursor** — edit `mcp.json` directly. If you prefer
-> not to store the key in the file, set `MORI_API_KEY` in your shell environment and
-> leave the `x-api-key` value blank; the server will fall back to checking that env var
-> if configured to do so.
+> **The `x-api-key` is the bare secret** — the 64-char hex string alone, **not**
+> `name:secret`. The `name:` only labels the key in the server's `MORI_API_KEYS`; the
+> client sends the secret by itself, or the server returns `401`.
 
 ---
 
@@ -152,7 +151,7 @@ Edit `mcp_config.json` with your server URL and API key:
     "mori": {
       "type": "http",
       "url": "http://YOUR-SERVER:8968/mcp",
-      "headers": { "x-api-key": "YOUR_KEY" }
+      "headers": { "x-api-key": "YOUR-64-CHAR-BARE-SECRET" }
     }
   }
 }
