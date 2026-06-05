@@ -37,8 +37,14 @@
  *     entire event block, so robustness beats diagnostics here.
  *   - Node built-ins only (process, fs, fetch). No npm packages. ESM.
  *
+ * Server URL resolution (in order):
+ *   1. --url <value> argv (explicit; used by tests and the Cursor/Antigravity wrappers)
+ *   2. MORI_SERVER_URL environment variable (the Claude Code plugin's config path)
+ *   Empty → the health sentinel reports "unconfigured" and injects the setup guide.
+ *
  * Invoked by the Claude Code harness as:
- *   node "${CLAUDE_PLUGIN_ROOT}/scripts/mori-context-hook.mjs" --url "${user_config.server_url}"
+ *   node "${CLAUDE_PLUGIN_ROOT}/scripts/mori-context-hook.mjs"
+ * with MORI_SERVER_URL exported in the environment.
  */
 
 import { readFileSync, existsSync } from 'fs';
@@ -64,7 +70,9 @@ function parseUrl(argv) {
 }
 
 async function main() {
-  const serverUrl = parseUrl(process.argv.slice(2));
+  // Explicit --url wins (tests / wrappers); otherwise read the env var the plugin
+  // sets. Empty string → health sentinel returns "unconfigured".
+  const serverUrl = parseUrl(process.argv.slice(2)) || process.env.MORI_SERVER_URL || '';
 
   let raw = '';
   try {

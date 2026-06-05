@@ -1,5 +1,35 @@
 # Changelog
 
+## plugin v0.2.0 — config via env vars (MORI_SERVER_URL / MORI_API_KEY), not userConfig
+
+**fix(plugin): the Claude Code plugin never connected on `claude plugin install` (CLI).**
+- `userConfig` (`${user_config.*}`) only prompts in the interactive TUI — Claude Code's
+  CLI `claude plugin install` does **not** fire the prompt (acknowledged CC bug
+  [#39455](https://github.com/anthropics/claude-code/issues/39455) open /
+  [#39827](https://github.com/anthropics/claude-code/issues/39827) closed-not-planned).
+  So CLI users — the majority — installed mori with no configuration step and the MCP
+  client connected nowhere (or to the old localhost default) → "Restart to enable →
+  nothing".
+- Fix: **dropped `userConfig` entirely; the plugin now reads its server URL and key from
+  environment variables** — `${MORI_SERVER_URL}` and `${MORI_API_KEY}` in `.mcp.json`, and
+  `process.env.MORI_SERVER_URL` / `MORI_API_KEY` in the hook scripts. This is the pattern
+  the 80k-star `claude-mem` plugin and Anthropic's own GitHub/Greptile plugins ship, and
+  it works identically on CLI install and in the TUI (no prompt dependency).
+- Scripts resolve config as: explicit `--url`/`--api-key` arg (tests/wrappers) → else the
+  env var → else unconfigured. `hooks.json` no longer passes `${user_config.*}` args.
+- Health sentinel now reports `unconfigured` (with `export MORI_SERVER_URL=…` guidance)
+  when the env var is unset, instead of always reading `down`.
+- **BREAKING for existing installs:** set `MORI_SERVER_URL` / `MORI_API_KEY` in your
+  environment (shell profile, or `setx` on Windows) and reload — the userConfig values no
+  longer apply. See the README install section.
+- **CI guard updated**: the `plugin-validate` job now asserts `.mcp.json` is parameterised
+  by `${MORI_SERVER_URL}` / `${MORI_API_KEY}` with no `user_config` or hardcoded
+  localhost, and that `plugin.json` declares no `userConfig`. New Node tests
+  (`test_plugin_hooks.mjs` #15–17) execute the hooks and prove they read the env vars.
+- Cursor (`mcp.json`) and Antigravity (`mcp_config.json`) are unchanged (separate
+  manual-edit config; unifying them onto env vars is a follow-up).
+- Plugin + marketplace manifests bumped `0.1.4` → `0.2.0`.
+
 ## plugin v0.1.4 — install prompt fix: server_url no longer silently defaults to localhost
 
 **fix(plugin): self-hosted users were never prompted for their Mori server URL.**

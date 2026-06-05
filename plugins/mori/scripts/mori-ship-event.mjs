@@ -8,10 +8,14 @@
  * Usage:
  *   node mori-ship-event.mjs --url <base> --client <name> [--api-key <key>] [--mode raw|precompact]
  *
+ * Config resolution: --url/--api-key win; otherwise MORI_SERVER_URL / MORI_API_KEY
+ * env vars (the Claude Code plugin's config path). No URL → events are not shipped
+ * (fail-soft, exit 0).
+ *
  * Options:
- *   --url <base>      Base URL of the Mori server (required)
+ *   --url <base>      Base URL of the Mori server (or set MORI_SERVER_URL)
  *   --client <name>   Client identifier sent as ?client= query param (default: os.hostname())
- *   --api-key <key>   API key sent as X-Api-Key header (omit for unauthenticated servers)
+ *   --api-key <key>   API key sent as X-Api-Key header (or set MORI_API_KEY; omit for unauthenticated servers)
  *   --mode raw|precompact
  *                     raw (default): POST to /api/events/raw
  *                     precompact: POST to /api/precompact (blocks until dream completes)
@@ -33,6 +37,10 @@ function parseArgs(argv) {
     }
   }
   if (!args.client) args.client = hostname();
+  // Explicit --url/--api-key win (tests / wrappers); otherwise fall back to the
+  // env vars the Claude Code plugin sets (MORI_SERVER_URL / MORI_API_KEY).
+  if (!args.url) args.url = process.env.MORI_SERVER_URL || '';
+  if (!args.apiKey) args.apiKey = process.env.MORI_API_KEY || '';
   return args;
 }
 

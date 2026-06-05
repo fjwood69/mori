@@ -20,7 +20,7 @@ plugins/mori/
 ├── .claude-plugin/plugin.json   Claude Code manifest (userConfig prompts on enable)
 ├── .cursor-plugin/plugin.json   Cursor manifest
 ├── plugin.json                  Antigravity manifest
-├── .mcp.json                    Claude Code MCP config (userConfig substitution)
+├── .mcp.json                    Claude Code MCP config (${MORI_SERVER_URL} env-var substitution)
 ├── mcp.json                     Cursor MCP config (edit url/key manually)
 ├── mcp_config.json              Antigravity MCP config (edit url/key manually)
 ├── hooks/hooks.json             Claude Code hooks (SessionStart + telemetry)
@@ -61,26 +61,35 @@ plugins/mori/
 
 ### Claude Code
 
-**Option A — Marketplace / `--plugin-dir` (recommended)**
+**1. Install the plugin**
 
 ```bash
-# From a directory that contains the plugins/mori folder:
+# From the marketplace:
+/plugin marketplace add fjwood69/mori
+/plugin install mori@mori
+# Or point Claude at a local checkout:
 claude --plugin-dir plugins/mori
-# Or, once marketplace support is live:
-# /add-plugin https://github.com/fjwood69/mori
 ```
 
-On first enable, Claude Code prompts for two values from `userConfig`:
+**2. Point it at your server — two environment variables**
 
-| Prompt | What to enter |
-|--------|--------------|
-| **Mori server URL** | Base URL of your mori-advisor server, e.g. `http://localhost:8968` |
-| **Mori API key** | Your named API key (`name:secret`). Leave blank if your server is unauthenticated. |
+The plugin reads its server URL and key from the environment. This is the pattern the
+official GitHub/Greptile plugins and `claude-mem` ship, and — unlike a `userConfig`
+prompt — it works on `claude plugin install` from the CLI (where that prompt never
+fires):
 
-The API key is marked `sensitive: true` and stored in the system keychain. The URL is
-stored in plain text in Claude's plugin config. Both are substituted at runtime into
-`.mcp.json` and `hooks/hooks.json` via `${user_config.*}` — you do not edit those files
-directly.
+```bash
+export MORI_SERVER_URL="http://localhost:8968"   # the mori-advisor server you run
+export MORI_API_KEY="name:secret"                # your named key; omit if unauthenticated
+```
+
+Add them to your shell profile (`~/.bashrc`, `~/.zshrc`) so they persist, then reload
+Claude Code. **Windows (PowerShell):** `setx MORI_SERVER_URL "http://host:8968"` and
+`setx MORI_API_KEY "name:secret"`, then restart the terminal and Claude Code.
+
+`.mcp.json` and `hooks/hooks.json` substitute `${MORI_SERVER_URL}` / `${MORI_API_KEY}` at
+runtime — you do not edit those files. If `MORI_SERVER_URL` is unset, the SessionStart
+hook tells you how to set it instead of failing silently.
 
 **Option B — Project-level manual install**
 

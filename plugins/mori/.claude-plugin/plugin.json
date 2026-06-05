@@ -1,25 +1,11 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "mori",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Persistent, cross-device memory for your AI coding agents — self-hosted and AGPL, so your knowledge never leaves your own infrastructure. Connect to a Mori server you run; every session distils into durable, searchable memory, so agents start informed, not cold. /brief loads context, /pensieve searches it.",
   "author": { "name": "fjwood69", "url": "https://github.com/fjwood69" },
   "homepage": "https://github.com/fjwood69/mori",
   "repository": "https://github.com/fjwood69/mori",
   "license": "AGPL-3.0-only",
-  "keywords": ["memory", "mcp", "agents", "context", "cross-device"],
-  "userConfig": {
-    "server_url": {
-      "type": "string",
-      "title": "Mori server URL",
-      "description": "Base URL of the mori-advisor server you run — enter the address where it is reachable from this machine, e.g. http://localhost:8968 (local) or http://100.x.y.z:8968 (LAN/Tailscale). No default: if you run mori on another host, set its URL here or the plugin cannot connect.",
-      "required": true
-    },
-    "api_key": {
-      "type": "string",
-      "title": "Mori API key",
-      "description": "Your named API key (name:secret). Optional if the server is unauthenticated.",
-      "sensitive": true
-    }
-  }
+  "keywords": ["memory", "mcp", "agents", "context", "cross-device"]
 }

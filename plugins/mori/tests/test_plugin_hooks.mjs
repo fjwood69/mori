@@ -335,6 +335,74 @@ console.log('\n── mori-ship-event.mjs ──\n');
   assert(r.stdout.trim() === 'null', 'ship-event: enrichment returns null when transcript missing');
 }
 
+// ---- env-var config resolution (MORI_SERVER_URL / MORI_API_KEY) ----------------
+// The Claude Code plugin supplies config via env vars (not userConfig — its install
+// prompt never fires on `claude plugin install`). Prove the scripts read them when
+// no --url/--api-key arg is passed. This is the path the shipped hooks.json uses.
+
+console.log('\n── env-var config (MORI_SERVER_URL / MORI_API_KEY) ──\n');
+
+{
+  // 15. context-hook reads MORI_SERVER_URL when no --url arg. A valid-but-unreachable
+  // URL must yield SETUP ("down"), proving the env value flowed into checkServer —
+  // vs UNCONFIGURED, which is what an empty/unset URL gives.
+  const env = { ...process.env, TMPDIR: TMP, MORI_SERVER_URL: 'http://127.0.0.1:1' };
+  delete env.MORI_SESSION_CONTEXT_FILE;
+  const r = spawnSync(process.execPath, [CONTEXT_HOOK], {
+    input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'test-env-s15' }),
+    env, encoding: 'utf8', timeout: 5000,
+  });
+  assert((r.status ?? -1) === 0, 'context-hook env: exits 0');
+  let parsed;
+  try { parsed = JSON.parse((r.stdout ?? '').trim()); } catch { /* noop */ }
+  assert(
+    typeof parsed?.hookSpecificOutput?.additionalContext === 'string' &&
+      parsed.hookSpecificOutput.additionalContext.includes('isn\'t reachable yet'),
+    'context-hook env: MORI_SERVER_URL is read (down→SETUP, not unconfigured)',
+    r.stdout,
+  );
+}
+
+{
+  // 16. context-hook with neither --url nor MORI_SERVER_URL → UNCONFIGURED.
+  const env = { ...process.env, TMPDIR: TMP };
+  delete env.MORI_SERVER_URL;
+  delete env.MORI_SESSION_CONTEXT_FILE;
+  const r = spawnSync(process.execPath, [CONTEXT_HOOK], {
+    input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'test-env-s16' }),
+    env, encoding: 'utf8', timeout: 5000,
+  });
+  assert((r.status ?? -1) === 0, 'context-hook no-config: exits 0');
+  let parsed;
+  try { parsed = JSON.parse((r.stdout ?? '').trim()); } catch { /* noop */ }
+  assert(
+    typeof parsed?.hookSpecificOutput?.additionalContext === 'string' &&
+      parsed.hookSpecificOutput.additionalContext.includes('No Mori server is configured'),
+    'context-hook no-config: unset MORI_SERVER_URL → UNCONFIGURED',
+    r.stdout,
+  );
+}
+
+{
+  // 17. ship-event reads MORI_SERVER_URL/MORI_API_KEY from env (no --url/--api-key args).
+  // Proof: the failure log records the request URI, which must contain the env host.
+  const env = { ...process.env, TMPDIR: TMP, MORI_SERVER_URL: 'http://127.0.0.1:19998', MORI_API_KEY: 'envtest:secret' };
+  const logFile = join(TMP, 'mori-hook.log');
+  try { rmSync(logFile, { force: true }); } catch { /* noop */ }
+  const r = spawnSync(process.execPath, [SHIP_EVENT, '--mode', 'raw'], {
+    input: JSON.stringify({ hook_event_name: 'Stop', session_id: 'test-env-s17' }),
+    env, encoding: 'utf8', timeout: 8000,
+  });
+  assert((r.status ?? -1) === 0, 'ship-event env: exits 0');
+  assert(existsSync(logFile), 'ship-event env: failure logged');
+  const logTxt = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
+  assert(
+    logTxt.includes('127.0.0.1:19998'),
+    'ship-event env: MORI_SERVER_URL used to build request URI',
+    logTxt,
+  );
+}
+
 // ---- Results -------------------------------------------------------------------
 
 cleanup();
