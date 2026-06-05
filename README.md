@@ -32,10 +32,29 @@ others know.
 
 ![Runs Anywhere](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-3-runs-anywhere.svg)
 
-### 1. Deploy
+### 1. Deploy your server
 
-See [docs/deployment/quickstart.md](docs/deployment/quickstart.md) for all
-platforms. Docker Compose is the fastest path:
+Every Mori instance is yours — deployed into your own account, never shared.
+Pick a path:
+
+**Cloud — deploy into your own account:**
+
+| | Platform | Persistence | ~Cost |
+|---|---|---|---|
+| [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/fjwood69/mori) | **Railway** + free Postgres ([Neon](https://neon.tech) / [Supabase](https://supabase.com)) | ✅ free Postgres | ~$5/mo + $0 Postgres |
+| [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/fjwood69/mori) | **Render** (persistent disk in config) | ✅ SQLite on disk | ~$7/mo |
+| [![Run on Google Cloud](https://deploy.cloud.run/button.svg)](https://deploy.cloud.run/?git_repo=https://github.com/fjwood69/mori) | **Cloud Run** + free Postgres ([Neon](https://neon.tech) / [Supabase](https://supabase.com)) | ✅ free Postgres | Pay-per-use |
+
+**Fly.io (CLI):** free persistent volume + SQLite, ~$3–5/mo — see [one-click-deploy.md](docs/getting-started/one-click-deploy.md).
+
+> **Persistence note:** SQLite needs a persistent disk or volume; stateless platforms
+> (Railway, Cloud Run, Render free tier) lose data on restart without Postgres. The deploy
+> script and guide walk through connecting a free Neon or Supabase database — the recommended
+> $0 durable path.
+
+Full guide: [docs/getting-started/one-click-deploy.md](docs/getting-started/one-click-deploy.md)
+
+**Or run locally with Docker Compose:**
 
 ```bash
 git clone https://github.com/fjwood69/mori.git

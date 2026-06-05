@@ -3207,7 +3207,7 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=int(os.environ.get("APP_PORT", 8968)),
+        port=int(os.environ.get("APP_PORT") or os.environ.get("PORT", "8968")),
         log_level="info",
         lifespan="on",
     )
