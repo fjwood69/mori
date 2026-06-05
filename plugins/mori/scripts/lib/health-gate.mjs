@@ -7,8 +7,10 @@
  *   setCached(sessionId, state)   → void (best-effort; errors silently ignored)
  *
  * Design:
- *   - Returns "unconfigured" immediately (no fetch) when url is empty, the
- *     literal default placeholder, or not a parseable http(s) URL.
+ *   - Returns "unconfigured" immediately (no fetch) only when url is empty or not
+ *     a parseable http(s) URL. A real URL — including the default localhost:8968,
+ *     which is the most common self-host location — is always health-checked, so a
+ *     running local server is never mis-reported as "unconfigured".
  *   - Fetches `<url>/health` with a 2 000 ms AbortController timeout. (Set at 2 s,
  *     not 600 ms, because Node ESM startup overhead in a hook child process takes
  *     ~600 ms before the first I/O; 2 s remains well within the 10 s hook timeout.)
@@ -27,9 +29,6 @@
  */
 
 import { readFileSync, writeFileSync } from 'fs';
-
-// Default placeholder that the Claude Code plugin UI ships. Treat as unconfigured.
-const DEFAULT_PLACEHOLDER = 'http://localhost:8968';
 
 /** 5-minute TTL for the session cache (ms). */
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -105,12 +104,9 @@ export async function checkServer(url) {
   const trimmed = url.trim();
   if (!trimmed) return 'unconfigured';
 
-  // Literal default placeholder → not yet configured
-  if (trimmed === DEFAULT_PLACEHOLDER || trimmed === DEFAULT_PLACEHOLDER + '/') {
-    return 'unconfigured';
-  }
-
-  // Must be a parseable http(s) URL
+  // Must be a parseable http(s) URL. A real URL — including the default
+  // localhost:8968 — is health-checked; a running local server must never be
+  // mis-reported as unconfigured.
   let parsed;
   try {
     parsed = new URL(trimmed);

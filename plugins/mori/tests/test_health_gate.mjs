@@ -106,14 +106,11 @@ console.log('\n── checkServer() — unconfigured cases ──\n');
 }
 
 {
-  // Default placeholder — no network call should be made
+  // The default localhost:8968 is a real URL and MUST be health-checked, never
+  // short-circuited to "unconfigured" — a running local server is the most common
+  // setup and must not be mis-reported. (Result is "up" or "down", not "unconfigured".)
   const result = await checkServer('http://localhost:8968');
-  assert(result === 'unconfigured', 'default placeholder → unconfigured (no fetch)');
-}
-
-{
-  const result = await checkServer('http://localhost:8968/');
-  assert(result === 'unconfigured', 'default placeholder with trailing slash → unconfigured');
+  assert(result !== 'unconfigured', 'default localhost:8968 is health-checked, not unconfigured');
 }
 
 {
