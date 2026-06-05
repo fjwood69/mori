@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "hermes-mori-provider"
+version = "0.1.0"
+description = "mori MemoryProvider plugin for NousResearch hermes-agent"
+readme = "README.md"
+license = { text = "AGPL-3.0-only" }
+requires-python = ">=3.11"
+# No runtime dependencies beyond the stdlib (urllib, sqlite3, threading, json, hashlib).
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/fjwood69/mori"
+Repository = "https://github.com/fjwood69/mori/tree/main/integrations/hermes-memory-provider"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
