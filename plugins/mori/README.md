@@ -25,14 +25,35 @@ plugins/mori/
 ├── mcp_config.json              Antigravity MCP config (edit url/key manually)
 ├── hooks/hooks.json             Claude Code hooks (SessionStart + telemetry)
 ├── scripts/
-│   ├── mori-context-hook.mjs    SessionStart re-grounding hook (Node ESM)
-│   ├── mori-ship-event.mjs      Telemetry shipper (Node ESM; Node 18+ required)
+│   ├── mori-context-hook.mjs              Claude Code SessionStart hook (Node ESM)
+│   ├── mori-ship-event.mjs                Claude Code telemetry shipper (Node ESM)
+│   ├── mori-context-hook-cursor.mjs       Cursor sessionStart context hook
+│   ├── mori-ship-event-cursor.mjs         Cursor postToolUse/stop telemetry shipper
+│   ├── mori-context-hook-antigravity.mjs  Antigravity PreInvocation context hook
+│   ├── mori-ship-event-antigravity.mjs    Antigravity PostToolUse/Stop telemetry shipper
+│   ├── install-hooks-cursor.mjs           Installer: writes ~/.cursor/hooks.json
+│   ├── install-hooks-antigravity.mjs      Installer: writes ~/.gemini/config/hooks.json
+│   ├── lib/
+│   │   ├── canonical.mjs    Canonical event schema normalizer (client → mori schema)
+│   │   ├── fail-open.mjs    Fail-open wrapper: any throw → exit 0
+│   │   ├── post.mjs         Fail-soft HTTP POST helper
+│   │   └── throttle.mjs     Once-per-conversation temp-file flag
 │   └── legacy/
 │       ├── uninstall-mori-claude.sh   Migration: remove legacy bespoke entries (Linux/macOS)
 │       └── uninstall-mori-claude.ps1  Migration: remove legacy bespoke entries (Windows)
 ├── skills/                      Shared skills (copied from repo root skills/)
 └── tests/
-    └── test_plugin_hooks.mjs    Hermetic lifecycle tests for both hook scripts
+    ├── test_plugin_hooks.mjs          Hermetic tests for Claude Code hook scripts
+    ├── test_cursor_hooks.mjs          Hermetic tests for Cursor hook scripts
+    ├── test_antigravity_hooks.mjs     Hermetic tests for Antigravity hook scripts
+    └── fixtures/
+        ├── cursor-sessionStart.json   Cursor sessionStart input fixture
+        ├── cursor-postToolUse.json    Cursor postToolUse input fixture
+        ├── cursor-stop.json           Cursor stop input fixture
+        ├── cursor-preToolUse.json     Cursor preToolUse input fixture
+        ├── antigravity-PreInvocation.json  Antigravity PreInvocation input fixture
+        ├── antigravity-PostToolUse.json    Antigravity PostToolUse input fixture
+        └── antigravity-Stop.json           Antigravity Stop input fixture
 ```
 
 ---
@@ -154,10 +175,12 @@ copying the bundle to a user's local plugins directory.
 
 ## Hooks — SessionStart re-grounding and telemetry
 
-Hooks are wired for **Claude Code** only. Cursor and Antigravity hook event models are
-unconfirmed; they are a planned fast-follow (see TODO below).
+### Claude Code
 
-### SessionStart re-grounding (`mori-context-hook.mjs`)
+Hooks are wired into the plugin via `hooks/hooks.json` using the `${CLAUDE_PLUGIN_ROOT}`
+variable. No manual configuration needed — they activate when the plugin is enabled.
+
+#### SessionStart re-grounding (`mori-context-hook.mjs`)
 
 Fires once per session boundary (startup, resume, clear, or post-compaction). The script:
 
@@ -167,7 +190,7 @@ Fires once per session boundary (startup, resume, clear, or post-compaction). Th
   a readable file path, injects its contents as `additionalContext`. Unset by default —
   nothing is injected on a stock install.
 
-### Telemetry shipping (`mori-ship-event.mjs`)
+#### Telemetry shipping (`mori-ship-event.mjs`)
 
 Ships hook event payloads to the mori server on every `PostToolUse`,
 `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, and `PreCompact` event. Enriches
@@ -182,26 +205,94 @@ hooks never interrupt the agent.
 
 **Requirements**: Node.js 18+ (for global `fetch`). No npm packages; built-in ESM only.
 
-### Environment variables
+---
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `MORI_POST_COMPACT_BRIEF` | _(unset)_ | Set to `false` to suppress the post-compact /brief nudge |
-| `MORI_SESSION_CONTEXT_FILE` | _(unset)_ | Path to a file whose contents are injected at session start |
+### Cursor hooks
+
+Cursor plugin hook bundling (plugin-root-relative paths) is undocumented. Mori uses the
+standalone `~/.cursor/hooks.json` with absolute paths, written by an install script.
+
+After installing the plugin (MCP + skills), wire the telemetry and context hooks by
+running the installer once:
+
+```bash
+node plugins/mori/scripts/install-hooks-cursor.mjs \
+  --url http://YOUR-SERVER:8968 \
+  --api-key YOUR_API_KEY
+```
+
+Or via environment variables:
+
+```bash
+MORI_SERVER_URL=http://YOUR-SERVER:8968 MORI_API_KEY=YOUR_API_KEY \
+  node plugins/mori/scripts/install-hooks-cursor.mjs
+```
+
+Use `--dry-run` to preview the JSON that would be written without touching
+`~/.cursor/hooks.json`.
+
+The installer merges three hook entries into `~/.cursor/hooks.json`:
+
+| Cursor event | Script wired |
+|---|---|
+| `sessionStart` | `mori-context-hook-cursor.mjs` — injects `MORI_SESSION_CONTEXT_FILE` if set |
+| `postToolUse` | `mori-ship-event-cursor.mjs` — ships normalised event to mori server |
+| `stop` | `mori-ship-event-cursor.mjs` — ships Stop event (enriched with transcript tail) |
+
+Existing non-mori hook entries are preserved. Reload Cursor after running the installer.
+
+> **No post-compaction inject point in Cursor.** Cursor has no equivalent to
+> Claude Code's `SessionStart source=compact`. Context re-grounding is only injected
+> at session start.
 
 ---
 
-## TODO — Cursor and Antigravity hooks
+### Antigravity hooks
 
-- **Cursor** exposes a `workspaceOpen` event (and possibly tool events in recent builds).
-  Hook format uses `hooks.json` at the plugin root. Once the Cursor event model is
-  confirmed stable, add `hooks/cursor-hooks.json` wiring the same scripts.
-- **Antigravity** has a `hooks.json` at the plugin root. Event names and payload shapes
-  need verification against live Antigravity docs before wiring.
+After installing the plugin (MCP + skills), wire the hooks by running:
 
-Neither client's hook system is confirmed at time of writing (2025-06); adding untested
-hook entries risks breaking the plugin load for those clients. Raised as a tracked item
-in [ROADMAP](../../ROADMAP.md).
+```bash
+node plugins/mori/scripts/install-hooks-antigravity.mjs \
+  --url http://YOUR-SERVER:8968 \
+  --api-key YOUR_API_KEY
+```
+
+Or via environment variables:
+
+```bash
+MORI_SERVER_URL=http://YOUR-SERVER:8968 MORI_API_KEY=YOUR_API_KEY \
+  node plugins/mori/scripts/install-hooks-antigravity.mjs
+```
+
+Use `--dry-run` to preview the JSON without writing `~/.gemini/config/hooks.json`.
+
+The installer writes a `"mori"` named-hook block into `~/.gemini/config/hooks.json`:
+
+| Antigravity event | Script wired |
+|---|---|
+| `PreInvocation` | `mori-context-hook-antigravity.mjs` — injects `MORI_SESSION_CONTEXT_FILE` once per conversation (throttled by conversationId) |
+| `PostToolUse` | `mori-ship-event-antigravity.mjs` — ships normalised event to mori server |
+| `Stop` | `mori-ship-event-antigravity.mjs` — ships Stop event (enriched with transcript tail) |
+
+Existing non-mori named hooks are preserved. Restart Antigravity after running the installer.
+
+> **PreInvocation fires before every model call.** The context hook uses a per-conversation
+> temp-file throttle (`$TMPDIR/mori-conv-<id>`) so context is injected exactly once per
+> conversation, not on every invocation.
+
+> **No session-start or post-compaction event in Antigravity.** The `PreInvocation`
+> once-per-conversation injection is the closest equivalent. Post-compact re-grounding
+> is Claude Code only.
+
+---
+
+### Shared environment variables (all clients)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MORI_POST_COMPACT_BRIEF` | _(unset)_ | Claude Code only. Set to `false` to suppress the post-compact /brief nudge |
+| `MORI_SESSION_CONTEXT_FILE` | _(unset)_ | Path to a file whose contents are injected at session start (all clients) |
+| `MORI_CLIENT_ID` | `os.hostname()` | Override the `?client=` query param sent to the mori server (Cursor + Antigravity) |
 
 ---
 
@@ -231,11 +322,20 @@ The script prints each removed entry and writes nothing back if nothing needed r
 ## Running the tests
 
 ```bash
+# Claude Code hook scripts
 node plugins/mori/tests/test_plugin_hooks.mjs
+
+# Cursor hook scripts
+node plugins/mori/tests/test_cursor_hooks.mjs
+
+# Antigravity hook scripts
+node plugins/mori/tests/test_antigravity_hooks.mjs
 ```
 
 Tests are hermetic — no running mori server is needed. Network calls are directed at a
 dummy port; the test verifies that a connection failure still results in exit code 0.
+
+Node.js 18+ is required for all hook scripts (uses global `fetch`).
 
 ---
 

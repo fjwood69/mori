@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "stop",
+  "conversation_id": "conv-abc-123",
+  "transcript_path": "/tmp/cursor-transcript-abc123.jsonl",
+  "workspace_roots": [{ "path": "/home/user/projects/myapp" }],
+  "cwd": "/home/user/projects/myapp"
+}

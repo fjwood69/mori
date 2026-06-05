@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "postToolUse",
+  "conversation_id": "conv-abc-123",
+  "transcript_path": "/tmp/cursor-transcript-abc123.jsonl",
+  "workspace_roots": [{ "path": "/home/user/projects/myapp" }],
+  "tool_name": "Read",
+  "tool_input": { "file_path": "/home/user/projects/myapp/src/index.ts" },
+  "tool_response": { "content": "// source content here" },
+  "cwd": "/home/user/projects/myapp"
+}
