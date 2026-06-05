@@ -177,7 +177,6 @@ store = _get_store(DATA_DIR / "memories.db")
 init_metrics()
 
 
-@asynccontextmanager
 async def _throttle_cleanup_loop():
     """Periodically evict expired idempotency records + idle rate-limit buckets."""
     from mori_advisor import middleware as _mw  # lazy — avoid import cycle
@@ -191,6 +190,7 @@ async def _throttle_cleanup_loop():
             logger.debug("throttle cleanup failed: %s", exc)
 
 
+@asynccontextmanager
 async def _lifespan(server):
     """Bootstrap the store on startup (async-safe for both SQLite and Postgres)."""
     result = store.bootstrap()

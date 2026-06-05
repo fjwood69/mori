@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.2.8 — Fix: server startup crash in v2.2.6/v2.2.7 (`_lifespan` decorator)
+
+- **fix:** the #23 C cleanup-task edit inadvertently moved the
+  `@asynccontextmanager` decorator off `_lifespan` and onto
+  `_throttle_cleanup_loop`, leaving `_lifespan` a bare async generator. FastMCP
+  enters the lifespan as a context manager at startup, so v2.2.6 and v2.2.7
+  **crashed on boot** (`'async_generator' object does not support the
+  asynchronous context manager protocol`). Decorator restored to `_lifespan`.
+- **test:** `tests/test_startup.py` — boots the lifespan for real and asserts it
+  is a proper async context manager (+ that the cleanup loop is a plain
+  coroutine). The unit suite + CI never booted the lifespan, so this class of
+  startup-wiring bug had no gate; now it does. Validated end-to-end via the UAT
+  harness (real container boot, both backends).
+
 ## v2.2.7 — Per-key rate limiting (#23 D)
 
 - **feat:** `ApiKeyMiddleware` enforces a per-API-key **token-bucket rate limit**
