@@ -11,6 +11,7 @@ import asyncio
 import pytest
 
 from mori_advisor.memory_store import MemoryStore, normalise_since
+from mori_advisor.store.migrations import MIGRATIONS, apply_sqlite
 from mori_advisor.store.sqlite_store import SQLiteStore
 
 # ── normalise_since ────────────────────────────────────────────────────────
@@ -48,6 +49,9 @@ def test_normalise_since_empty_raises():
 def store(tmp_path):
     db = tmp_path / "memories.db"
     MemoryStore.bootstrap_schema(db)
+    # Apply migrations so the store has the current schema (deleted_at etc.) —
+    # bootstrap_schema is only the frozen baseline; real stores are also migrated.
+    apply_sqlite(db, tuple(m for m in MIGRATIONS if m.target == "memories"))
     return MemoryStore(db)
 
 

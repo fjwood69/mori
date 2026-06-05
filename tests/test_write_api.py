@@ -325,7 +325,7 @@ def test_dreamer_actor_can_delete(backend, tmp_path, monkeypatch):
         assert resp.status_code in (200, 404), f"Expected 200/404, got {resp.status_code}"
         if resp.status_code == 200:
             data = json.loads(resp.body)
-            assert data.get("status") == "deleted"
+            assert data.get("status") == "soft_deleted"  # default DELETE is soft (A+B / #23)
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
 
@@ -424,6 +424,14 @@ def test_propose_over_canonical_creates_pending(backend, tmp_path, monkeypatch):
         assert after["tier"] == "canonical"
         assert after["title"] == "Original canonical"
         assert after["body"] == "original body"
+
+        # The proposal must be audited (regression: this _write_audit was un-awaited).
+        rows = store.get_audit_log(memory_name="canonical-target")
+        if inspect.isawaitable(rows):
+            rows = await rows
+        assert any(r["op"] == "propose_pending" for r in rows), (
+            f"expected a propose_pending audit row, got {[r['op'] for r in rows]}"
+        )
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
 

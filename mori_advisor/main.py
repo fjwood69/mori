@@ -2850,7 +2850,7 @@ async def post_memory(request: Request) -> JSONResponse:
                     proposed_by=actor_name,
                 )
             )
-            _write_audit("propose_pending", actor_name, name, body)
+            await _write_audit("propose_pending", actor_name, name, body)
             return JSONResponse(
                 {"status": "pending", "name": name, "detail": result},
                 status_code=202,
