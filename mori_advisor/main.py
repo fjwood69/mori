@@ -1267,7 +1267,14 @@ async def msg_send(
             reply_to=reply_to or None,
         )
         await publish_message(NATS_URL, msg)
-        return f"Sent [{type}] to {to} (id={msg.id[:8]})"
+        # Persist the sent message locally so msg_thread can find it by id.
+        # Without this, the sender's msg_log has no record and msg_thread returns
+        # "No message found" even though the message was successfully published.
+        try:
+            await _a(store.log_message(msg, status="sent"))
+        except Exception as log_err:
+            logger.warning("msg_send: failed to persist locally: %s", log_err)
+        return f"Sent [{type}] to {to} (id={msg.id})"
     except Exception as e:
         return f"msg_send failed: {e}"
 
@@ -1330,10 +1337,7 @@ async def msg_thread(id: str) -> str:
         id: Root message UUID (or first 8 chars as a prefix — exact match required).
     """
     try:
-        from .msg_store import MsgStore
-
-        _msg_store = MsgStore(db_path=DATA_DIR / "msg.db")
-        thread = _msg_store.get_thread(id)
+        thread = await _a(store.get_message_thread(id))
         if not thread:
             return f"No message found with id={id}"
 
