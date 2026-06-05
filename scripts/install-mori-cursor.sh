@@ -7,6 +7,8 @@
 # — Cursor loads hooks from ~/.claude/settings.json and skills from
 # ~/.claude/skills/ natively.
 
+echo "NOTE: The plugin package plugins/mori/ now provides the MCP connection and skills for Cursor; platform-specific hooks are a fast-follow. See plugins/mori/README.md for the recommended install path." >&2
+
 set -euo pipefail
 
 MORI_URL="http://localhost:8968"

@@ -68,19 +68,19 @@ The same plugin package (`plugins/mori/`) also targets **Cursor** and **Google
 Antigravity** — MCP connection and skills work on all three; client-specific hooks
 land per platform. See the platform guides.
 
-**Or use the legacy installer scripts** (bespoke; being superseded by the plugin):
+**Or use the legacy installer scripts** (bespoke; superseded by the plugin):
 
 ```bash
-./scripts/install-mori-claude.sh      # Claude Code
-./scripts/install-mori-cursor.sh      # Cursor
-powershell -File scripts/install-mori-claude.ps1   # Windows
+./scripts/legacy/install-mori-claude.sh   # Claude Code
+./scripts/install-mori-cursor.sh          # Cursor
+powershell -File scripts/legacy/install-mori-claude.ps1   # Windows
 ```
 
 ### Platform guides
 
 | Platform | Install | Full guide |
 |----------|---------|------------|
-| Claude Code | Plugin: `/plugin marketplace add fjwood69/mori` → `/plugin install mori@mori` (or `./scripts/install-mori-claude.sh`) | [docs/getting-started/claude-code.md](docs/getting-started/claude-code.md) |
+| Claude Code | Plugin: `/plugin marketplace add fjwood69/mori` → `/plugin install mori@mori` (or `./scripts/legacy/install-mori-claude.sh`) | [docs/getting-started/claude-code.md](docs/getting-started/claude-code.md) |
 | Cursor | Plugin package `plugins/mori/` (or `./scripts/install-mori-cursor.sh`) | [docs/getting-started/cursor.md](docs/getting-started/cursor.md) |
 | Google Antigravity IDE | Plugin package `plugins/mori/` (or `./scripts/install-mori-antigravity.sh`) | [docs/getting-started/antigravity.md](docs/getting-started/antigravity.md) |
 | Cline | `./scripts/install-mori-cline.sh` | [docs/getting-started/cline.md](docs/getting-started/cline.md) |

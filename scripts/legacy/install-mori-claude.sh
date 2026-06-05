@@ -5,6 +5,8 @@
 # Installs MCP config + hooks + permissions + skills for Claude Code CLI
 # and/or VS Code extension.
 
+echo "NOTE: This bespoke installer is superseded by the Mori plugin. Recommended: in Claude Code run '/plugin marketplace add fjwood69/mori' then '/plugin install mori@mori'. See plugins/mori/README.md. This script still works during the deprecation window." >&2
+
 set -euo pipefail
 
 MORI_URL="http://localhost:8968"
@@ -208,17 +210,17 @@ echo ""
 echo "Setting up Mori — Claude Code Bridge..."
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MORI_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+MORI_REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 auth_flag=""
 [ -n "$API_KEY" ] && auth_flag=" --api-key \"${API_KEY}\""
 
-SHIPPER_SRC="${SCRIPT_DIR}/mori-ship-event.sh"
+SHIPPER_SRC="${SCRIPT_DIR}/../mori-ship-event.sh"
 SHIPPER_DST="${CLAUDEDIR}/mori-ship-event.sh"
 RAW_CMD="\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode raw"
 COMPACT_CMD="\"${SHIPPER_DST}\" --url \"${MORI_URL}\" --client \"${CLIENT_NAME}\"${auth_flag} --mode precompact"
 
-BRIEF_SRC="${SCRIPT_DIR}/mori-post-compact-brief.sh"
+BRIEF_SRC="${SCRIPT_DIR}/../mori-post-compact-brief.sh"
 BRIEF_DST="${CLAUDEDIR}/mori-post-compact-brief.sh"
 BRIEF_CMD="\"${BRIEF_DST}\""
 
@@ -495,7 +497,7 @@ echo "--- Post-Install Steps ---"
 echo ""
 echo "1. Reload VS Code window: Command Palette -> Developer: Reload Window"
 echo "2. Confirm MCP: Settings -> MCP -> mori connected"
-echo "3. Verify: ./scripts/install-mori-claude.sh --doctor --url \"$MORI_URL\""
+echo "3. Verify: ./scripts/legacy/install-mori-claude.sh --doctor --url \"$MORI_URL\""
 echo "4. In Agent chat: /brief  (memory comes from the server, not local disk)"
 echo ""
 echo "Hook failures: /tmp/mori-hook.log"

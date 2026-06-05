@@ -97,13 +97,13 @@ Clone the Mori repository and run the setup script. The script guides you throug
 ### Windows (PowerShell)
 
 ```powershell
-powershell -File scripts/install-mori-claude.ps1
+powershell -File scripts/legacy/install-mori-claude.ps1
 ```
 
 ### Linux / macOS (Bash)
 
 ```bash
-./scripts/install-mori-claude.sh
+./scripts/legacy/install-mori-claude.sh
 ```
 
 ### What You'll Be Asked
@@ -171,12 +171,12 @@ If you are scripting the installation or running in CI/CD, you can bypass the wi
 
 #### PowerShell Options:
 ```powershell
-powershell -File scripts/install-mori-claude.ps1 -MoriUrl "http://10.0.0.5:8968" -ApiKey "secret" -ClientName "my-client" -Target both -Force
+powershell -File scripts/legacy/install-mori-claude.ps1 -MoriUrl "http://10.0.0.5:8968" -ApiKey "secret" -ClientName "my-client" -Target both -Force
 ```
 
 #### Bash Options:
 ```bash
-./scripts/install-mori-claude.sh --url "http://10.0.0.5:8968" --api-key "secret" --client "my-client" --target both --force
+./scripts/legacy/install-mori-claude.sh --url "http://10.0.0.5:8968" --api-key "secret" --client "my-client" --target both --force
 ```
 
 Use `--target cli`, `--target vscode`, or `--target both` to select the install target without the interactive prompt. Use `-Force` / `--force` to bypass health check warnings.
@@ -185,15 +185,15 @@ Use `--target cli`, `--target vscode`, or `--target both` to select the install 
 
 ```bash
 # Verify MCP config, server health, hooks, permissions, and skills (no changes)
-./scripts/install-mori-claude.sh --doctor --url "http://10.0.0.5:8968"
+./scripts/legacy/install-mori-claude.sh --doctor --url "http://10.0.0.5:8968"
 
 # Refresh mori-* skills after a repo pull
-./scripts/install-mori-claude.sh --upgrade-skills --url "http://10.0.0.5:8968" --client "my-client"
+./scripts/legacy/install-mori-claude.sh --upgrade-skills --url "http://10.0.0.5:8968" --client "my-client"
 ```
 
 ```powershell
-powershell -File scripts/install-mori-claude.ps1 -Doctor -MoriUrl "http://10.0.0.5:8968"
-powershell -File scripts/install-mori-claude.ps1 -UpgradeSkills -MoriUrl "http://10.0.0.5:8968" -ClientName "my-client" -Force
+powershell -File scripts/legacy/install-mori-claude.ps1 -Doctor -MoriUrl "http://10.0.0.5:8968"
+powershell -File scripts/legacy/install-mori-claude.ps1 -UpgradeSkills -MoriUrl "http://10.0.0.5:8968" -ClientName "my-client" -Force
 ```
 
 ---

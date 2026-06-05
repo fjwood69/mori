@@ -1,6 +1,8 @@
 ﻿# Windows installer script for Mori — Cursor bridge
 # Pure PowerShell — no Python required.
 
+Write-Warning "The plugin package plugins/mori/ now provides the MCP connection and skills for Cursor; platform-specific hooks are a fast-follow. See plugins/mori/README.md for the recommended install path."
+
 param(
     [string]$MoriUrl = "http://localhost:8968",
     [string]$ApiKey = "",

@@ -4,6 +4,8 @@
 # Installs MCP config + hooks + permissions + skills for Claude Code CLI
 # and/or VS Code extension.
 
+Write-Warning "This bespoke installer is superseded by the Mori plugin. Recommended: in Claude Code run '/plugin marketplace add fjwood69/mori' then '/plugin install mori@mori'. See plugins/mori/README.md. This script still works during the deprecation window."
+
 param(
     [string]$MoriUrl = "http://localhost:8968",
     [string]$ApiKey = "",
@@ -329,11 +331,11 @@ if (-not $Connected -and -not $Force) {
 }
 
 Write-Host "`nSetting up Mori  -  Claude Code Bridge..." -ForegroundColor Green
-$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $ClaudeDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { "$env:USERPROFILE\.claude" }
-$ShipperSrc = Join-Path $PSScriptRoot "mori-ship-event.ps1"
+$ShipperSrc = Join-Path $PSScriptRoot "..\mori-ship-event.ps1"
 $ShipperDst = Join-Path $ClaudeDir "mori-ship-event.ps1"
-$BriefSrc   = Join-Path $PSScriptRoot "mori-post-compact-brief.ps1"
+$BriefSrc   = Join-Path $PSScriptRoot "..\mori-post-compact-brief.ps1"
 $BriefDst   = Join-Path $ClaudeDir "mori-post-compact-brief.ps1"
 
 function Install-ForTarget {
@@ -418,7 +420,7 @@ Write-Host @"
 
 1. Reload VS Code window: Command Palette -> Developer: Reload Window
 2. Confirm MCP: Settings -> MCP -> mori connected
-3. Verify: powershell -File scripts/install-mori-claude.ps1 -Doctor -MoriUrl "$MoriUrl"
+3. Verify: powershell -File scripts/legacy/install-mori-claude.ps1 -Doctor -MoriUrl "$MoriUrl"
 4. In Agent chat: /brief  (memory comes from the server, not local disk)
 
 Hook failures: $env:TEMP\mori-hook.log
