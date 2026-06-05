@@ -332,7 +332,7 @@ class PostgresStore(BaseStore):
 
         async def _do(conn):
             existing = await conn.fetchrow(
-                "SELECT id, protected, protected_domains, tier, origin_session_ids, origin_clients FROM memories WHERE name = $1",
+                "SELECT id, protected, protected_domains, tier, origin_session_ids, origin_clients FROM memories WHERE name = $1 AND deleted_at IS NULL",
                 name,
             )
             if existing and existing["protected"] and not _skip_protection:
@@ -375,7 +375,7 @@ class PostgresStore(BaseStore):
                     origin_session_id, origin_session_ids, origin_clients,
                     protected, protected_domains, created_at, updated_at)
                    VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::jsonb,$10::jsonb,$11,$12::jsonb,$13,$13)
-                   ON CONFLICT (name) DO UPDATE SET
+                   ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
                        title               = EXCLUDED.title,
                        description         = EXCLUDED.description,
                        type                = EXCLUDED.type,
@@ -412,11 +412,13 @@ class PostgresStore(BaseStore):
     async def read(self, name: str) -> str:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM memories WHERE name = $1", name)
+            row = await conn.fetchrow(
+                "SELECT * FROM memories WHERE name = $1 AND deleted_at IS NULL", name
+            )
             if not row:
                 return f"Memory '{name}' not found"
             await conn.execute(
-                "UPDATE memories SET retrieval_count = retrieval_count + 1, last_retrieved_at = $2 WHERE name = $1",
+                "UPDATE memories SET retrieval_count = retrieval_count + 1, last_retrieved_at = $2 WHERE name = $1 AND deleted_at IS NULL",
                 name,
                 _now_utc(),
             )
@@ -442,7 +444,9 @@ class PostgresStore(BaseStore):
         """
         self._ensure_pool()
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM memories WHERE name = $1", name)
+            row = await conn.fetchrow(
+                "SELECT * FROM memories WHERE name = $1 AND deleted_at IS NULL", name
+            )
         if not row:
             return None
         r = dict(row)
@@ -478,7 +482,7 @@ class PostgresStore(BaseStore):
 
     async def list(self, type_filter=None, tag=None, session=None, client=None, limit=50) -> str:
         self._ensure_pool()
-        clauses = []
+        clauses = ["deleted_at IS NULL"]
         params: list[Any] = []
         i = 1
         if type_filter:
@@ -523,7 +527,7 @@ class PostgresStore(BaseStore):
         exists; else ILIKE (pre-migration) or pure recency. websearch_to_tsquery accepts
         raw human input safely.
         """
-        clauses: list[str] = []
+        clauses: list[str] = ["deleted_at IS NULL"]
         params: list[Any] = []
         i = 1
         order = "updated_at DESC"
@@ -614,11 +618,124 @@ class PostgresStore(BaseStore):
         return out
 
     async def delete(self, name: str) -> str:
+        """Soft-delete a memory.  Use hard_delete() for permanent removal."""
+        return await self.soft_delete(name)
+
+    async def soft_delete(self, name: str) -> str:
+        """Set deleted_at = now on the active row.  Idempotent if already deleted."""
         self._ensure_pool()
         async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE memories SET deleted_at = NOW(), updated_at = NOW() "
+                "WHERE name = $1 AND deleted_at IS NULL",
+                name,
+            )
+        updated = int(result.split()[-1])
+        return f"Memory '{name}' soft-deleted." if updated else f"Memory '{name}' not found."
+
+    async def hard_delete(self, name: str) -> str:
+        """Permanently remove a memory row (active or tombstoned) and its versions.
+
+        memory_versions FK was dropped by migration 9 (partial indexes cannot be FK
+        targets). Versions are cleaned up here to prevent orphans.
+        """
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM memory_versions WHERE memory_name = $1", name)
             result = await conn.execute("DELETE FROM memories WHERE name = $1", name)
         deleted = int(result.split()[-1])
-        return f"Memory '{name}' deleted." if deleted else f"Memory '{name}' not found."
+        return f"Memory '{name}' permanently deleted." if deleted else f"Memory '{name}' not found."
+
+    async def restore_memory(self, name: str) -> tuple[str, str]:
+        """Restore a soft-deleted memory; rename to {name}_restored_{ts} on collision."""
+        self._ensure_pool()
+        from datetime import datetime, timezone
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM memories WHERE name = $1 AND deleted_at IS NOT NULL "
+                "ORDER BY deleted_at DESC LIMIT 1",
+                name,
+            )
+            if not row:
+                return name, f"Memory '{name}' not found or not deleted."
+
+            row_id = row["id"]
+            collision = await conn.fetchval(
+                "SELECT 1 FROM memories WHERE name = $1 AND deleted_at IS NULL", name
+            )
+
+            if collision:
+                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+                final_name = f"{name}_restored_{ts}"
+                try:
+                    await conn.execute(
+                        "UPDATE memories SET name = $1, deleted_at = NULL, updated_at = NOW() "
+                        "WHERE id = $2",
+                        final_name,
+                        row_id,
+                    )
+                except Exception:
+                    return name, "Restore failed: name collision could not be resolved."
+                return final_name, f"Restored '{name}' as '{final_name}' (name taken)."
+            else:
+                await conn.execute(
+                    "UPDATE memories SET deleted_at = NULL, updated_at = NOW() WHERE id = $1",
+                    row_id,
+                )
+                return name, f"Memory '{name}' restored."
+
+    async def insert_audit(
+        self, op: str, actor: str, name: str, content_hash: str, detail: str = ""
+    ) -> None:
+        """Insert a row into write_audit.  Silently no-ops if the table is absent."""
+        self._ensure_pool()
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO write_audit (actor_key_name, op, memory_name, content_hash, detail) "
+                    "VALUES ($1, $2, $3, $4, $5)",
+                    actor,
+                    op,
+                    name,
+                    content_hash,
+                    detail,
+                )
+        except Exception as exc:
+            if "write_audit" in str(exc).lower() or "does not exist" in str(exc).lower():
+                pass  # migration 8 not yet applied
+            else:
+                raise
+
+    async def get_audit_log(
+        self, memory_name: str = "", actor: str = "", limit: int = 100
+    ) -> list[dict]:
+        """Return recent write_audit rows, newest first.  Max 500 rows."""
+        self._ensure_pool()
+        limit = min(max(1, limit), 500)
+        clauses = []
+        params: list[Any] = []
+        i = 1
+        if memory_name:
+            clauses.append(f"memory_name = ${i}")
+            params.append(memory_name)
+            i += 1
+        if actor:
+            clauses.append(f"actor_key_name = ${i}")
+            params.append(actor)
+            i += 1
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    f"SELECT id, ts, actor_key_name, op, memory_name, content_hash, detail "
+                    f"FROM write_audit {where} ORDER BY ts DESC, id DESC LIMIT ${i}",
+                    *params,
+                )
+            return [dict(r) for r in rows]
+        except Exception:
+            return []  # table not yet created
 
     async def export(self, name: str, output_path=None) -> str:
         self._ensure_pool()
@@ -697,6 +814,7 @@ class PostgresStore(BaseStore):
                 WHERE tags @> $1::jsonb
                   AND tier IN ('canonical', 'working')
                   AND (superseded_by IS NULL OR superseded_by = '')
+                  AND deleted_at IS NULL
                 ORDER BY
                   CASE tier WHEN 'canonical' THEN 0 ELSE 1 END ASC,
                   updated_at DESC
@@ -715,6 +833,7 @@ class PostgresStore(BaseStore):
                         OR type IN ('profile', 'pattern')
                     )
                     AND (superseded_by IS NULL OR superseded_by = '')
+                    AND deleted_at IS NULL
                     AND NOT (tags @> $1::jsonb)
                     ORDER BY tier DESC, updated_at DESC
                     """,
@@ -731,6 +850,7 @@ class PostgresStore(BaseStore):
                 )
                 AND NOT (tags @> $1::jsonb)
                 AND (superseded_by IS NULL OR superseded_by = '')
+                AND deleted_at IS NULL
                 """,
                 json.dumps([tag_value]),
             )
@@ -805,6 +925,7 @@ class PostgresStore(BaseStore):
                 SELECT * FROM memories
                 WHERE updated_at > $1
                   AND (superseded_by IS NULL OR superseded_by = '')
+                  AND deleted_at IS NULL
                   AND {scope}
                 ORDER BY updated_at DESC
                 LIMIT $3
@@ -815,6 +936,7 @@ class PostgresStore(BaseStore):
                 SELECT * FROM memories
                 WHERE updated_at > $1
                   AND (superseded_by IS NULL OR superseded_by = '')
+                  AND deleted_at IS NULL
                 ORDER BY updated_at DESC
                 LIMIT $2
             """
@@ -899,7 +1021,7 @@ class PostgresStore(BaseStore):
 
     async def count(self, tier: str | None = None, protected: bool | None = None) -> int:
         self._ensure_pool()
-        q = "SELECT COUNT(*) FROM memories WHERE 1=1"
+        q = "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL"
         params = []
         param_idx = 1
         if tier is not None:
@@ -1146,7 +1268,7 @@ class PostgresStore(BaseStore):
         domains_v = _tags_json(domains)
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE memories SET protected=TRUE, protected_domains=$2::jsonb WHERE name=$1",
+                "UPDATE memories SET protected=TRUE, protected_domains=$2::jsonb WHERE name=$1 AND deleted_at IS NULL",
                 name,
                 domains_v,
             )
@@ -1164,6 +1286,7 @@ class PostgresStore(BaseStore):
                 SELECT * FROM memories
                 WHERE tier = 'canonical'
                   AND freshness_status IN ('unknown', 'fresh')
+                  AND deleted_at IS NULL
                   AND EXISTS (
                       SELECT 1 FROM jsonb_array_elements_text(tags) AS elem
                       WHERE elem = ANY($1::text[])
@@ -1226,7 +1349,7 @@ class PostgresStore(BaseStore):
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT name, title, last_retrieved_at FROM memories "
-                "WHERE tier = 'working' AND protected = FALSE "
+                "WHERE tier = 'working' AND protected = FALSE AND deleted_at IS NULL "
                 "AND (last_retrieved_at IS NULL OR last_retrieved_at < NOW() - INTERVAL '$1 days')",
                 days,
             )
@@ -1621,7 +1744,7 @@ class PostgresStore(BaseStore):
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT name, title, superseded_by, updated_at FROM memories "
-                "WHERE superseded_by IS NOT NULL AND superseded_by != '' ORDER BY updated_at DESC"
+                "WHERE superseded_by IS NOT NULL AND superseded_by != '' AND deleted_at IS NULL ORDER BY updated_at DESC"
             )
         return [
             {
@@ -1657,7 +1780,7 @@ class PostgresStore(BaseStore):
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT name, title, freshness_status, freshness_checked_at FROM memories "
-                "WHERE freshness_status IN ('stale', 'no') ORDER BY freshness_checked_at DESC"
+                "WHERE freshness_status IN ('stale', 'no') AND deleted_at IS NULL ORDER BY freshness_checked_at DESC"
             )
         return [
             {

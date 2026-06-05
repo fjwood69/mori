@@ -141,6 +141,23 @@ class SQLiteStore(BaseStore):
     def delete(self, name: str) -> str:
         return self._mem.delete(name)
 
+    def soft_delete(self, name: str) -> str:
+        return self._mem.soft_delete(name)
+
+    def hard_delete(self, name: str) -> str:
+        return self._mem.hard_delete(name)
+
+    def restore_memory(self, name: str) -> tuple:
+        return self._mem.restore_memory(name)
+
+    def insert_audit(
+        self, op: str, actor: str, name: str, content_hash: str, detail: str = ""
+    ) -> None:
+        return self._mem.insert_audit(op, actor, name, content_hash, detail)
+
+    def get_audit_log(self, memory_name: str = "", actor: str = "", limit: int = 100) -> list:
+        return self._mem.get_audit_log(memory_name=memory_name, actor=actor, limit=limit)
+
     def export(self, name: str, output_path=None) -> str:
         return self._mem.export(name, output_path=output_path)
 
