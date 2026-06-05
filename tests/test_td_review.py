@@ -404,6 +404,62 @@ def test_approve_applies_and_removes_pending(backend, tmp_path, monkeypatch):
     _run_with_backend(backend, tmp_path, run)
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_reapprove_same_name_no_unique_violation(backend, tmp_path, monkeypatch):
+    """A canonical memory re-proposed and re-approved AFTER a prior approval must not
+    raise a UNIQUE violation. Regression: Postgres previously used a full
+    UNIQUE(memory_name, status), so the second 'approved' row collided; the partial
+    'pending'-only unique index (matching SQLite) is the fix."""
+    monkeypatch.setenv("MORI_CURATE", "true")
+
+    async def run(store):
+        mem_store = store._mem if hasattr(store, "_mem") else store
+
+        # First proposal → approve
+        await _a(
+            store.queue_pending_write(
+                name="evolving-pattern",
+                title="v1",
+                body="First canonical body.",
+                tier="canonical",
+                source="ingestion",
+                confidence=0.8,
+            )
+        )
+        first = next(
+            i
+            for i in await _a(store.pending_list_json(status="pending"))
+            if i["name"] == "evolving-pattern"
+        )
+        r1 = await _a(mem_store.approve(first["id"], note="v1 ok", reviewer="td"))
+        assert "approved" in r1.lower()
+
+        # Same name re-proposed (an evolution) while a prior 'approved' row exists
+        await _a(
+            store.queue_pending_write(
+                name="evolving-pattern",
+                title="v2",
+                body="Updated canonical body.",
+                tier="canonical",
+                source="ingestion",
+                confidence=0.95,
+            )
+        )
+        second = next(
+            i
+            for i in await _a(store.pending_list_json(status="pending"))
+            if i["name"] == "evolving-pattern"
+        )
+        # This second approve raised a UNIQUE violation on Postgres before the fix.
+        r2 = await _a(mem_store.approve(second["id"], note="v2 ok", reviewer="td"))
+        assert "approved" in r2.lower()
+
+        mem = await _a(mem_store.read("evolving-pattern"))
+        assert "Updated canonical body" in mem or "v2" in mem
+
+    _run_with_backend(backend, tmp_path, run)
+
+
 # ── 4. Reject discards ────────────────────────────────────────────────────────
 
 

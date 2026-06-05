@@ -301,8 +301,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         # rows are unaffected — all new columns are nullable.
         #
         # Postgres: ADD COLUMN IF NOT EXISTS is idempotent natively.
-        # No UNIQUE constraint added here — duplicate-suppression is
-        # handled in queue_pending_write() via ON CONFLICT / UPDATE.
+        # A PARTIAL unique index (memory_name WHERE status='pending') matches the
+        # SQLite partial index: at most one pending proposal per name, while
+        # approved/rejected rows stay unconstrained so a memory can be re-proposed
+        # and re-approved over its life without a UNIQUE violation. The ON CONFLICT
+        # in queue_pending_write() infers this partial index.
         sqlite_fn=_pending_writes_td_sqlite,
         postgres_sql=(
             "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS source TEXT; "
@@ -312,12 +315,8 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS existing_body TEXT; "
             "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS tier TEXT; "
             "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW(); "
-            "DO $$ BEGIN "
-            "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_pending_writes_name_pending') THEN "
-            "    ALTER TABLE pending_writes ADD CONSTRAINT uq_pending_writes_name_pending "
-            "      UNIQUE (memory_name, status); "
-            "  END IF; "
-            "END $$"
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_writes_name_pending "
+            "ON pending_writes (memory_name) WHERE status = 'pending'"
         ),
     ),
 )

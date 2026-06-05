@@ -989,7 +989,7 @@ class PostgresStore(BaseStore):
                      source, provenance, confidence, focus_mode, existing_body, tier)
                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10,
                         $11, $12, $13, $14, $15, $16)
-                ON CONFLICT (memory_name, status) WHERE status = 'pending'
+                ON CONFLICT (memory_name) WHERE status = 'pending'
                 DO UPDATE SET
                     title          = EXCLUDED.title,
                     description    = EXCLUDED.description,
