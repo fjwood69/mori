@@ -144,18 +144,37 @@
             background-color: var(--panel);
             border: 1px solid var(--line);
             border-radius: 10px;
-            padding: 1.5rem;
+            padding: 1.25rem 1.5rem;
             margin-bottom: 1.25rem;
             transition: border-color 0.2s;
         }
 
-        .card-header-row {
+        /* ── Accordion: compact header ───────────────────────────── */
+        .card-header {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .card-header:hover { opacity: 0.85; }
+
+        .card-header-top {
             display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 1rem;
-            margin-bottom: 0.75rem;
+            align-items: center;
+            gap: 0.55rem;
             flex-wrap: wrap;
+        }
+
+        .card-toggle {
+            display: inline-block;
+            font-size: 0.82rem;
+            color: var(--dim);
+            flex-shrink: 0;
+            transition: transform 0.2s ease;
+            width: 0.9rem;
+        }
+
+        .card.open .card-toggle {
+            transform: rotate(90deg);
         }
 
         .card-name {
@@ -163,14 +182,43 @@
             color: var(--accent);
             font-weight: bold;
             font-size: 1rem;
+            word-break: break-all;
         }
 
-        .card-meta {
+        .card-age {
+            font-size: 0.78rem;
             color: var(--dim);
-            font-size: 0.8rem;
             font-family: 'Courier New', monospace;
+            margin-left: auto;
+            flex-shrink: 0;
         }
 
+        .card-compact-badges {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+            margin-top: 0.4rem;
+            margin-left: 1.45rem;   /* align under name, after toggle width */
+        }
+
+        /* ── Accordion: detail panel ─────────────────────────────── */
+        .card-detail {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.35s ease;
+        }
+
+        .card.open .card-detail {
+            max-height: 8000px;
+        }
+
+        .card-detail-inner {
+            border-top: 1px solid var(--line);
+            margin-top: 0.75rem;
+            padding-top: 0.85rem;
+        }
+
+        /* ── Legacy layout (used inside detail) ──────────────────── */
         .card-title {
             color: var(--ink);
             font-size: 1rem;
@@ -449,7 +497,6 @@
         @media (max-width: 768px) {
             header { flex-direction: column; gap: 1rem; }
             main { padding: 0 1rem; }
-            .card-header-row { flex-direction: column; }
         }
     </style>
 </head>
@@ -471,6 +518,9 @@
                 <option value="pending">pending</option>
                 <option value="approved">approved</option>
                 <option value="rejected">rejected</option>
+            </select>
+            <select class="status-select" id="categoryFilter">
+                <option value="all">all categories</option>
             </select>
             <button id="refreshBtn">Refresh</button>
         </div>
@@ -502,16 +552,29 @@
     <script>
     // ===== STATE =====
     const state = {
-        baseUrl: localStorage.getItem('mori_review_url') || '',
-        apiKey:  localStorage.getItem('mori_review_key') || ''
+        baseUrl:  localStorage.getItem('mori_review_url') || '',
+        apiKey:   localStorage.getItem('mori_review_key') || '',
+        allItems: []   // full loaded array; category filter applies client-side
     };
 
-    // ===== ESCAPE (innerHTML only) =====
+    // ===== ESCAPE (innerHTML only — never use on textContent values) =====
     function esc(str) {
         if (typeof str !== 'string') str = String(str == null ? '' : str);
         const d = document.createElement('div');
         d.textContent = str;
         return d.innerHTML;
+    }
+
+    // ===== RELATIVE AGE =====
+    function relAge(ts) {
+        if (!ts) return '';
+        const diff = Math.max(0, Date.now() - new Date(ts).getTime());
+        const min = Math.floor(diff / 60000);
+        if (min < 1) return 'just now';
+        if (min < 60) return min + 'm ago';
+        const hr = Math.floor(min / 60);
+        if (hr < 24) return hr + 'h ago';
+        return Math.floor(hr / 24) + 'd ago';
     }
 
     // ===== GLOBAL MESSAGE =====
@@ -627,7 +690,7 @@
             const span = document.createElement('span');
             span.className = 'diff-line ' + h.type;
             const prefix = h.type === 'added' ? '+ ' : h.type === 'removed' ? '- ' : '  ';
-            // textContent for the line content (safe); prefix is literal
+            // textContent for line content (safe); prefix is a literal string
             span.textContent = prefix + h.text;
             block.appendChild(span);
         });
@@ -635,76 +698,108 @@
         container.appendChild(block);
     }
 
-    // ===== RENDER CARD =====
+    // ===== RENDER CARD (concertina) =====
     function renderCard(item) {
         const card = document.createElement('div');
         card.className = 'card';
         card.dataset.id = String(item.id);
 
-        // Header row: name + meta
-        const headerRow = document.createElement('div');
-        headerRow.className = 'card-header-row';
+        // ── Compact header (always visible, click to expand) ──────
+        const header = document.createElement('div');
+        header.className = 'card-header';
+
+        // Top row: ▸ · name · age
+        const headerTop = document.createElement('div');
+        headerTop.className = 'card-header-top';
+
+        const toggle = document.createElement('span');
+        toggle.className = 'card-toggle';
+        toggle.textContent = '▸';
 
         const nameSpan = document.createElement('span');
         nameSpan.className = 'card-name';
         nameSpan.textContent = item.name || '(unnamed)';
 
-        const metaSpan = document.createElement('span');
-        metaSpan.className = 'card-meta';
-        const ts = item.created_at || item.proposed_at || '';
-        metaSpan.textContent = ts.substring(0, 16);
+        const ageSpan = document.createElement('span');
+        ageSpan.className = 'card-age';
+        ageSpan.textContent = relAge(item.created_at || item.proposed_at || '');
 
-        headerRow.appendChild(nameSpan);
-        headerRow.appendChild(metaSpan);
-        card.appendChild(headerRow);
+        headerTop.appendChild(toggle);
+        headerTop.appendChild(nameSpan);
+        headerTop.appendChild(ageSpan);
+        header.appendChild(headerTop);
+
+        // Compact badge row: source · tier · focus_mode · confidence%
+        const compactBadges = document.createElement('div');
+        compactBadges.className = 'card-compact-badges';
+
+        const srcBadge = document.createElement('span');
+        srcBadge.className = 'badge source-' + (item.source || 'api').toLowerCase();
+        srcBadge.textContent = (item.source || 'api').toLowerCase();
+        compactBadges.appendChild(srcBadge);
+
+        const tierBadge = document.createElement('span');
+        tierBadge.className = 'badge tier-' + (item.tier || 'working').toLowerCase();
+        tierBadge.textContent = (item.tier || 'working').toLowerCase();
+        compactBadges.appendChild(tierBadge);
+
+        if (item.focus_mode) {
+            const catBadge = document.createElement('span');
+            catBadge.className = 'badge';
+            catBadge.textContent = item.focus_mode;
+            compactBadges.appendChild(catBadge);
+        }
+
+        if (item.confidence != null) {
+            const confBadge = document.createElement('span');
+            confBadge.className = 'badge';
+            const pct = Math.round(item.confidence * 100);
+            confBadge.textContent = pct + '%';
+            if (item.confidence >= 0.75)      confBadge.style.color = 'var(--ok)';
+            else if (item.confidence >= 0.5)  confBadge.style.color = 'var(--warn)';
+            else                              confBadge.style.color = 'var(--err)';
+            compactBadges.appendChild(confBadge);
+        }
+
+        header.appendChild(compactBadges);
+
+        // Click anywhere on the header toggles open/closed
+        header.addEventListener('click', () => card.classList.toggle('open'));
+        card.appendChild(header);
+
+        // ── Detail panel (hidden by default) ──────────────────────
+        const detail = document.createElement('div');
+        detail.className = 'card-detail';
+
+        const inner = document.createElement('div');
+        inner.className = 'card-detail-inner';
 
         // Title
         const titleDiv = document.createElement('div');
         titleDiv.className = 'card-title';
         titleDiv.textContent = item.title || '';
-        card.appendChild(titleDiv);
+        inner.appendChild(titleDiv);
 
         // Description
         if (item.description) {
             const descDiv = document.createElement('div');
             descDiv.className = 'card-desc';
             descDiv.textContent = item.description;
-            card.appendChild(descDiv);
+            inner.appendChild(descDiv);
         }
 
-        // Badge row: source + tier
-        const badgeRow = document.createElement('div');
-        badgeRow.className = 'badge-row';
-
-        const srcBadge = document.createElement('span');
-        const srcVal = (item.source || 'api').toLowerCase();
-        srcBadge.className = 'badge source-' + srcVal;
-        srcBadge.textContent = srcVal;
-        badgeRow.appendChild(srcBadge);
-
-        const tierBadge = document.createElement('span');
-        const tierVal = (item.tier || 'working').toLowerCase();
-        tierBadge.className = 'badge tier-' + tierVal;
-        tierBadge.textContent = tierVal;
-        badgeRow.appendChild(tierBadge);
-
-        if (item.focus_mode) {
-            const focusBadge = document.createElement('span');
-            focusBadge.className = 'badge';
-            focusBadge.textContent = 'focus: ' + item.focus_mode;
-            badgeRow.appendChild(focusBadge);
-        }
-
+        // proposed_by badge
         if (item.proposed_by) {
+            const byRow = document.createElement('div');
+            byRow.className = 'badge-row';
             const byBadge = document.createElement('span');
             byBadge.className = 'badge';
             byBadge.textContent = 'by: ' + item.proposed_by;
-            badgeRow.appendChild(byBadge);
+            byRow.appendChild(byBadge);
+            inner.appendChild(byRow);
         }
 
-        card.appendChild(badgeRow);
-
-        // Confidence bar
+        // Confidence bar (full)
         if (item.confidence != null) {
             const confWrap = document.createElement('div');
             confWrap.className = 'confidence-bar-wrap';
@@ -716,14 +811,13 @@
             const fill = document.createElement('div');
             fill.className = 'confidence-fill';
             fill.style.width = Math.min(100, Math.max(0, item.confidence * 100)).toFixed(1) + '%';
-            // Colour the fill based on confidence
-            if (item.confidence >= 0.75) fill.style.backgroundColor = 'var(--ok)';
-            else if (item.confidence >= 0.5) fill.style.backgroundColor = 'var(--warn)';
-            else fill.style.backgroundColor = 'var(--err)';
+            if (item.confidence >= 0.75)      fill.style.backgroundColor = 'var(--ok)';
+            else if (item.confidence >= 0.5)  fill.style.backgroundColor = 'var(--warn)';
+            else                              fill.style.backgroundColor = 'var(--err)';
             bar.appendChild(fill);
             confWrap.appendChild(confLabel);
             confWrap.appendChild(bar);
-            card.appendChild(confWrap);
+            inner.appendChild(confWrap);
         }
 
         // Tags
@@ -736,7 +830,7 @@
                 chip.textContent = t;
                 tagRow.appendChild(chip);
             });
-            card.appendChild(tagRow);
+            inner.appendChild(tagRow);
         }
 
         // Provenance
@@ -752,24 +846,24 @@
                 provText = String(item.provenance);
             }
             provDiv.textContent = 'provenance: ' + provText;
-            card.appendChild(provDiv);
+            inner.appendChild(provDiv);
         }
 
         // Proposed body
         const bodyLabel = document.createElement('div');
         bodyLabel.className = 'section-label';
         bodyLabel.textContent = 'proposed body';
-        card.appendChild(bodyLabel);
+        inner.appendChild(bodyLabel);
 
         const bodyBlock = document.createElement('div');
         bodyBlock.className = 'body-block';
         bodyBlock.textContent = item.body || '';
-        card.appendChild(bodyBlock);
+        inner.appendChild(bodyBlock);
 
         // Diff
-        renderDiff(card, item.existing_body, item.body);
+        renderDiff(inner, item.existing_body, item.body);
 
-        // Action buttons (only for pending items)
+        // Action buttons — pending items only
         const status = document.getElementById('statusFilter').value;
         if (status === 'pending') {
             const actionRow = document.createElement('div');
@@ -787,9 +881,11 @@
 
             actionRow.appendChild(approveBtn);
             actionRow.appendChild(rejectBtn);
-            card.appendChild(actionRow);
+            inner.appendChild(actionRow);
         }
 
+        detail.appendChild(inner);
+        card.appendChild(detail);
         return card;
     }
 
@@ -807,10 +903,13 @@
             const payload = { write_id: item.id };
             await apiCall(endpoint, 'POST', payload);
 
-            // Success: remove the card from the DOM
+            // Success: fade and remove the card
             card.style.transition = 'opacity 0.3s';
             card.style.opacity = '0';
             setTimeout(() => card.remove(), 310);
+
+            // Also remove from allItems so the count stays accurate
+            state.allItems = state.allItems.filter(i => i.id !== item.id);
 
             // Check if list is now empty
             setTimeout(() => {
@@ -820,13 +919,65 @@
                 }
             }, 400);
         } catch (err) {
-            // On error: show message inside the card, re-enable buttons
+            // Show error inside the card, re-enable buttons
             const errDiv = document.createElement('div');
             errDiv.className = 'card-error';
             errDiv.textContent = err.message;
             card.querySelector('.action-row').after(errDiv);
             buttons.forEach(b => { b.disabled = false; });
         }
+    }
+
+    // ===== POPULATE CATEGORY FILTER =====
+    function populateCategoryFilter(items) {
+        const cats = [...new Set(items.map(i => i.focus_mode).filter(Boolean))].sort();
+        const sel = document.getElementById('categoryFilter');
+        const current = sel.value;
+        sel.innerHTML = '<option value="all">all categories</option>';
+        cats.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c;
+            opt.textContent = c;
+            sel.appendChild(opt);
+        });
+        // Restore previous selection if still present
+        if (cats.includes(current)) sel.value = current;
+    }
+
+    // ===== RENDER ITEMS (client-side, from the filtered array) =====
+    function renderItems(items) {
+        const list = document.getElementById('queueList');
+        list.innerHTML = '';
+        const status = document.getElementById('statusFilter').value;
+
+        if (items.length === 0) {
+            const msg = state.allItems.length === 0
+                ? 'No pending proposals — the forest is current.'
+                : 'No proposals match the current filter.';
+            list.innerHTML = '<div class="empty-state">' + msg + '</div>';
+            return;
+        }
+
+        const meta = document.createElement('div');
+        meta.style.cssText = 'color:var(--dim);font-size:0.85rem;margin-bottom:1rem';
+        const total   = state.allItems.length;
+        const showing = items.length;
+        const suffix  = total !== 1 ? 's' : '';
+        meta.textContent = showing === total
+            ? showing + ' ' + status + ' proposal' + suffix
+            : showing + ' of ' + total + ' ' + status + ' proposal' + suffix;
+        list.appendChild(meta);
+
+        items.forEach(item => list.appendChild(renderCard(item)));
+    }
+
+    // ===== APPLY FILTERS (status already fetched; category is client-side) =====
+    function applyFilters() {
+        const cat = document.getElementById('categoryFilter').value;
+        const filtered = cat === 'all'
+            ? state.allItems
+            : state.allItems.filter(i => (i.focus_mode || '') === cat);
+        renderItems(filtered);
     }
 
     // ===== LOAD QUEUE =====
@@ -838,26 +989,18 @@
         const list = document.getElementById('queueList');
         list.innerHTML = '<div class="loading">Loading…</div>';
         document.getElementById('globalMsg').classList.remove('show');
+        document.getElementById('categoryFilter').innerHTML =
+            '<option value="all">all categories</option>';
 
         const status = document.getElementById('statusFilter').value;
         try {
-            const data = await apiCall('/api/pending/json?status=' + encodeURIComponent(status), 'GET');
-            list.innerHTML = '';
-
-            const items = data.items || [];
-            if (items.length === 0) {
-                list.innerHTML = '<div class="empty-state">No pending proposals — the forest is current.</div>';
-                return;
-            }
-
-            const meta = document.createElement('div');
-            meta.style.cssText = 'color:var(--dim);font-size:0.85rem;margin-bottom:1rem';
-            meta.textContent = items.length + ' ' + status + ' proposal' + (items.length !== 1 ? 's' : '');
-            list.appendChild(meta);
-
-            items.forEach(item => {
-                list.appendChild(renderCard(item));
-            });
+            const data = await apiCall(
+                '/api/pending/json?status=' + encodeURIComponent(status), 'GET'
+            );
+            state.allItems = data.items || [];
+            populateCategoryFilter(state.allItems);
+            // Apply category filter (may already have a selection from prior load)
+            applyFilters();
         } catch (err) {
             list.innerHTML = '';
             showGlobal(err.message, 'error');
@@ -867,7 +1010,7 @@
     // ===== MODAL =====
     function showModal() {
         document.getElementById('baseUrlInput').value = state.baseUrl;
-        document.getElementById('apiKeyInput').value = state.apiKey;
+        document.getElementById('apiKeyInput').value  = state.apiKey;
         document.getElementById('modalMsg').classList.remove('show');
         document.getElementById('keyModal').classList.add('open');
         document.getElementById('apiKeyInput').focus();
@@ -903,14 +1046,15 @@
         if (e.key === 'Escape') hideModal();
     });
 
-    // Also submit modal on Enter in the key field
+    // Submit modal on Enter in the key field
     document.getElementById('apiKeyInput').addEventListener('keydown', e => {
         if (e.key === 'Enter') document.getElementById('modalSave').click();
     });
 
-    // Refresh
+    // Refresh + filter listeners
     document.getElementById('refreshBtn').addEventListener('click', loadQueue);
     document.getElementById('statusFilter').addEventListener('change', loadQueue);
+    document.getElementById('categoryFilter').addEventListener('change', applyFilters);
 
     // Auto-load
     if (state.apiKey) {
