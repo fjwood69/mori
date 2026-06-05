@@ -34,6 +34,52 @@ jobs:
       - name: Ruff format check
         run: ruff format --check mori_advisor/
 
+  plugin-validate:
+    name: Plugin manifest validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      # Structural validation — the official `claude plugin validate` checker.
+      - name: Validate plugin manifest
+        run: claude plugin validate plugins/mori
+
+      # Marketplace manifest lives at ./.claude-plugin/marketplace.json, so the
+      # validator takes the repo root (the dir whose .claude-plugin/ holds it).
+      - name: Validate marketplace manifest
+        run: claude plugin validate .
+
+      # UX-regression guard: `claude plugin validate` PASSES a required field that
+      # also carries a `default` — but for userConfig that combination silently
+      # suppresses the install prompt, so a self-hosted user never gets asked for
+      # their server URL and the MCP client quietly hits the default (localhost)
+      # → ConnectionRefused → "Restart to enable → nothing". server_url MUST be
+      # required with NO default so the install dialog forces the question.
+      - name: Guard — server_url must prompt (required, no default)
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          uc = json.load(open("plugins/mori/.claude-plugin/plugin.json"))["userConfig"]
+          su = uc.get("server_url", {})
+          errs = []
+          if "default" in su:
+              errs.append("server_url has a `default` — remove it; a required field with a default suppresses the install prompt.")
+          if su.get("required") is not True:
+              errs.append("server_url must be `required: true` so the install dialog asks for it.")
+          for e in errs:
+              print(f"::error file=plugins/mori/.claude-plugin/plugin.json::{e}")
+          sys.exit(1 if errs else 0)
+          print("OK: server_url is required with no default — install prompt will fire.")
+          PY
+
   test:
     name: Unit tests
     runs-on: ubuntu-latest

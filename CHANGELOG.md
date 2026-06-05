@@ -1,5 +1,30 @@
 # Changelog
 
+## plugin v0.1.4 — install prompt fix: server_url no longer silently defaults to localhost
+
+**fix(plugin): self-hosted users were never prompted for their Mori server URL.**
+- The `server_url` userConfig field was `required: true` **with** a `default` of
+  `http://localhost:8968`. A required field that already carries a default is
+  considered satisfied, so Claude Code silently accepted the default and never
+  showed the prompt at install/enable time. Any user not running Mori on their own
+  `localhost:8968` therefore installed the plugin, got no configuration prompt, and
+  the bundled MCP client quietly tried `localhost:8968` → `ConnectionRefused` —
+  surfacing only as "Restart to enable → nothing". (`api_key`, which has no default,
+  *was* prompted — confirming the mechanism.)
+- Fix: removed the `default` from `server_url` (kept `required: true`) so the install
+  dialog now forces the **Mori server URL** + **API key** prompts alongside the
+  install-scope question, for every fresh install. Rewrote the field description to
+  state plainly there is no default. Bonus: the SessionStart health sentinel now
+  correctly reports `unconfigured` (→ setup guide) on an empty URL instead of always
+  reading `down`.
+- **CI gate added** (`plugin-validate` job): runs the official `claude plugin validate`
+  on both the plugin and marketplace manifests, **plus** a guard asserting `server_url`
+  stays `required` with **no** `default` — because `claude plugin validate` itself
+  passes the bad combination (it is structurally legal; the harm is UX-only).
+- Plugin + marketplace manifests bumped `0.1.3` → `0.1.4`. **Existing installs that
+  took the silent default won't re-prompt on update** — clear the plugin cache and
+  reinstall, or set `pluginConfigs."mori@mori".options.server_url` manually.
+
 ## v2.2.10 — msg_thread Postgres fix + CI Node-24 bumps (#18)
 
 **fix(postgres): `msg_thread` raises on Postgres — `'datetime' object is not subscriptable`:**
