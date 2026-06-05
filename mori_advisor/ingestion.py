@@ -242,7 +242,13 @@ class IngestionPipeline:
 
                 # Write memories (unless dry run)
                 if not dry_run and batch_memories:
-                    await self._write_memories(batch_memories, tier, all_tags)
+                    await self._write_memories(
+                        batch_memories,
+                        tier,
+                        all_tags,
+                        source_uri=str(path),
+                        focus_mode=focus,
+                    )
                     await self._record_ingestion(
                         path,
                         len(batch_memories),
@@ -473,7 +479,13 @@ class IngestionPipeline:
 
                 # Write (unless dry run)
                 if not dry_run and batch_memories:
-                    await self._write_memories(batch_memories, tier, tags)
+                    await self._write_memories(
+                        batch_memories,
+                        tier,
+                        tags,
+                        source_uri=job.source_uri,
+                        focus_mode=focus_guidance[:20] if focus_guidance else "all",
+                    )
                     await self._record_ingestion_by_fields(
                         source_path=job.source_uri,
                         source_hash=job.file_hash,
@@ -741,8 +753,28 @@ class IngestionPipeline:
 
     # ── Memory writing ─────────────────────────────────────────────────────
 
-    async def _write_memories(self, memories: list[dict], tier: str, tags: list[str]) -> None:
-        """Write memory candidates to the store."""
+    async def _write_memories(
+        self,
+        memories: list[dict],
+        tier: str,
+        tags: list[str],
+        source_uri: str = "",
+        focus_mode: str = "",
+    ) -> None:
+        """Write memory candidates to the store.
+
+        Routing predicate (Deliverable 3 — #15):
+          - tier == "working"              → direct write (unchanged, low-stakes, high-volume)
+          - tier in ("canonical","standard") → queue_pending_write() for TD review
+
+        Controlled by MORI_CURATE env var (default "true"):
+          - "true" (default): canonical/standard candidates go to pending queue.
+          - "false": all candidates write directly (back-compat, e.g. for testing).
+        """
+        import os
+
+        curate = os.environ.get("MORI_CURATE", "true").lower() != "false"
+
         for mem in memories:
             if not isinstance(mem, dict):
                 continue
@@ -759,17 +791,51 @@ class IngestionPipeline:
             if mem.get("tags"):
                 mem_tags.extend(mem["tags"])
 
-            await _a(
-                self.memory_store.write(
-                    name=name,
-                    title=mem.get("title", name),
-                    description=mem.get("description", ""),
-                    type=self._infer_type(name, mem),
-                    tier=mem.get("tier", tier),
-                    body=mem.get("body", ""),
-                    tags=mem_tags,
+            effective_tier = mem.get("tier", tier)
+
+            if curate and effective_tier in ("canonical", "standard"):
+                # Route to TD review queue — do NOT write directly.
+                provenance: dict = {}
+                if source_uri:
+                    provenance["source"] = source_uri
+                if focus_mode:
+                    provenance["focus"] = focus_mode
+
+                await _a(
+                    self._store.queue_pending_write(
+                        name=name,
+                        title=mem.get("title", name),
+                        description=mem.get("description", ""),
+                        type=self._infer_type(name, mem),
+                        body=mem.get("body", ""),
+                        tags=mem_tags,
+                        proposed_by="ingestion",
+                        source="ingestion",
+                        provenance=provenance,
+                        confidence=float(confidence) if confidence is not None else None,
+                        focus_mode=focus_mode or "",
+                        tier=effective_tier,
+                    )
                 )
-            )
+                logger.info(
+                    "TD review queue: %s tier=%s confidence=%.2f (curate=true)",
+                    name,
+                    effective_tier,
+                    confidence or 0.0,
+                )
+            else:
+                # working tier (or curate=false): direct write as before.
+                await _a(
+                    self.memory_store.write(
+                        name=name,
+                        title=mem.get("title", name),
+                        description=mem.get("description", ""),
+                        type=self._infer_type(name, mem),
+                        tier=effective_tier,
+                        body=mem.get("body", ""),
+                        tags=mem_tags,
+                    )
+                )
 
     def _derive_name(self, mem: dict) -> str:
         title = mem.get("title", "")

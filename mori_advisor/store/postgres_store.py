@@ -944,23 +944,67 @@ class PostgresStore(BaseStore):
         tags: list | None = None,
         origin_clients: list | None = None,
         proposed_by: str = "api",
+        source: str = "",
+        provenance: str | None = None,
+        confidence: float | None = None,
+        focus_mode: str = "",
+        tier: str = "",
     ) -> str:
-        """Insert a pending write proposal for an existing memory without modifying it.
+        """Insert or update a pending write proposal for an existing memory.
 
-        Used by the write REST API for canonical and other-actor working memories
-        where propose-not-overwrite semantics are required (see #14).
+        On a second proposal for the same name (while a pending row exists),
+        the existing pending row is UPDATED — latest candidate wins, no duplicate
+        pileup. Uses INSERT … ON CONFLICT DO UPDATE on the unique constraint
+        uq_pending_writes_name_pending (memory_name, status='pending').
+
+        Captures existing_body at enqueue time so the review UI can diff.
         """
         self._ensure_pool()
         tags_v = _tags_json(tags)
         clients_v = _tags_json(origin_clients)
         now = _now_utc()
+
+        # Serialise provenance to JSON string if it's a dict/list.
+        if provenance is not None and not isinstance(provenance, str):
+            provenance_str = json.dumps(provenance)
+        else:
+            provenance_str = provenance
+
+        # Capture existing_body for diff.
+        existing_body: str | None = None
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT body FROM memories WHERE name = $1", name)
+                if row:
+                    existing_body = row["body"]
+        except Exception:
+            pass  # non-fatal
+
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO pending_writes
                     (memory_name, title, description, type, body, tags,
-                     origin_session_ids, origin_clients, proposed_by, proposed_at)
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)
+                     origin_session_ids, origin_clients, proposed_by, proposed_at,
+                     source, provenance, confidence, focus_mode, existing_body, tier)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10,
+                        $11, $12, $13, $14, $15, $16)
+                ON CONFLICT (memory_name, status) WHERE status = 'pending'
+                DO UPDATE SET
+                    title          = EXCLUDED.title,
+                    description    = EXCLUDED.description,
+                    type           = EXCLUDED.type,
+                    body           = EXCLUDED.body,
+                    tags           = EXCLUDED.tags,
+                    origin_clients = EXCLUDED.origin_clients,
+                    proposed_by    = EXCLUDED.proposed_by,
+                    proposed_at    = EXCLUDED.proposed_at,
+                    source         = EXCLUDED.source,
+                    provenance     = EXCLUDED.provenance,
+                    confidence     = EXCLUDED.confidence,
+                    focus_mode     = EXCLUDED.focus_mode,
+                    existing_body  = EXCLUDED.existing_body,
+                    tier           = EXCLUDED.tier
                 """,
                 name,
                 title,
@@ -972,10 +1016,16 @@ class PostgresStore(BaseStore):
                 clients_v,
                 proposed_by,
                 now,
+                source or "",
+                provenance_str,
+                confidence,
+                focus_mode or "",
+                existing_body,
+                tier or "",
             )
         return (
-            f"Memory '{name}' is canonical or owned by another actor — "
-            "change queued as pending write (dreamer review required)."
+            f"Memory '{name}' queued as pending write "
+            "(dreamer review required via review.html or POST /api/memories/{name}/approve)."
         )
 
     async def pending_list(self, status: str = "pending") -> str:
@@ -993,6 +1043,58 @@ class PostgresStore(BaseStore):
             for r in rows
         ]
         return "\n".join(lines)
+
+    async def pending_list_json(self, status: str = "pending") -> list[dict]:
+        """Return pending writes as a list of dicts (structured, for review UI)."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, memory_name, title, description, type, body, tags,
+                       proposed_at, proposed_by, status,
+                       source, provenance, confidence, focus_mode, existing_body,
+                       tier, created_at
+                FROM pending_writes
+                WHERE status = $1
+                ORDER BY proposed_at ASC
+                """,
+                status,
+            )
+        result = []
+        for r in rows:
+            tags = json.loads(r["tags"]) if r["tags"] else []
+            prov = r["provenance"]
+            if isinstance(prov, str):
+                try:
+                    prov = json.loads(prov)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            result.append(
+                {
+                    "id": r["id"],
+                    "name": r["memory_name"],
+                    "title": r["title"],
+                    "description": r["description"],
+                    "type": r["type"],
+                    "body": r["body"] or "",
+                    "tags": tags,
+                    "source": r["source"] or "",
+                    "provenance": prov,
+                    "confidence": r["confidence"],
+                    "focus_mode": r["focus_mode"] or "",
+                    "existing_body": r["existing_body"],
+                    "tier": r["tier"] or "",
+                    "proposed_at": r["proposed_at"].isoformat() if r["proposed_at"] else None,
+                    "proposed_by": r["proposed_by"],
+                    "status": r["status"],
+                    "created_at": (
+                        r["created_at"].isoformat()
+                        if r["created_at"]
+                        else (r["proposed_at"].isoformat() if r["proposed_at"] else None)
+                    ),
+                }
+            )
+        return result
 
     async def approve(self, write_id: int, note: str = "", reviewer: str = "") -> str:
         """Approve a pending write. Race-safe: uses SELECT … FOR UPDATE inside a transaction

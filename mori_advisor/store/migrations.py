@@ -171,6 +171,41 @@ def _fts_sqlite(conn: sqlite3.Connection, db_path: Path) -> None:
     conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
 
 
+def _pending_writes_td_sqlite(conn: sqlite3.Connection, db_path: Path) -> None:
+    """Add TD-enrichment columns to pending_writes (SQLite).
+
+    Each column is guarded: ALTER TABLE only runs if the column is absent,
+    so this function is safe to call multiple times (idempotent). Existing
+    pending rows keep their NULL values for the new columns — backward compat.
+
+    Also adds a UNIQUE index on (memory_name) for pending-only rows so that
+    queue_pending_write can use INSERT OR REPLACE to suppress duplicates.
+    The index is partial (WHERE status='pending') so resolved rows remain.
+    """
+    cur = conn.execute("PRAGMA table_info(pending_writes)")
+    existing_cols = {row[1] for row in cur.fetchall()}
+
+    new_cols = [
+        ("source", "TEXT"),
+        ("provenance", "TEXT"),
+        ("confidence", "REAL"),
+        ("focus_mode", "TEXT"),
+        ("existing_body", "TEXT"),
+        ("tier", "TEXT"),
+        ("created_at", "TEXT DEFAULT (datetime('now'))"),
+    ]
+    for col_name, col_def in new_cols:
+        if col_name not in existing_cols:
+            conn.execute(f"ALTER TABLE pending_writes ADD COLUMN {col_name} {col_def}")
+
+    # Partial unique index for duplicate-suppression in queue_pending_write.
+    # Idempotent: CREATE INDEX IF NOT EXISTS.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_writes_name_pending "
+        "ON pending_writes (memory_name) WHERE status = 'pending'"
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         id=1,
@@ -253,6 +288,36 @@ MIGRATIONS: tuple[Migration, ...] = (
             "setweight(to_tsvector('english', coalesce(body, '')), 'D')"
             ") STORED; "
             "CREATE INDEX IF NOT EXISTS idx_memories_search_tsv ON memories USING GIN (search_tsv)"
+        ),
+    ),
+    # ── Stage D: TD review queue enrichment (#15) ─────────────────────────
+    Migration(
+        id=7,
+        name="pending_writes_td_enrichment",
+        target="memories",
+        # Add provenance / curation columns to pending_writes.
+        # Each ALTER TABLE is guarded with a column-exists check in the
+        # sqlite_fn so re-running (idempotency) is safe. Existing pending
+        # rows are unaffected — all new columns are nullable.
+        #
+        # Postgres: ADD COLUMN IF NOT EXISTS is idempotent natively.
+        # No UNIQUE constraint added here — duplicate-suppression is
+        # handled in queue_pending_write() via ON CONFLICT / UPDATE.
+        sqlite_fn=_pending_writes_td_sqlite,
+        postgres_sql=(
+            "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS source TEXT; "
+            "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS provenance TEXT; "
+            "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS confidence REAL; "
+            "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS focus_mode TEXT; "
+            "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS existing_body TEXT; "
+            "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS tier TEXT; "
+            "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW(); "
+            "DO $$ BEGIN "
+            "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_pending_writes_name_pending') THEN "
+            "    ALTER TABLE pending_writes ADD CONSTRAINT uq_pending_writes_name_pending "
+            "      UNIQUE (memory_name, status); "
+            "  END IF; "
+            "END $$"
         ),
     ),
 )

@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mori — TD review queue</title>
+    <style>
+        :root {
+            --bg: #0a1413;
+            --panel: #0f1d1b;
+            --panel2: #122422;
+            --line: #1c3a36;
+            --ink: #d7efe9;
+            --dim: #7fa39c;
+            --accent: #7fffd4;
+            --warn: #ffb454;
+            --err: #ff6b6b;
+            --ok: #5ccc6c;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--ink);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.5;
+        }
+
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background-color: var(--panel);
+            border-bottom: 1px solid var(--line);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-left {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: var(--accent);
+            font-family: 'Courier New', monospace;
+            letter-spacing: 0.05em;
+        }
+
+        .subtitle {
+            font-size: 0.75rem;
+            color: var(--dim);
+        }
+
+        .header-right {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        button {
+            padding: 0.5rem 1rem;
+            background-color: var(--accent);
+            border: none;
+            color: var(--bg);
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.9rem;
+            transition: opacity 0.2s;
+        }
+
+        button:hover { opacity: 0.85; }
+        button:active { transform: scale(0.98); }
+
+        button.secondary {
+            background-color: var(--panel2);
+            color: var(--dim);
+            border: 1px solid var(--line);
+        }
+
+        button.secondary:hover {
+            background-color: var(--line);
+            color: var(--ink);
+        }
+
+        button.danger {
+            background-color: rgba(255, 107, 107, 0.15);
+            color: var(--err);
+            border: 1px solid var(--err);
+        }
+
+        button.danger:hover {
+            background-color: rgba(255, 107, 107, 0.28);
+        }
+
+        button.approve-btn {
+            background-color: rgba(92, 204, 108, 0.15);
+            color: var(--ok);
+            border: 1px solid var(--ok);
+        }
+
+        button.approve-btn:hover {
+            background-color: rgba(92, 204, 108, 0.28);
+        }
+
+        main {
+            max-width: 1100px;
+            margin: 2rem auto;
+            padding: 0 2rem;
+        }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .status-select {
+            padding: 0.5rem 0.75rem;
+            background-color: var(--panel2);
+            border: 1px solid var(--line);
+            color: var(--ink);
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 0.9rem;
+        }
+
+        /* Card */
+        .card {
+            background-color: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-bottom: 1.25rem;
+            transition: border-color 0.2s;
+        }
+
+        .card-header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+            margin-bottom: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .card-name {
+            font-family: 'Courier New', monospace;
+            color: var(--accent);
+            font-weight: bold;
+            font-size: 1rem;
+        }
+
+        .card-meta {
+            color: var(--dim);
+            font-size: 0.8rem;
+            font-family: 'Courier New', monospace;
+        }
+
+        .card-title {
+            color: var(--ink);
+            font-size: 1rem;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+        }
+
+        .card-desc {
+            color: var(--dim);
+            font-size: 0.9rem;
+            margin-bottom: 0.75rem;
+        }
+
+        /* Badges */
+        .badge-row {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.75rem;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            border: 1px solid var(--line);
+            color: var(--dim);
+            background-color: var(--panel2);
+        }
+
+        .badge.source-ingestion { color: var(--warn); border-color: var(--warn); }
+        .badge.source-agent     { color: #7eb8f7;     border-color: #7eb8f7; }
+        .badge.source-api       { color: var(--dim);  border-color: var(--line); }
+        .badge.tier-canonical   { color: #d07fff;     border-color: #d07fff; }
+        .badge.tier-standard    { color: var(--accent); border-color: var(--accent); }
+        .badge.tier-working     { color: var(--dim);  border-color: var(--line); }
+
+        /* Tags */
+        .tag-row {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.75rem;
+        }
+
+        .chip {
+            display: inline-block;
+            padding: 0.2rem 0.5rem;
+            background-color: var(--line);
+            border-radius: 4px;
+            font-size: 0.72rem;
+            color: var(--dim);
+            font-family: 'Courier New', monospace;
+        }
+
+        /* Confidence bar */
+        .confidence-bar-wrap {
+            margin-bottom: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .confidence-label {
+            font-size: 0.8rem;
+            color: var(--dim);
+            white-space: nowrap;
+        }
+
+        .confidence-bar {
+            flex: 1;
+            height: 6px;
+            background-color: var(--line);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .confidence-fill {
+            height: 100%;
+            border-radius: 3px;
+            background-color: var(--ok);
+        }
+
+        /* Provenance */
+        .provenance-block {
+            font-family: 'Courier New', monospace;
+            font-size: 0.78rem;
+            color: var(--dim);
+            margin-bottom: 0.75rem;
+        }
+
+        /* Body sections */
+        .section-label {
+            font-size: 0.8rem;
+            color: var(--dim);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.4rem;
+            margin-top: 1rem;
+        }
+
+        .body-block {
+            padding: 0.85rem;
+            background-color: var(--panel2);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            color: var(--ink);
+            line-height: 1.5;
+        }
+
+        /* Diff */
+        .diff-block {
+            padding: 0.85rem;
+            background-color: var(--panel2);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.82rem;
+            line-height: 1.6;
+            overflow-x: auto;
+        }
+
+        .diff-line {
+            display: block;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .diff-line.added   { color: var(--ok);  background-color: rgba(92,204,108,0.08); }
+        .diff-line.removed { color: var(--err); background-color: rgba(255,107,107,0.08); }
+        .diff-line.context { color: var(--dim); }
+
+        .new-memory-note {
+            color: var(--warn);
+            font-size: 0.85rem;
+            font-style: italic;
+        }
+
+        /* Action row */
+        .action-row {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1.25rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .card-error {
+            margin-top: 0.75rem;
+            padding: 0.6rem 0.85rem;
+            background-color: rgba(255, 107, 107, 0.1);
+            border: 1px solid var(--err);
+            border-radius: 6px;
+            color: var(--err);
+            font-size: 0.85rem;
+        }
+
+        .card-success {
+            margin-top: 0.75rem;
+            padding: 0.6rem 0.85rem;
+            background-color: rgba(92, 204, 108, 0.1);
+            border: 1px solid var(--ok);
+            border-radius: 6px;
+            color: var(--ok);
+            font-size: 0.85rem;
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            color: var(--dim);
+            padding: 3rem;
+            font-style: italic;
+        }
+
+        /* Loading */
+        .loading {
+            text-align: center;
+            color: var(--dim);
+            padding: 2rem;
+        }
+
+        /* Global messages */
+        .global-msg {
+            padding: 0.85rem 1rem;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            display: none;
+        }
+
+        .global-msg.show { display: block; }
+        .global-msg.error { background-color: rgba(255,107,107,0.1); border: 1px solid var(--err); color: var(--err); }
+        .global-msg.info  { background-color: rgba(127,255,212,0.1); border: 1px solid var(--accent); color: var(--accent); }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.7);
+            z-index: 200;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal.open { display: flex; }
+
+        .modal-content {
+            background-color: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 2rem;
+            max-width: 500px;
+            width: 90%;
+        }
+
+        .modal-title {
+            font-size: 1.25rem;
+            font-weight: bold;
+            color: var(--accent);
+            margin-bottom: 1.5rem;
+        }
+
+        .modal-field {
+            margin-bottom: 1.25rem;
+        }
+
+        .modal-label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: var(--dim);
+            font-size: 0.9rem;
+        }
+
+        .modal-field input {
+            width: 100%;
+            padding: 0.65rem;
+            background-color: var(--panel2);
+            border: 1px solid var(--line);
+            color: var(--ink);
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 0.95rem;
+        }
+
+        .modal-field input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: flex-end;
+        }
+
+        #modalMsg {
+            margin-bottom: 1rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            display: none;
+        }
+
+        #modalMsg.show { display: block; }
+        #modalMsg.error { background-color: rgba(255,107,107,0.1); border: 1px solid var(--err); color: var(--err); }
+
+        @media (max-width: 768px) {
+            header { flex-direction: column; gap: 1rem; }
+            main { padding: 0 1rem; }
+            .card-header-row { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="header-left">
+            <div class="logo">mori</div>
+            <div class="subtitle">trusted-dreamer review queue</div>
+        </div>
+        <div class="header-right">
+            <button class="secondary" id="keyButton">&#9881; key</button>
+        </div>
+    </header>
+
+    <main>
+        <div class="controls">
+            <select class="status-select" id="statusFilter">
+                <option value="pending">pending</option>
+                <option value="approved">approved</option>
+                <option value="rejected">rejected</option>
+            </select>
+            <button id="refreshBtn">Refresh</button>
+        </div>
+
+        <div id="globalMsg" class="global-msg"></div>
+        <div id="queueList"></div>
+    </main>
+
+    <!-- API Key Modal -->
+    <div id="keyModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-title">Connect to mori (dreamer key)</div>
+            <div class="modal-field">
+                <label class="modal-label">Server URL (leave blank for this server)</label>
+                <input type="text" id="baseUrlInput" placeholder="http://mori-server:8968">
+            </div>
+            <div class="modal-field">
+                <label class="modal-label">Dreamer API Key</label>
+                <input type="password" id="apiKeyInput" placeholder="mori-key-...">
+            </div>
+            <div id="modalMsg"></div>
+            <div class="modal-buttons">
+                <button class="secondary" id="modalCancel">Cancel</button>
+                <button id="modalSave">Save &amp; Load</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // ===== STATE =====
+    const state = {
+        baseUrl: localStorage.getItem('mori_review_url') || '',
+        apiKey:  localStorage.getItem('mori_review_key') || ''
+    };
+
+    // ===== ESCAPE (innerHTML only) =====
+    function esc(str) {
+        if (typeof str !== 'string') str = String(str == null ? '' : str);
+        const d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+
+    // ===== GLOBAL MESSAGE =====
+    function showGlobal(msg, type) {
+        const el = document.getElementById('globalMsg');
+        el.textContent = msg;
+        el.className = 'global-msg show ' + type;
+        if (type === 'info') setTimeout(() => el.classList.remove('show'), 4000);
+    }
+
+    // ===== API CALL =====
+    async function apiCall(endpoint, method, body) {
+        const base = state.baseUrl.replace(/\/$/, '') || window.location.origin;
+        const url = base + endpoint;
+        const opts = {
+            method: method || 'GET',
+            headers: {
+                'X-Api-Key': state.apiKey,
+                'Content-Type': 'application/json'
+            }
+        };
+        if (body !== undefined) opts.body = JSON.stringify(body);
+        const res = await fetch(url, opts);
+        if (res.status === 401) {
+            showModal();
+            throw new Error('Unauthorized — check your dreamer key');
+        }
+        if (res.status === 403) {
+            throw new Error('Forbidden — this endpoint requires a dreamer key');
+        }
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.error || data.detail || ('HTTP ' + res.status));
+        }
+        return data;
+    }
+
+    // ===== SIMPLE LINE DIFF =====
+    // Returns an array of {type, text} where type is 'added'|'removed'|'context'.
+    function lineDiff(oldText, newText) {
+        const oldLines = (oldText || '').split('\n');
+        const newLines = (newText || '').split('\n');
+        // LCS-based diff (patience-style via simple DP for small inputs)
+        const m = oldLines.length, n = newLines.length;
+        // Build LCS table
+        const dp = [];
+        for (let i = 0; i <= m; i++) {
+            dp.push(new Array(n + 1).fill(0));
+        }
+        for (let i = 1; i <= m; i++) {
+            for (let j = 1; j <= n; j++) {
+                dp[i][j] = oldLines[i-1] === newLines[j-1]
+                    ? dp[i-1][j-1] + 1
+                    : Math.max(dp[i-1][j], dp[i][j-1]);
+            }
+        }
+        // Backtrack
+        const hunks = [];
+        let i = m, j = n;
+        while (i > 0 || j > 0) {
+            if (i > 0 && j > 0 && oldLines[i-1] === newLines[j-1]) {
+                hunks.push({type: 'context', text: oldLines[i-1]});
+                i--; j--;
+            } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
+                hunks.push({type: 'added', text: newLines[j-1]});
+                j--;
+            } else {
+                hunks.push({type: 'removed', text: oldLines[i-1]});
+                i--;
+            }
+        }
+        return hunks.reverse();
+    }
+
+    // ===== RENDER DIFF BLOCK =====
+    function renderDiff(container, existingBody, proposedBody) {
+        const label = document.createElement('div');
+        label.className = 'section-label';
+        label.textContent = 'diff vs existing';
+        container.appendChild(label);
+
+        if (!existingBody) {
+            const note = document.createElement('div');
+            note.className = 'new-memory-note';
+            note.textContent = 'new memory — no existing body to diff against';
+            container.appendChild(note);
+            return;
+        }
+
+        const hunks = lineDiff(existingBody, proposedBody);
+        const block = document.createElement('div');
+        block.className = 'diff-block';
+
+        // Collapse long context runs (> 3 consecutive) with ellipsis
+        let contextRun = 0;
+        const toRender = [];
+        for (let k = 0; k < hunks.length; k++) {
+            if (hunks[k].type === 'context') {
+                contextRun++;
+                if (contextRun <= 3) {
+                    toRender.push(hunks[k]);
+                } else if (contextRun === 4) {
+                    toRender.push({type: 'context', text: '…'});
+                }
+                // beyond 4 consecutive context lines: skip (already pushed ellipsis)
+            } else {
+                contextRun = 0;
+                toRender.push(hunks[k]);
+            }
+        }
+
+        toRender.forEach(h => {
+            const span = document.createElement('span');
+            span.className = 'diff-line ' + h.type;
+            const prefix = h.type === 'added' ? '+ ' : h.type === 'removed' ? '- ' : '  ';
+            // textContent for the line content (safe); prefix is literal
+            span.textContent = prefix + h.text;
+            block.appendChild(span);
+        });
+
+        container.appendChild(block);
+    }
+
+    // ===== RENDER CARD =====
+    function renderCard(item) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.dataset.id = String(item.id);
+
+        // Header row: name + meta
+        const headerRow = document.createElement('div');
+        headerRow.className = 'card-header-row';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'card-name';
+        nameSpan.textContent = item.name || '(unnamed)';
+
+        const metaSpan = document.createElement('span');
+        metaSpan.className = 'card-meta';
+        const ts = item.created_at || item.proposed_at || '';
+        metaSpan.textContent = ts.substring(0, 16);
+
+        headerRow.appendChild(nameSpan);
+        headerRow.appendChild(metaSpan);
+        card.appendChild(headerRow);
+
+        // Title
+        const titleDiv = document.createElement('div');
+        titleDiv.className = 'card-title';
+        titleDiv.textContent = item.title || '';
+        card.appendChild(titleDiv);
+
+        // Description
+        if (item.description) {
+            const descDiv = document.createElement('div');
+            descDiv.className = 'card-desc';
+            descDiv.textContent = item.description;
+            card.appendChild(descDiv);
+        }
+
+        // Badge row: source + tier
+        const badgeRow = document.createElement('div');
+        badgeRow.className = 'badge-row';
+
+        const srcBadge = document.createElement('span');
+        const srcVal = (item.source || 'api').toLowerCase();
+        srcBadge.className = 'badge source-' + srcVal;
+        srcBadge.textContent = srcVal;
+        badgeRow.appendChild(srcBadge);
+
+        const tierBadge = document.createElement('span');
+        const tierVal = (item.tier || 'working').toLowerCase();
+        tierBadge.className = 'badge tier-' + tierVal;
+        tierBadge.textContent = tierVal;
+        badgeRow.appendChild(tierBadge);
+
+        if (item.focus_mode) {
+            const focusBadge = document.createElement('span');
+            focusBadge.className = 'badge';
+            focusBadge.textContent = 'focus: ' + item.focus_mode;
+            badgeRow.appendChild(focusBadge);
+        }
+
+        if (item.proposed_by) {
+            const byBadge = document.createElement('span');
+            byBadge.className = 'badge';
+            byBadge.textContent = 'by: ' + item.proposed_by;
+            badgeRow.appendChild(byBadge);
+        }
+
+        card.appendChild(badgeRow);
+
+        // Confidence bar
+        if (item.confidence != null) {
+            const confWrap = document.createElement('div');
+            confWrap.className = 'confidence-bar-wrap';
+            const confLabel = document.createElement('span');
+            confLabel.className = 'confidence-label';
+            confLabel.textContent = 'confidence ' + (item.confidence * 100).toFixed(0) + '%';
+            const bar = document.createElement('div');
+            bar.className = 'confidence-bar';
+            const fill = document.createElement('div');
+            fill.className = 'confidence-fill';
+            fill.style.width = Math.min(100, Math.max(0, item.confidence * 100)).toFixed(1) + '%';
+            // Colour the fill based on confidence
+            if (item.confidence >= 0.75) fill.style.backgroundColor = 'var(--ok)';
+            else if (item.confidence >= 0.5) fill.style.backgroundColor = 'var(--warn)';
+            else fill.style.backgroundColor = 'var(--err)';
+            bar.appendChild(fill);
+            confWrap.appendChild(confLabel);
+            confWrap.appendChild(bar);
+            card.appendChild(confWrap);
+        }
+
+        // Tags
+        if (item.tags && item.tags.length > 0) {
+            const tagRow = document.createElement('div');
+            tagRow.className = 'tag-row';
+            item.tags.forEach(t => {
+                const chip = document.createElement('span');
+                chip.className = 'chip';
+                chip.textContent = t;
+                tagRow.appendChild(chip);
+            });
+            card.appendChild(tagRow);
+        }
+
+        // Provenance
+        if (item.provenance) {
+            const provDiv = document.createElement('div');
+            provDiv.className = 'provenance-block';
+            let provText = '';
+            if (typeof item.provenance === 'object') {
+                provText = Object.entries(item.provenance)
+                    .map(([k, v]) => k + ': ' + String(v))
+                    .join(' · ');
+            } else {
+                provText = String(item.provenance);
+            }
+            provDiv.textContent = 'provenance: ' + provText;
+            card.appendChild(provDiv);
+        }
+
+        // Proposed body
+        const bodyLabel = document.createElement('div');
+        bodyLabel.className = 'section-label';
+        bodyLabel.textContent = 'proposed body';
+        card.appendChild(bodyLabel);
+
+        const bodyBlock = document.createElement('div');
+        bodyBlock.className = 'body-block';
+        bodyBlock.textContent = item.body || '';
+        card.appendChild(bodyBlock);
+
+        // Diff
+        renderDiff(card, item.existing_body, item.body);
+
+        // Action buttons (only for pending items)
+        const status = document.getElementById('statusFilter').value;
+        if (status === 'pending') {
+            const actionRow = document.createElement('div');
+            actionRow.className = 'action-row';
+
+            const approveBtn = document.createElement('button');
+            approveBtn.className = 'approve-btn';
+            approveBtn.textContent = 'Approve';
+            approveBtn.addEventListener('click', () => handleAction(card, item, 'approve'));
+
+            const rejectBtn = document.createElement('button');
+            rejectBtn.className = 'danger';
+            rejectBtn.textContent = 'Reject';
+            rejectBtn.addEventListener('click', () => handleAction(card, item, 'reject'));
+
+            actionRow.appendChild(approveBtn);
+            actionRow.appendChild(rejectBtn);
+            card.appendChild(actionRow);
+        }
+
+        return card;
+    }
+
+    // ===== HANDLE APPROVE / REJECT =====
+    async function handleAction(card, item, action) {
+        // Remove any previous feedback inside this card
+        const prev = card.querySelector('.card-error, .card-success');
+        if (prev) prev.remove();
+
+        const buttons = card.querySelectorAll('button');
+        buttons.forEach(b => { b.disabled = true; });
+
+        try {
+            const endpoint = '/api/memories/' + encodeURIComponent(item.name) + '/' + action;
+            const payload = { write_id: item.id };
+            await apiCall(endpoint, 'POST', payload);
+
+            // Success: remove the card from the DOM
+            card.style.transition = 'opacity 0.3s';
+            card.style.opacity = '0';
+            setTimeout(() => card.remove(), 310);
+
+            // Check if list is now empty
+            setTimeout(() => {
+                const list = document.getElementById('queueList');
+                if (list.querySelectorAll('.card').length === 0) {
+                    list.innerHTML = '<div class="empty-state">No pending proposals — the forest is current.</div>';
+                }
+            }, 400);
+        } catch (err) {
+            // On error: show message inside the card, re-enable buttons
+            const errDiv = document.createElement('div');
+            errDiv.className = 'card-error';
+            errDiv.textContent = err.message;
+            card.querySelector('.action-row').after(errDiv);
+            buttons.forEach(b => { b.disabled = false; });
+        }
+    }
+
+    // ===== LOAD QUEUE =====
+    async function loadQueue() {
+        if (!state.apiKey) {
+            showModal();
+            return;
+        }
+        const list = document.getElementById('queueList');
+        list.innerHTML = '<div class="loading">Loading…</div>';
+        document.getElementById('globalMsg').classList.remove('show');
+
+        const status = document.getElementById('statusFilter').value;
+        try {
+            const data = await apiCall('/api/pending/json?status=' + encodeURIComponent(status), 'GET');
+            list.innerHTML = '';
+
+            const items = data.items || [];
+            if (items.length === 0) {
+                list.innerHTML = '<div class="empty-state">No pending proposals — the forest is current.</div>';
+                return;
+            }
+
+            const meta = document.createElement('div');
+            meta.style.cssText = 'color:var(--dim);font-size:0.85rem;margin-bottom:1rem';
+            meta.textContent = items.length + ' ' + status + ' proposal' + (items.length !== 1 ? 's' : '');
+            list.appendChild(meta);
+
+            items.forEach(item => {
+                list.appendChild(renderCard(item));
+            });
+        } catch (err) {
+            list.innerHTML = '';
+            showGlobal(err.message, 'error');
+        }
+    }
+
+    // ===== MODAL =====
+    function showModal() {
+        document.getElementById('baseUrlInput').value = state.baseUrl;
+        document.getElementById('apiKeyInput').value = state.apiKey;
+        document.getElementById('modalMsg').classList.remove('show');
+        document.getElementById('keyModal').classList.add('open');
+        document.getElementById('apiKeyInput').focus();
+    }
+
+    function hideModal() {
+        document.getElementById('keyModal').classList.remove('open');
+    }
+
+    document.getElementById('keyButton').addEventListener('click', showModal);
+
+    document.getElementById('modalCancel').addEventListener('click', hideModal);
+
+    document.getElementById('modalSave').addEventListener('click', () => {
+        const url = document.getElementById('baseUrlInput').value.trim();
+        const key = document.getElementById('apiKeyInput').value.trim();
+        if (!key) {
+            const msg = document.getElementById('modalMsg');
+            msg.textContent = 'A dreamer API key is required';
+            msg.className = 'show error';
+            return;
+        }
+        state.baseUrl = url;
+        state.apiKey  = key;
+        localStorage.setItem('mori_review_url', url);
+        localStorage.setItem('mori_review_key', key);
+        hideModal();
+        loadQueue();
+    });
+
+    // Close modal on Escape
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') hideModal();
+    });
+
+    // Also submit modal on Enter in the key field
+    document.getElementById('apiKeyInput').addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.getElementById('modalSave').click();
+    });
+
+    // Refresh
+    document.getElementById('refreshBtn').addEventListener('click', loadQueue);
+    document.getElementById('statusFilter').addEventListener('change', loadQueue);
+
+    // Auto-load
+    if (state.apiKey) {
+        loadQueue();
+    } else {
+        showModal();
+    }
+    </script>
+</body>
+</html>

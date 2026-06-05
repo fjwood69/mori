@@ -2101,6 +2101,22 @@ async def dashboard_index(request: Request) -> Response:
         return JSONResponse({"service": "mori-advisor", "dashboard": "not bundled"})
 
 
+@mcp.custom_route("/review", methods=["GET"])
+async def review_page(request: Request) -> Response:
+    """Serve the TD review admin page.
+
+    Open path (no key required to load the HTML — the page's /api/* calls
+    are still dreamer-key-gated). Bundled at dashboard/review.html."""
+    import os
+
+    path = os.path.join(os.path.dirname(__file__), "..", "dashboard", "review.html")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        return JSONResponse({"error": "review.html not bundled"}, status_code=404)
+
+
 @mcp.custom_route("/api/memories", methods=["GET"])
 async def get_memories(request: Request) -> JSONResponse:
     """Ranked full-text (or recency) search over the shared memory store → JSON.
@@ -2893,6 +2909,36 @@ async def get_pending(request: Request) -> JSONResponse:
         return JSONResponse({"status": status_filter, "summary": raw})
     except Exception as e:
         logger.error("GET /api/pending failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/pending/json", methods=["GET"])
+async def get_pending_json(request: Request) -> JSONResponse:
+    """List pending writes as structured JSON for the TD review UI.
+
+    Returns a list of enriched pending-write dicts (see Deliverable 4 — #15).
+    Each item includes: name, title, description, body, tier, type, tags,
+    source, provenance, confidence, focus_mode, existing_body, created_at, status.
+
+    Requires dreamer role (TD review is privileged — only trusted dreamers
+    can see the full diff and approve/reject).
+
+    Query params: status (default "pending" — also accepts "approved", "rejected").
+    """
+    from mori_advisor.policy import PermissionDenied, require_role
+
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+
+    status_filter = request.query_params.get("status", "pending")
+    try:
+        items = await _a(store.pending_list_json(status=status_filter))
+        items = _json_safe_rows(items)
+        return JSONResponse({"status": status_filter, "count": len(items), "items": items})
+    except Exception as e:
+        logger.error("GET /api/pending/json failed: %s", e)
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
