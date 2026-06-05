@@ -1,0 +1,15 @@
+{
+  "name": "mori",
+  "owner": {
+    "name": "fjwood69",
+    "url": "https://github.com/fjwood69"
+  },
+  "plugins": [
+    {
+      "name": "mori",
+      "source": "./plugins/mori",
+      "description": "Shared cross-device memory for AI coding agents: dream pipeline, /brief session grounding, governed memory store. Connects your agent to a self-hosted mori-advisor server.",
+      "version": "0.1.0"
+    }
+  ]
+}
