@@ -20,12 +20,14 @@
  *     at an operational-context file (kept out of this public repo).
  *
  * Health sentinel (runs before the above for startup/resume/clear):
- *   Checks whether the Mori server at --url is reachable. If not, injects a
- *   setup guide instead of the normal context and exits. This prevents a raw
- *   connection error from being the user's first experience.
- *   - "down"         → injects SETUP_MESSAGE
- *   - "unconfigured" → injects UNCONFIGURED_MESSAGE
- *   - "up"           → falls through to normal behaviour
+ *   ONLY runs when this hook has its own server URL (MORI_SERVER_URL / --url) —
+ *   the hook's telemetry + health check are opt-in and SEPARATE from the mori MCP
+ *   connection (`claude mcp add`), which hooks cannot see. So no URL = silent (the
+ *   optional channel is just off); it must NOT warn, or it false-fires on the
+ *   recommended claude-mcp-add setup and pollutes the session context.
+ *   - URL set + "down" → injects SETUP_MESSAGE
+ *   - URL set + "up"   → falls through to normal behaviour
+ *   - no URL           → silent, falls through
  *   Result is cached per session_id for 5 minutes (temp file) to avoid re-pinging.
  *
  * Design:
@@ -39,8 +41,8 @@
  *
  * Server URL resolution (in order):
  *   1. --url <value> argv (explicit; used by tests and the Cursor/Antigravity wrappers)
- *   2. MORI_SERVER_URL environment variable (the Claude Code plugin's config path)
- *   Empty → the health sentinel reports "unconfigured" and injects the setup guide.
+ *   2. MORI_SERVER_URL environment variable (opt-in hook telemetry)
+ *   Empty → the health sentinel is skipped silently (no warning).
  *
  * Invoked by the Claude Code harness as:
  *   node "${CLAUDE_PLUGIN_ROOT}/scripts/mori-context-hook.mjs"
@@ -49,7 +51,7 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { checkServer, getCached, setCached } from './lib/health-gate.mjs';
-import { SETUP_MESSAGE, UNCONFIGURED_MESSAGE } from './lib/setup-message.mjs';
+import { SETUP_MESSAGE } from './lib/setup-message.mjs';
 
 function emit(additionalContext) {
   process.stdout.write(
@@ -70,8 +72,9 @@ function parseUrl(argv) {
 }
 
 async function main() {
-  // Explicit --url wins (tests / wrappers); otherwise read the env var the plugin
-  // sets. Empty string → health sentinel returns "unconfigured".
+  // Explicit --url wins (tests / wrappers); otherwise read MORI_SERVER_URL. Empty
+  // is fine — the hook's health check is opt-in and separate from the MCP
+  // connection (`claude mcp add`); no URL just means the hook stays silent.
   const serverUrl = parseUrl(process.argv.slice(2)) || process.env.MORI_SERVER_URL || '';
 
   let raw = '';
@@ -111,37 +114,31 @@ async function main() {
 
   // ── Health sentinel (startup / resume / clear) ────────────────────────────
   //
-  // Check the server before doing anything else. A cache hit (same session_id,
-  // within 5 min) skips the fetch so repeated SessionStart events are cheap.
+  // Runs ONLY when this hook has its own server URL (MORI_SERVER_URL or --url).
+  // The hook's telemetry + health check are OPT-IN and SEPARATE from the mori MCP
+  // connection (`claude mcp add`), which is invisible to hooks. So an unset
+  // MORI_SERVER_URL is NOT "unconfigured" — it just means the optional hook
+  // channel is off, and the hook stays SILENT. Warning here would false-fire on
+  // the recommended claude-mcp-add setup (and pollute the session context).
   //
-  // MORI_SKIP_HEALTH_CHECK=1 bypasses the network check entirely (treats server
-  // as "up"). Intended for tests and for private deployments where the server is
-  // behind a VPN and the hook should not block on a flaky network check.
+  // Only a configured-but-unreachable server ("down") warns. A cache hit (same
+  // session_id, <5 min) skips the fetch. MORI_SKIP_HEALTH_CHECK=1 skips the check.
 
   const sessionId = payload.session_id || '';
 
-  let healthState;
-  if (process.env.MORI_SKIP_HEALTH_CHECK === '1') {
-    healthState = 'up';
-  } else {
-    healthState = getCached(sessionId);
+  if (serverUrl && process.env.MORI_SKIP_HEALTH_CHECK !== '1') {
+    let healthState = getCached(sessionId);
     if (!healthState) {
       healthState = await checkServer(serverUrl);
       setCached(sessionId, healthState);
     }
+    if (healthState === 'down') {
+      emit(SETUP_MESSAGE);
+      process.exit(0);
+    }
   }
 
-  if (healthState === 'down') {
-    emit(SETUP_MESSAGE);
-    process.exit(0);
-  }
-
-  if (healthState === 'unconfigured') {
-    emit(UNCONFIGURED_MESSAGE);
-    process.exit(0);
-  }
-
-  // ── Server is up — normal behaviour ──────────────────────────────────────
+  // ── Normal behaviour (server reachable, or hook telemetry not configured) ──
 
   const ctxFile = process.env.MORI_SESSION_CONTEXT_FILE;
   if (ctxFile) {
