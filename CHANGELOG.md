@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.2.10 — fix(postgres): msg_thread datetime coerce
+## v2.2.10 — msg_thread Postgres fix + CI Node-24 bumps (#18)
 
 **fix(postgres): `msg_thread` raises on Postgres — `'datetime' object is not subscriptable`:**
 - `PostgresStore.get_message_thread()` was returning raw asyncpg Records whose
@@ -16,6 +16,33 @@
   (direct assertion that `ts` is `str` post-coerce) and `test_pg_msg_send_thread_roundtrip`
   (full send → thread round-trip; both gate on `MORI_TEST_DATABASE_URL` via `@requires_pg`
   — SQLite variants run unconditionally).
+
+**CI/CD: GitHub Actions → Node 24-native (#18):**
+
+Eliminates the "Node.js 20 actions are deprecated" warnings and removes
+`FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` from CI (it remains in CD while
+`docker/login-action` does not yet have a Node-24 native release).
+
+**CI (ci.yml):**
+- `actions/checkout` v4 → v5 (Node 24 native)
+- `actions/setup-python` v5 → v6 (Node 24 native)
+- `docker/setup-buildx-action` v3 → v4 (Node 24 native)
+- `docker/build-push-action` v5 → v7 (Node 24 native)
+- `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` removed (all actions now Node 24)
+- `pytest` runs now pass `-W error::RuntimeWarning` (banked lesson from #23)
+
+**CD (cd.yml):**
+- `actions/checkout` v4 → v5
+- `docker/setup-buildx-action` v3 → v4
+- `docker/login-action` v3 → v3.7.0 (latest; no Node-24 native version yet)
+- `docker/metadata-action` v5 → v6 (Node 24 native)
+- `docker/build-push-action` v5 → v7 (Node 24 native)
+- `tailscale/github-action` v2 → v4 (current stable; authkey still supported)
+- `appleboy/ssh-action` v1 → v1.2.5 (latest point release)
+- `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` kept for `docker/login-action` (Node 20)
+
+Config-only change — CD is not live-tested on this branch (no tag pushed).
+The updated actions are well-established; no behaviour changes expected.
 
 ## v2.2.9 — Agent self-view (#16) · Postgres tier fix · msg_send fix (#37) · Windows plugin fix
 
@@ -45,7 +72,6 @@
 
 **fix(plugin):** Windows `mcp.json` uses `user_config` template vars so the
 plugin's mori server resolves per the user's config.
-
 ## v2.2.8 — Fix: server startup crash in v2.2.6/v2.2.7 (`_lifespan` decorator)
 
 - **fix:** the #23 C cleanup-task edit inadvertently moved the

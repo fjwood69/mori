@@ -6,18 +6,19 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+# FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 removed — all actions in CI now target
+# Node 24 natively (checkout@v5, setup-python@v6, setup-buildx-action@v4,
+# build-push-action@v7).
 
 jobs:
   lint:
     name: Lint & format check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: "pip"
@@ -37,10 +38,10 @@ jobs:
     name: Unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: "pip"
@@ -51,7 +52,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run pytest
-        run: pytest -q
+        run: pytest -q -W error::RuntimeWarning
 
   test-postgres:
     name: Unit tests (Postgres)
@@ -71,10 +72,10 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: "pip"
@@ -92,19 +93,19 @@ jobs:
       - name: Run dual-backend tests against Postgres
         env:
           MORI_TEST_DATABASE_URL: postgresql://mori:testpw@localhost:5432/mori
-        run: pytest -q tests/test_migrations.py tests/test_search.py tests/test_rest_api.py tests/test_mcp_tools.py
+        run: pytest -q -W error::RuntimeWarning tests/test_migrations.py tests/test_search.py tests/test_rest_api.py tests/test_mcp_tools.py
 
   docker:
     name: Docker build check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build image (no push)
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: false
