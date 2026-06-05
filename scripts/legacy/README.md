@@ -28,16 +28,30 @@ The Cline installer (`scripts/install-mori-cline.sh` / `.ps1`) is unchanged — 
 
 ## Migrating from the bespoke installer to the plugin
 
-If you installed Mori with `install-mori-claude.sh` or `install-mori-claude.ps1`, run the legacy uninstaller first to remove the old `settings.json` MCP server entries and hooks before enabling the plugin:
+If you installed Mori with any of the bespoke installers (Claude Code, Cursor, or Antigravity),
+run the tidy-up tool to remove the old `settings.json` / `mcp.json` / `hooks.json` entries
+before enabling the plugin:
 
-**Linux / macOS:**
+**Preview what would be removed (dry-run — writes nothing):**
 ```bash
-bash plugins/mori/scripts/legacy/uninstall-mori-claude.sh
+node plugins/mori/scripts/legacy/tidy-up.mjs
 ```
 
-**Windows (PowerShell):**
-```powershell
-.\plugins\mori\scripts\legacy\uninstall-mori-claude.ps1
+**Apply changes for all clients:**
+```bash
+node plugins/mori/scripts/legacy/tidy-up.mjs --confirm
 ```
 
-Then install the plugin as described above.
+**Apply for a specific client only:**
+```bash
+node plugins/mori/scripts/legacy/tidy-up.mjs --confirm --client claude
+node plugins/mori/scripts/legacy/tidy-up.mjs --confirm --client cursor
+node plugins/mori/scripts/legacy/tidy-up.mjs --confirm --client antigravity
+```
+
+**Also remove bespoke skill directories (optional — backs up first):**
+```bash
+node plugins/mori/scripts/legacy/tidy-up.mjs --confirm --include-skills
+```
+
+Timestamped backups are created automatically before any write. Then install the plugin as described above.

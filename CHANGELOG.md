@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.2.1 — Cursor & Antigravity hook layers + multi-client tidy-upper (plugin v0.1.1)
+
+- **feat:** Cursor and Antigravity hook layers — per-client Node entrypoints over a shared `lib/` (fail-open wrapper, POST, conversation-keyed throttle, canonical-event normalizer). Cursor: `sessionStart` context + `postToolUse`/`stop` telemetry via the documented standalone `~/.cursor/hooks.json` (Cursor plugin-hook bundling is undocumented). Antigravity: `PreInvocation` once-per-conversation context (conversationId throttle) + `PostToolUse`/`Stop` telemetry via `~/.gemini/config/hooks.json`. Wired by `install-hooks-{cursor,antigravity}.mjs` with absolute paths. Each client's events are normalized client-side to Mori's canonical event schema before POST — the server stays single-schema; client extras ride in an opaque `_clientMeta`.
+- **feat:** `plugins/mori/scripts/legacy/tidy-up.mjs` — multi-client cleanup that removes ONLY Mori's bespoke-installed entries (Claude/Cursor/Antigravity MCP + hooks + permissions; skills with `--include-skills`) so the plugin installs clean. Dry-run by default; `--confirm` to write; exact-signature matching, timestamped backups, validation gates (no non-mori key removed), fail-gradual per client. Replaces the Claude-only uninstaller.
+- **chore:** post-compaction re-ground remains Claude-only — Cursor (`preCompact` observational) and Antigravity have no compaction event.
+- **test:** 127 hook/cleanup tests (Claude 23, Cursor 22, Antigravity 24, tidy-up 58); the shipped Claude scripts are unchanged.
+
 ## v2.2.0 — Cross-tool plugin distribution (plugin v0.1.0)
 
 - **feat:** Unified plugin package at `plugins/mori/` for Claude Code, Cursor, and Antigravity — shared `skills/` + Node `scripts/` core with thin per-platform manifest/MCP files. Auto-registers via the plugin system, no `settings.json` surgery; API key via Claude Code `userConfig` (keychain) with `MORI_API_KEY` env fallback.
