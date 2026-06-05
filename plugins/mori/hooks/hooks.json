@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-context-hook.mjs\" --url \"${user_config.server_url}\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-context-hook.mjs\""
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --url \"${user_config.server_url}\" --api-key \"${user_config.api_key}\" --mode raw"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --mode raw"
           }
         ]
       }
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --url \"${user_config.server_url}\" --api-key \"${user_config.api_key}\" --mode raw"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --mode raw"
           }
         ]
       }
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --url \"${user_config.server_url}\" --api-key \"${user_config.api_key}\" --mode raw"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --mode raw"
           }
         ]
       }
@@ -46,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --url \"${user_config.server_url}\" --api-key \"${user_config.api_key}\" --mode raw"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --mode raw"
           }
         ]
       }
@@ -56,7 +56,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --url \"${user_config.server_url}\" --api-key \"${user_config.api_key}\" --mode precompact"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/mori-ship-event.mjs\" --mode precompact"
           }
         ]
       }

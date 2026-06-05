@@ -19,16 +19,17 @@ export const SETUP_MESSAGE =
   'Standing one up takes a Docker host and an LLM provider key (Novita, DeepInfra, OpenAI, …): ' +
   'clone the repo, add your provider key to `.env`, then `docker compose up -d`. ' +
   'Full quickstart: https://github.com/fjwood69/mori#quickstart . ' +
-  'Already have a server running? Check the server URL in your plugin settings.';
+  'Already have a server running? Check that MORI_SERVER_URL points at it (and MORI_API_KEY is set), then reload.';
 
 /**
  * Emitted when no server URL has been configured at all.
  * Same guidance, but leads with the missing configuration fact.
  */
 export const UNCONFIGURED_MESSAGE =
-  'No Mori server is configured. ' +
+  'No Mori server is configured (MORI_SERVER_URL is not set). ' +
   'Mori keeps your memory on your own server — standing one up takes a Docker host and an LLM provider key ' +
   '(Novita, DeepInfra, OpenAI, …): ' +
   'clone the repo, add your provider key to `.env`, then `docker compose up -d`. ' +
   'Full quickstart: https://github.com/fjwood69/mori#quickstart . ' +
-  'Once the server is running, set its URL in your plugin settings and reload.';
+  'Then point the plugin at it by exporting MORI_SERVER_URL (e.g. http://localhost:8968) ' +
+  'and MORI_API_KEY (name:secret), and reload.';
