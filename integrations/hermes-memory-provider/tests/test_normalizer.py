@@ -6,7 +6,7 @@ Verifies:
   * Ephemeral frontmatter signal → None (drop).
   * Ephemeral target-regex fallback → None (drop).
   * action=="remove" → retraction proposal (new memory, NOT a delete).
-  * Missing memory_id → degraded slug path, still namespaced hermes.*.
+  * Missing memory_id → degraded slug path, still namespaced hermes-*.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ class TestDurablePayload:
         content = "---\nmemory_id: my-learning\ndurability: durable\n---\nThe body."
         result = normalizer.normalize("add", "MEMORY.md", content)
         assert result is not None
-        assert result["name"] == "hermes.my-learning"
+        assert result["name"] == "hermes-my-learning"
 
     def test_idempotency_is_sha256_of_original_content(
         self, normalizer: HermesEventNormalizer
@@ -88,7 +88,7 @@ class TestDurablePayload:
         content = "---\nmemory_id: upd\ndurability: durable\n---\nUpdated body."
         result = normalizer.normalize("replace", "MEMORY.md", content)
         assert result is not None
-        assert result["name"] == "hermes.upd"
+        assert result["name"] == "hermes-upd"
 
 
 # ── Ephemeral drop tests ─────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ class TestEphemeralSignal:
         content = "---\nmemory_id: keep\ndurability: durable\n---\nKeep this."
         result = normalizer.normalize("add", "scratch.md", content)
         assert result is not None
-        assert result["name"] == "hermes.keep"
+        assert result["name"] == "hermes-keep"
 
 
 # ── Retraction tests ──────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ class TestRetraction:
         content = "---\nmemory_id: old-fact\ndurability: durable\n---\nThe old fact."
         result = normalizer.normalize("remove", "MEMORY.md", content)
         assert result is not None
-        assert result["name"] == "hermes.old-fact.retracted"
+        assert result["name"] == "hermes-old-fact-retracted"
 
     def test_retraction_type_is_decision(self, normalizer: HermesEventNormalizer) -> None:
         content = "---\nmemory_id: old-fact\ndurability: durable\n---\nThe old fact."
@@ -164,7 +164,7 @@ class TestRetraction:
         content = "---\nmemory_id: old-fact\ndurability: durable\n---\nThe old fact."
         result = normalizer.normalize("remove", "MEMORY.md", content)
         assert result is not None
-        assert "hermes.old-fact" in result["body"]
+        assert "hermes-old-fact" in result["body"]
 
     def test_retraction_body_embeds_original_content(
         self, normalizer: HermesEventNormalizer
@@ -197,13 +197,13 @@ class TestRetraction:
 
 
 class TestDegradedSlug:
-    """Missing memory_id → slug derived from content, still hermes.* namespaced."""
+    """Missing memory_id → slug derived from content, still hermes-* namespaced."""
 
     def test_name_is_hermes_prefixed(self, normalizer: HermesEventNormalizer) -> None:
         content = "---\ndurability: durable\n---\nThis is a durable memory without an id."
         result = normalizer.normalize("add", "MEMORY.md", content)
         assert result is not None
-        assert result["name"].startswith("hermes.")
+        assert result["name"].startswith("hermes-")
 
     def test_name_slug_derived_from_body(self, normalizer: HermesEventNormalizer) -> None:
         content = "---\ndurability: durable\n---\nhello world from the agent"
@@ -224,7 +224,7 @@ class TestDegradedSlug:
         content = "Plain memory with no frontmatter at all."
         result = n.normalize("add", "MEMORY.md", content)
         assert result is not None
-        assert result["name"].startswith("hermes.")
+        assert result["name"].startswith("hermes-")
 
     def test_degraded_retraction_has_retracted_suffix(
         self, normalizer: HermesEventNormalizer
@@ -232,5 +232,5 @@ class TestDegradedSlug:
         content = "---\ndurability: durable\n---\nSome old fact."
         result = normalizer.normalize("remove", "MEMORY.md", content)
         assert result is not None
-        assert result["name"].endswith(".retracted")
-        assert result["name"].startswith("hermes.")
+        assert result["name"].endswith("-retracted")
+        assert result["name"].startswith("hermes-")

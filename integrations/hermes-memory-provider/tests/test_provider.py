@@ -343,3 +343,21 @@ class TestFormatSearchResults:
         result = _format_search_results(mems)
         # Result should be much shorter than the full body.
         assert len(result) < 800
+
+
+def test_server_url_falls_back_to_env(tmp_path, monkeypatch):
+    """Regression: server_url must read MORI_SERVER_URL when no config file exists.
+
+    Bug (found via Hermes's live install): the provider only read mori_config.json
+    + a localhost default and ignored MORI_SERVER_URL, so the drainer POSTed to
+    localhost:8968 -> ConnectionRefused. api_key already fell back to its env var;
+    server_url did not.
+    """
+    monkeypatch.setenv("MORI_SERVER_URL", "http://mori.example:8968")
+    monkeypatch.setenv("MORI_API_KEY", "deadbeefcafe")
+    with (
+        patch("hermes_mori_provider.rest_client.MoriRestClient") as MockClient,
+        patch("hermes_mori_provider.outbox.GovernedWriteOutbox"),
+    ):
+        MoriMemoryProvider().initialize(session_id="t", hermes_home=tmp_path)
+    assert MockClient.call_args.kwargs["base_url"] == "http://mori.example:8968"

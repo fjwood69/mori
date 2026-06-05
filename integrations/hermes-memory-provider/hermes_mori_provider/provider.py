@@ -87,7 +87,9 @@ class MoriMemoryProvider:
         hermes_home = Path(kwargs.get("hermes_home", Path.home() / ".hermes"))
 
         cfg = self._load_config(hermes_home)
-        server_url: str = cfg.get("server_url") or _DEFAULT_SERVER_URL
+        server_url: str = (
+            cfg.get("server_url") or os.environ.get("MORI_SERVER_URL") or _DEFAULT_SERVER_URL
+        )
         api_key: str = cfg.get("api_key") or os.environ.get("MORI_API_KEY", "")
 
         self._client = MoriRestClient(base_url=server_url, api_key=api_key)
