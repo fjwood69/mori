@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.2.10 — fix(postgres): msg_thread datetime coerce
+
+**fix(postgres): `msg_thread` raises on Postgres — `'datetime' object is not subscriptable`:**
+- `PostgresStore.get_message_thread()` was returning raw asyncpg Records whose
+  `ts` column is a Python `datetime` object (TIMESTAMPTZ via asyncpg). The
+  `msg_thread` formatter subscripted it as a string (`row["ts"][:16]`), which
+  raised `'datetime.datetime' object is not subscriptable` on every Postgres
+  `msg_thread` call. SQLite was unaffected (TEXT column → already a string).
+- Fix: new `_coerce_msg_row()` module-level helper coerces all `datetime`-valued
+  fields in a msg_log row to ISO-8601 strings before returning, normalising the
+  store contract to match SQLite. Applied to root + all replies in
+  `get_message_thread()`.
+- Regression tests in `tests/test_msg_send.py`: `test_pg_get_message_thread_ts_is_str`
+  (direct assertion that `ts` is `str` post-coerce) and `test_pg_msg_send_thread_roundtrip`
+  (full send → thread round-trip; both gate on `MORI_TEST_DATABASE_URL` via `@requires_pg`
+  — SQLite variants run unconditionally).
+
 ## v2.2.9 — Agent self-view (#16) · Postgres tier fix · msg_send fix (#37) · Windows plugin fix
 
 **`GET /api/pending/mine` (#16 Hermes prereq):**

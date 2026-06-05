@@ -63,6 +63,27 @@ def _tags_json(tags) -> str:
     return "[]"
 
 
+def _coerce_msg_row(row) -> dict:
+    """Convert an asyncpg Record (or dict) from msg_log into a plain dict.
+
+    asyncpg returns TIMESTAMPTZ columns as Python ``datetime`` objects.  The
+    ``msg_thread`` formatter (and any other caller) subscripts ``row["ts"]``
+    as a string (e.g. ``row["ts"][:16]``).  SQLite stores ts as TEXT so it
+    already comes back as ``str``; Postgres does not — this helper normalises
+    the contract at the store boundary.
+
+    All datetime-valued fields are coerced to their ISO-8601 string
+    representation.  Unknown non-datetime fields are left untouched.
+    """
+    from datetime import datetime as _DT
+
+    result = dict(row)
+    for key, value in result.items():
+        if isinstance(value, _DT):
+            result[key] = value.isoformat()
+    return result
+
+
 async def _retry(coro_fn, *args, **kwargs):
     """Run coro_fn(*args, **kwargs), retrying on serialization errors."""
     last_exc = None
@@ -1706,7 +1727,13 @@ class PostgresStore(BaseStore):
         return [dict(r) for r in rows]
 
     async def get_message_thread(self, root_id: str) -> list:
-        """Return root + replies. root_id may be a full UUID or 8-char prefix."""
+        """Return root + replies. root_id may be a full UUID or 8-char prefix.
+
+        Timestamps: asyncpg returns TIMESTAMPTZ columns as Python datetime objects.
+        This method coerces all datetime values to ISO-8601 strings before returning
+        so callers can safely subscript them (e.g. ``row["ts"][:16]``), matching
+        the contract of the SQLite backend which stores ts as TEXT.
+        """
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             root = await conn.fetchrow("SELECT * FROM msg_log WHERE id = $1", root_id)
@@ -1718,7 +1745,7 @@ class PostgresStore(BaseStore):
             replies = await conn.fetch(
                 "SELECT * FROM msg_log WHERE reply_to = $1 ORDER BY ts", full_id
             )
-        return [dict(root)] + [dict(r) for r in replies]
+        return [_coerce_msg_row(root)] + [_coerce_msg_row(r) for r in replies]
 
     async def count_messages(self, status: str | None = None) -> int:
         self._ensure_pool()
