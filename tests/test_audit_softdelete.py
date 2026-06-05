@@ -241,6 +241,54 @@ def test_audit_row_on_write(backend, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
+def test_audit_row_on_different_actor_pending(backend, tmp_path, monkeypatch):
+    """Regression: the 'working memory owned by a different actor -> pending' branch
+    of post_memory must still write an audit row.  The _write_audit() call there was
+    previously not awaited, so the coroutine was discarded and no row was written."""
+    import inspect
+
+    from mori_advisor.main import post_memory
+
+    _patch_policy(monkeypatch, "api")
+
+    async def run(store):
+        mem = store._mem if hasattr(store, "_mem") else store
+
+        # Seed a working memory owned by 'alice'.
+        seeded = mem.write(
+            name="shared-doc",
+            title="Owned by alice",
+            description="",
+            type="project",
+            tier="working",
+            body="alice body",
+            tags=[],
+            origin_clients=["alice"],
+            client="alice",
+        )
+        if inspect.isawaitable(seeded):
+            await seeded
+
+        # 'bob' (write role) posts the same name -> different-actor -> pending branch.
+        with _actor_context(Actor("bob", "write")):
+            req = _fake_post_request(
+                "/api/memories",
+                {},
+                {"name": "shared-doc", "title": "Bob's take", "body": "bob body"},
+            )
+            resp = await post_memory(req)
+        assert resp.status_code == 202  # queued as pending, not applied
+
+        rows = store.get_audit_log(memory_name="shared-doc")
+        if inspect.isawaitable(rows):
+            rows = await rows
+        ops = [r["op"] for r in rows]
+        assert "propose_pending" in ops, f"expected a propose_pending audit row, got {ops}"
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
 def test_audit_row_on_soft_delete(backend, tmp_path, monkeypatch):
     """Audit row inserted on soft-delete; row type is 'soft_delete'."""
     from mori_advisor.main import delete_memory_rest
