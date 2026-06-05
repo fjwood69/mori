@@ -34,7 +34,8 @@ env_optional:
   - MORI_SERVER_URL
 
 install:
-  # Install into hermes-agent's plugins/memory/mori/ directory.
-  target: plugins/memory/mori/
+  # hermes-agent's plugin loader scans $HERMES_HOME/plugins/<name>/ for an
+  # __init__.py exposing register() or a MemoryProvider. Drop this package there.
+  target: $HERMES_HOME/plugins/mori/   # e.g. ~/.hermes/plugins/mori/
   # From the package source directory:
   source: hermes_mori_provider/
