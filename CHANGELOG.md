@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.2.6 — Idempotency for POST /api/memories (#23 C) + throttle foundation
+
+- **feat:** `mori_advisor/throttle/` — a pluggable throttling foundation (the
+  shared base for #23 C and D). Async store contracts `IdempotencyStore` /
+  `RateLimitStore` with in-memory adapters as the single-instance default; the
+  Postgres-backed (horizontally-scalable) adapter is deferred to a future issue
+  (`MORI_THROTTLE_STORE=postgres` raises until then). Idempotency is modelled as
+  a self-healing execution cache (short claim TTL + stale-claim stealing +
+  claim-token guard), and the rate limiter as a token bucket — both hardened
+  after an advisor review before wiring. 41 unit tests.
+- **feat:** `POST /api/memories` honours an **`Idempotency-Key`** header — a
+  replay of the same key + body returns the cached response (`Idempotency-Replay:
+  true`) and the write runs **exactly once**; the same key with a *different*
+  body is rejected `422`; an in-progress claim returns `409` + `Retry-After`.
+  Keys are scoped per actor. Deterministic outcomes (2xx/4xx) are cached;
+  transient 5xx are not (a retry re-attempts). No key → unchanged behaviour.
+- **feat:** startup logs a loud warning if `MORI_THROTTLE_STORE=memory` runs with
+  `>1` worker (per-instance counters would silently breach the global limit); a
+  periodic task evicts expired idempotency records.
+- **config:** `MORI_THROTTLE_STORE` (`memory` default), `MORI_IDEMPOTENCY_CLAIM_TTL`
+  (default 30s), `MORI_IDEMPOTENCY_CACHE_TTL` (default 86400s, legacy
+  `MORI_IDEMPOTENCY_TTL` honoured).
+- **test:** `tests/test_throttle.py` (41) + `tests/test_idempotency_api.py` (6,
+  dual-backend) — replay-writes-once, 422 mismatch, 409 in-progress, per-actor
+  scoping, key isolation.
+
 ## v2.2.5 — Persistent audit trail + soft-delete (#23 A+B)
 
 - **Migration 8 (`write_audit_table`):** new `write_audit` table (id, ts, actor_key_name,
