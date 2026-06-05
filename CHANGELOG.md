@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.1.36 — Persistent audit trail + soft-delete (#23 A+B)
+## v2.2.5 — Persistent audit trail + soft-delete (#23 A+B)
 
 - **Migration 8 (`write_audit_table`):** new `write_audit` table (id, ts, actor_key_name,
   op, memory_name, content_hash, detail) on both SQLite and Postgres — purely additive,
