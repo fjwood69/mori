@@ -7,6 +7,7 @@
 - **feat:** Cursor + Antigravity: MCP connection + skills work day one (skills are a cross-tool open standard); platform-specific hooks are a fast-follow.
 - **chore:** Bespoke `install-mori-claude.{sh,ps1}` moved to `scripts/legacy/` (superseded by the plugin); a standalone legacy uninstaller is bundled for migration. Cursor/Antigravity bespoke installers retained pending their plugin hook layers; Cline unchanged.
 - **docs:** README + getting-started guides rewritten plugin-first; corrected stale claims (SessionStart not PostCompact for post-compaction re-ground; dual-backend SQLite/Postgres, not SQLite-only).
+- **docs:** new *Read the current manual, not your memory* practice in `agent-working-practices` (consult live docs for evolving APIs, not training recall); README *Pairs well with* section positioning Mori (earned memory) alongside Context7 (live library docs).
 - See #24 for the plugin distribution tracking issue.
 
 ## v2.1.35 — Governed write REST API core: propose/pending/approve/reject/delete (#14)

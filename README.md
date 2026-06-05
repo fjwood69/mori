@@ -107,6 +107,22 @@ Full reference: [docs/reference/slash-commands.md](docs/reference/slash-commands
 
 ---
 
+## Pairs well with
+
+**Mori is your team's *earned* memory — not a docs cache.** It remembers what your agents
+decided and learned across sessions and devices. It complements tools that supply *live
+external knowledge*:
+
+- **[Context7](https://github.com/upstash/context7)** — up-to-date, version-specific library
+  and framework documentation injected into the prompt. Where Mori remembers *"we chose X, and
+  why"*, Context7 supplies *"here is X's current API."* Different layer, complementary purpose.
+- **Your platform's own docs** — for fast-moving tool and harness behaviour (hook schemas,
+  config formats), consult the current official docs rather than training-data recall. See the
+  *Read the current manual, not your memory* practice in
+  [agent-working-practices](standards/agent-working-practices.md).
+
+---
+
 ## How it works
 
 ### Dream pipeline
