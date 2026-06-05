@@ -1,33 +1,33 @@
 # Changelog
 
-## v2.2.9 — Agent self-view: `GET /api/pending/mine` (#16 prereq)
+## v2.2.9 — Agent self-view (#16) · Postgres tier fix · msg_send fix (#37) · Windows plugin fix
 
-- **feat:** new `GET /api/pending/mine` REST endpoint (write role). Returns only
-  the authenticated caller's own pending proposals, filtered by `proposed_by =
-  actor.key_name`. Agents can see their own backlog and outcomes
-  (approved/rejected) without ever seeing another actor's rows.
-- **query param `status`:** omit for all statuses; pass `pending`, `approved`, or
-  `rejected` to narrow. Missing actor (no API key, host mode) returns an empty
-  list rather than a 500.
-- **store:** `pending_list_json` on both SQLite (`MemoryStore`) and Postgres
-  (`PostgresStore`) gains optional `proposed_by: str = ""` and `status: str =
-  "pending"` parameters. When `proposed_by` is non-empty, an `AND proposed_by =
-  ?/$N` clause is appended. When `status` is empty the status filter is omitted
-  entirely (all statuses). The existing single-status call-sites are unaffected
-  (default `status="pending"`, `proposed_by=""` — identical behaviour).
-- **abstract interface:** `BaseStore.pending_list_json` updated to match.
-  `SQLiteStore` wrapper delegates the new parameters through to `MemoryStore`.
-- **test:** `tests/test_pending_mine.py` — 5 SQLite tests; PG variants via
-  `@requires_pg` (skipped unless `MORI_TEST_DATABASE_URL` is set).
-- **fix(postgres):** `PostgresStore.write()` now coalesces `tier` to `"working"`
-  before any DB interaction, mirroring `MemoryStore._ensure_tier()`. A `NULL` or
-  unrecognised tier (e.g. from a pending row inserted without a tier value) can no
-  longer violate `memories.tier NOT NULL` on Postgres. The immediate trigger was
-  `approve()` applying a pending row whose `pending_writes.tier` was NULL; SQLite
-  was protected by `_ensure_tier` but Postgres was not. `VALID_TIERS` is now
-  imported into `postgres_store.py` from `memory_store` to keep the allowed set in
-  sync. Regression tests added to `tests/test_td_review.py` (SQLite + `@requires_pg`
-  Postgres variants).
+**`GET /api/pending/mine` (#16 Hermes prereq):**
+- New `GET /api/pending/mine` REST endpoint (write role) — returns only the
+  authenticated caller's own pending proposals (`proposed_by = actor.key_name`),
+  so an agent can see its own backlog + outcomes (approved/rejected) without ever
+  seeing another actor's rows. `status` query param (omit → all statuses). Missing
+  actor → empty list, not a 500.
+- `pending_list_json` (both backends) gains optional `proposed_by` + optional
+  `status`; existing single-status call-sites unchanged. `tests/test_pending_mine.py`.
+
+**fix(postgres): NULL `tier` on TD approve:**
+- `PostgresStore.write()` now coalesces `tier` to `"working"` (mirrors SQLite's
+  `_ensure_tier`), so applying a pending row with a NULL/absent tier can no longer
+  violate `memories.tier NOT NULL`. Trigger: `approve()` of an untiered ingestion
+  proposal on Postgres — SQLite was protected, Postgres was not. `VALID_TIERS`
+  shared via import. Regression tests in `tests/test_td_review.py`.
+
+**fix(#37): msg_send directed-task path:**
+- `msg_send()` now persists to the sender's `msg_log` (was publish-only, so
+  `msg_thread`/`msg_recv` never saw it); returns the full 36-char UUID (was an
+  8-char prefix that `msg_thread`'s exact lookup always missed); `msg_thread` reads
+  via the `store` global (was a fresh `MsgStore`, breaking monkeypatch/path
+  overrides). `get_thread`/`get_message_thread` accept an 8-char prefix fallback for
+  ids already in the wild. `tests/test_msg_send.py` (6 tests).
+
+**fix(plugin):** Windows `mcp.json` uses `user_config` template vars so the
+plugin's mori server resolves per the user's config.
 
 ## v2.2.8 — Fix: server startup crash in v2.2.6/v2.2.7 (`_lifespan` decorator)
 

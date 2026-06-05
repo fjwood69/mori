@@ -1706,13 +1706,17 @@ class PostgresStore(BaseStore):
         return [dict(r) for r in rows]
 
     async def get_message_thread(self, root_id: str) -> list:
+        """Return root + replies. root_id may be a full UUID or 8-char prefix."""
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             root = await conn.fetchrow("SELECT * FROM msg_log WHERE id = $1", root_id)
+            if not root and len(root_id) <= 8:
+                root = await conn.fetchrow("SELECT * FROM msg_log WHERE id LIKE $1", root_id + "%")
             if not root:
                 return []
+            full_id = dict(root)["id"]
             replies = await conn.fetch(
-                "SELECT * FROM msg_log WHERE reply_to = $1 ORDER BY ts", root_id
+                "SELECT * FROM msg_log WHERE reply_to = $1 ORDER BY ts", full_id
             )
         return [dict(root)] + [dict(r) for r in replies]
 

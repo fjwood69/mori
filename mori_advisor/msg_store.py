@@ -127,15 +127,26 @@ class MsgStore:
             conn.close()
 
     def get_thread(self, root_id: str) -> list[dict]:
-        """Return root message + all replies, chronological order."""
+        """Return root message + all replies, chronological order.
+
+        root_id may be a full UUID or an 8-char prefix (as returned by the
+        msg_send output before the fix that now returns the full UUID).
+        Exact match is tried first; a LIKE prefix fallback is used when root_id
+        is ≤ 8 chars and the exact match finds nothing.
+        """
         conn = self._get_conn()
         try:
             root = conn.execute("SELECT * FROM msg_log WHERE id = ?", (root_id,)).fetchone()
+            if not root and len(root_id) <= 8:
+                root = conn.execute(
+                    "SELECT * FROM msg_log WHERE id LIKE ?", (root_id + "%",)
+                ).fetchone()
             if not root:
                 return []
+            full_id = dict(root)["id"]
             replies = conn.execute(
                 "SELECT * FROM msg_log WHERE reply_to = ? ORDER BY ts",
-                (root_id,),
+                (full_id,),
             ).fetchall()
             return [dict(root)] + [dict(r) for r in replies]
         finally:
