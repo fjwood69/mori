@@ -1,5 +1,5 @@
 # Mori PostCompact hook — re-ground agent after context compression.
-# Deployed to $CLAUDEDIR/ by install-mori-claude.ps1.
+# Deployed to $CLAUDEDIR/ by scripts/legacy/install-mori-claude.ps1 (legacy) or the Mori plugin.
 #
 # Enabled by default. Disable with: $env:MORI_POST_COMPACT_BRIEF = "false"
 

@@ -270,8 +270,8 @@ Enabled by default. Disable with:
 export MORI_POST_COMPACT_BRIEF=false
 ```
 
-The hook is deployed alongside other Mori hooks by `install-mori-claude.sh` /
-`install-mori-claude.ps1`.
+The hook is deployed alongside other Mori hooks by `scripts/legacy/install-mori-claude.sh` /
+`scripts/legacy/install-mori-claude.ps1` (legacy bespoke installers) or via the plugin (`plugins/mori/`).
 
 ## Ports
 

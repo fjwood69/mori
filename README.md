@@ -68,19 +68,19 @@ The same plugin package (`plugins/mori/`) also targets **Cursor** and **Google
 Antigravity** — MCP connection and skills work on all three; client-specific hooks
 land per platform. See the platform guides.
 
-**Or use the legacy installer scripts** (bespoke; being superseded by the plugin):
+**Or use the legacy installer scripts** (bespoke; superseded by the plugin):
 
 ```bash
-./scripts/install-mori-claude.sh      # Claude Code
-./scripts/install-mori-cursor.sh      # Cursor
-powershell -File scripts/install-mori-claude.ps1   # Windows
+./scripts/legacy/install-mori-claude.sh   # Claude Code
+./scripts/install-mori-cursor.sh          # Cursor
+powershell -File scripts/legacy/install-mori-claude.ps1   # Windows
 ```
 
 ### Platform guides
 
 | Platform | Install | Full guide |
 |----------|---------|------------|
-| Claude Code | Plugin: `/plugin marketplace add fjwood69/mori` → `/plugin install mori@mori` (or `./scripts/install-mori-claude.sh`) | [docs/getting-started/claude-code.md](docs/getting-started/claude-code.md) |
+| Claude Code | Plugin: `/plugin marketplace add fjwood69/mori` → `/plugin install mori@mori` (or `./scripts/legacy/install-mori-claude.sh`) | [docs/getting-started/claude-code.md](docs/getting-started/claude-code.md) |
 | Cursor | Plugin package `plugins/mori/` (or `./scripts/install-mori-cursor.sh`) | [docs/getting-started/cursor.md](docs/getting-started/cursor.md) |
 | Google Antigravity IDE | Plugin package `plugins/mori/` (or `./scripts/install-mori-antigravity.sh`) | [docs/getting-started/antigravity.md](docs/getting-started/antigravity.md) |
 | Cline | `./scripts/install-mori-cline.sh` | [docs/getting-started/cline.md](docs/getting-started/cline.md) |
@@ -104,6 +104,22 @@ powershell -File scripts/install-mori-claude.ps1   # Windows
 | **Skill deployment** | Push slash commands to all devices in one step | `/update` |
 
 Full reference: [docs/reference/slash-commands.md](docs/reference/slash-commands.md)
+
+---
+
+## Pairs well with
+
+**Mori is your team's *earned* memory — not a docs cache.** It remembers what your agents
+decided and learned across sessions and devices. It complements tools that supply *live
+external knowledge*:
+
+- **[Context7](https://github.com/upstash/context7)** — up-to-date, version-specific library
+  and framework documentation injected into the prompt. Where Mori remembers *"we chose X, and
+  why"*, Context7 supplies *"here is X's current API."* Different layer, complementary purpose.
+- **Your platform's own docs** — for fast-moving tool and harness behaviour (hook schemas,
+  config formats), consult the current official docs rather than training-data recall. See the
+  *Read the current manual, not your memory* practice in
+  [agent-working-practices](standards/agent-working-practices.md).
 
 ---
 

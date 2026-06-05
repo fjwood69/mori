@@ -26,6 +26,15 @@ When you think "an expert would notice this," turn it into a check that fails fo
 reach users who can't review. Move diligence from "the agent remembered to" into "the
 system won't allow otherwise."
 
+## Read the current manual, not your memory
+For anything that evolves — a tool's hook or API schema, a library's interface, a platform's
+config format — confirm against the *current* authoritative docs rather than training-data
+recall. Training memory is a snapshot: confidently wrong once the thing has changed, and it
+fails *silently* — a plausible-but-stale call that looks right and breaks on a channel no one
+watches. Fetch the official docs, query a live-docs tool (such as Context7 for library and
+framework references), or use the platform's own help. When you assert that something supports
+a capability, you should be able to point at where the docs say so.
+
 ## Delegate the mechanical, own the result
 Hand well-specified, mechanical work — builds, deploys, scaffolding, broad repetitive
 edits — to a cheaper/faster model; reserve the expensive one for judgement: planning,

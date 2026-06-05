@@ -53,6 +53,9 @@ Updated with each release.
 - Backup script updated — `pg_dump` path for Postgres backend, shell retention removed
 - Streaming replication documented in `docs/reference/team-configuration.md`
 
+### v2.2.0
+- **Cross-tool plugin distribution** — unified `plugins/mori/` package for Claude Code (complete + marketplace-ready), Cursor, and Antigravity; `SessionStart` re-ground hook replacing PostCompact additionalContext (closes #17); bespoke Claude installer moved to `scripts/legacy/`; see #24
+
 ---
 
 ## v2.0 — In progress

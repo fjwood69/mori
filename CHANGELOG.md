@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.2.0 — Cross-tool plugin distribution (plugin v0.1.0)
+
+- **feat:** Unified plugin package at `plugins/mori/` for Claude Code, Cursor, and Antigravity — shared `skills/` + Node `scripts/` core with thin per-platform manifest/MCP files. Auto-registers via the plugin system, no `settings.json` surgery; API key via Claude Code `userConfig` (keychain) with `MORI_API_KEY` env fallback.
+- **feat:** Claude Code: complete and marketplace-ready. `SessionStart` re-ground hook (`source=compact`) replaces the broken PostCompact `additionalContext` hook (which the harness rejects) — closes #17. Node `mori-context-hook.mjs` + `mori-ship-event.mjs` (telemetry incl. Stop transcript-tail enrichment); no bash/jq dependency. Repo-root `.claude-plugin/marketplace.json` enables `/plugin marketplace add fjwood69/mori` → `/plugin install mori@mori`.
+- **feat:** Cursor + Antigravity: MCP connection + skills work day one (skills are a cross-tool open standard); platform-specific hooks are a fast-follow.
+- **chore:** Bespoke `install-mori-claude.{sh,ps1}` moved to `scripts/legacy/` (superseded by the plugin); a standalone legacy uninstaller is bundled for migration. Cursor/Antigravity bespoke installers retained pending their plugin hook layers; Cline unchanged.
+- **docs:** README + getting-started guides rewritten plugin-first; corrected stale claims (SessionStart not PostCompact for post-compaction re-ground; dual-backend SQLite/Postgres, not SQLite-only).
+- **docs:** new *Read the current manual, not your memory* practice in `agent-working-practices` (consult live docs for evolving APIs, not training recall); README *Pairs well with* section positioning Mori (earned memory) alongside Context7 (live library docs).
+- See #24 for the plugin distribution tracking issue.
+
 ## v2.1.35 — Governed write REST API core: propose/pending/approve/reject/delete (#14)
 
 - **feat:** `POST /api/memories` — propose-not-overwrite, tier-aware write endpoint (role: write).

@@ -2,6 +2,8 @@
 # Bash installer script for Mori Antigravity Bridge
 # Run from the root of the mori repository.
 
+echo "NOTE: The plugin package plugins/mori/ now provides the MCP connection and skills for Antigravity; platform-specific hooks are a fast-follow. See plugins/mori/README.md for the recommended install path." >&2
+
 set -euo pipefail
 
 MORI_URL="http://localhost:8968"
