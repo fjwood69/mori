@@ -1,25 +1,38 @@
-"""Regression tests for #37 — msg_send directed-task bug.
+"""Regression tests for #37 — msg_send directed-task bug and Postgres datetime coerce.
 
 Before the fix:
   1. msg_send() published to NATS but never persisted to the local msg_log.
   2. get_thread() used exact UUID match; users only had the 8-char prefix from
      msg_send's return value, so msg_thread always returned "No message found".
+  3. [Postgres] get_message_thread() returned raw asyncpg rows whose ``ts`` field
+     is a Python ``datetime``; the msg_thread formatter subscripted it as a string
+     (``row["ts"][:16]``), raising ``'datetime' object is not subscriptable``.
 
 After the fix:
   1. msg_send() persists the sent message with status="sent" to the local store.
   2. msg_send() returns the full UUID (not the 8-char prefix) so callers can
      pass it to msg_thread directly.
   3. get_thread() accepts both full UUID and 8-char prefix (fallback LIKE search).
+  4. [Postgres] get_message_thread() coerces all datetime fields to ISO-8601 strings
+     at the store boundary via _coerce_msg_row — matching the SQLite TEXT contract.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from mori_advisor.msg import MoriMessage
+
+# ── Postgres gate ─────────────────────────────────────────────────────────────
+
+PG_URL = os.environ.get("MORI_TEST_DATABASE_URL", "")
+requires_pg = pytest.mark.skipif(not PG_URL, reason="MORI_TEST_DATABASE_URL not set")
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -157,3 +170,90 @@ def test_msg_send_thread_roundtrip(tmp_path, monkeypatch):
     assert "do the thing" in thread_result
     assert "task" in thread_result
     assert "cb14p" in thread_result
+
+
+# ── Postgres regression: datetime coerce in get_message_thread ───────────────
+# These tests gate on MORI_TEST_DATABASE_URL and are skipped in local SQLite
+# runs; CI's Postgres service job exercises them.
+#
+# Pre-fix behaviour: PostgresStore.get_message_thread() returned raw asyncpg
+# Records whose ``ts`` field is a Python datetime object.  The msg_thread
+# formatter subscripted it as a string (``row["ts"][:16]``), which raised
+# ``'datetime.datetime' object is not subscriptable`` on every Postgres call.
+# The SQLite backend was unaffected because SQLite stores ts as TEXT.
+
+
+async def _make_pg_store():
+    from mori_advisor.store.postgres_store import PostgresStore
+
+    s = PostgresStore(PG_URL)
+    await s.bootstrap()
+    async with s.pool.acquire() as conn:
+        await conn.execute("TRUNCATE msg_log CASCADE")
+    return s
+
+
+@requires_pg
+def test_pg_get_message_thread_ts_is_str(tmp_path):
+    """PostgresStore.get_message_thread() must return ts as str, not datetime."""
+    from datetime import datetime, timezone
+
+    async def run():
+        store = await _make_pg_store()
+        try:
+            msg = MoriMessage(
+                id=str(uuid.uuid4()),
+                from_agent="nuc",
+                to="cb14p",
+                type="task",
+                ts=datetime.now(timezone.utc).isoformat(),
+                body="pg datetime coerce check",
+            )
+            await store.log_message(msg, status="sent")
+
+            rows = await store.get_message_thread(msg.id)
+            assert rows, "expected one row back"
+            ts_val = rows[0]["ts"]
+            assert isinstance(ts_val, str), (
+                f"ts must be str after coerce, got {type(ts_val).__name__!r}: {ts_val!r}"
+            )
+            # Slicing must not raise — this is exactly what the formatter does.
+            _ = ts_val[:16]
+        finally:
+            await store.pool.close()
+
+    asyncio.run(run())
+
+
+@requires_pg
+def test_pg_msg_send_thread_roundtrip(tmp_path, monkeypatch):
+    """Postgres: msg_send → msg_thread round-trip renders without raising.
+
+    Before the fix this test would fail with
+    ``'datetime.datetime' object is not subscriptable`` inside msg_thread.
+    """
+
+    async def run():
+        store = await _make_pg_store()
+        try:
+            _apply_store(monkeypatch, store)
+
+            from mori_advisor.main import msg_send, msg_thread
+
+            with patch("mori_advisor.msg.publish_message", new_callable=AsyncMock):
+                send_result = await msg_send(to="cb14p", type="task", body="pg round-trip")
+
+            sent_id = send_result.split("id=")[-1].rstrip(")")
+            assert len(sent_id) == 36, f"expected full UUID, got: {sent_id!r}"
+
+            thread_result = await msg_thread(sent_id)
+            # msg_thread catches exceptions and returns "msg_thread failed: ..."
+            # so we assert the error string is absent.
+            assert "msg_thread failed" not in thread_result, thread_result
+            assert "No message found" not in thread_result
+            assert "pg round-trip" in thread_result
+            assert "task" in thread_result
+        finally:
+            await store.pool.close()
+
+    asyncio.run(run())
