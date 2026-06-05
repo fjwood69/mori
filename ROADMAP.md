@@ -53,6 +53,13 @@ Updated with each release.
 - Backup script updated — `pg_dump` path for Postgres backend, shell retention removed
 - Streaming replication documented in `docs/reference/team-configuration.md`
 
+### v2.2.5 – v2.2.8 — Write-API hardening (#23, complete)
+The governed write surface is now **role-scoped · audited · reversible · replay-safe · rate-limited**.
+- **v2.2.5** (#23 A/B): persistent `write_audit` trail + `GET /api/audit` (dreamer); soft-delete (`deleted_at`, partial unique index, restore-on-collision, `?hard=true` purge); tombstone-filtered reads + FTS, dual-backend (migrations 8 + 9).
+- **v2.2.6** (#23 C): `Idempotency-Key` on `POST /api/memories` (replay returns the cached response, write runs once; 422 mismatch; 409 in-progress) on a pluggable throttle foundation (`mori_advisor/throttle/`, in-memory adapters; Postgres adapter deferred to scale-out).
+- **v2.2.7** (#23 D): per-key token-bucket rate limiting in `ApiKeyMiddleware` (`429` + `Retry-After`), opt-in via `MORI_RATE_LIMIT`, `writes`/`all` scope.
+- **v2.2.8**: fixed a `_lifespan` decorator regression that crashed startup in v2.2.6/7; added a startup-boot regression test.
+
 ### v2.2.0
 - **Cross-tool plugin distribution** — unified `plugins/mori/` package for Claude Code (complete + marketplace-ready), Cursor, and Antigravity; `SessionStart` re-ground hook replacing PostCompact additionalContext (closes #17); bespoke Claude installer moved to `scripts/legacy/`; see #24
 
@@ -219,4 +226,4 @@ never appear in the public core. See `COMMERCIAL.md` for licensing terms.
 
 ---
 
-*Last updated: v2.1.16*
+*Last updated: v2.2.8*
