@@ -19,11 +19,65 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
+import urllib.response
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 15  # seconds
+
+
+# ── SEC-003: SSRF-safe opener ─────────────────────────────────────────────────
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that REFUSES all HTTP redirects.
+
+    urllib follows HTTP 3xx redirects by default.  An attacker-controlled
+    MORI_SERVER_URL or MORI_INTAKE_URL could redirect requests to internal
+    services (e.g. http://169.254.169.254/) and exfiltrate cloud credentials
+    via search results.
+
+    This handler replaces the default redirect handler in the custom opener
+    used by ``MoriRestClient`` when no ``_opener`` injection seam is supplied.
+    It overrides ``redirect_request`` to return ``None`` (no redirect request)
+    and raises ``MoriTransportError`` so the caller handles it as a transport
+    failure (retry-eligible at the outbox layer).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: PLR0913
+        raise MoriTransportError(
+            f"HTTP redirect refused (SSRF guard): {code} → {newurl!r}",
+            status_code=code,
+        )
+
+
+def _make_safe_opener() -> urllib.request.OpenerDirector:
+    """Build an OpenerDirector that never follows HTTP redirects.
+
+    Installs ``_NoRedirectHandler`` as the sole redirect handler, replacing
+    urllib's default ``HTTPRedirectHandler`` which follows 3xx automatically.
+    All other handlers (auth, error, etc.) are inherited from the default
+    opener construction.
+    """
+    opener = urllib.request.OpenerDirector()
+    # Add standard handlers EXCEPT the redirect handler.
+    for cls in (
+        urllib.request.UnknownHandler,
+        urllib.request.HTTPHandler,
+        urllib.request.HTTPDefaultErrorHandler,
+        urllib.request.HTTPErrorProcessor,
+        urllib.request.FileHandler,
+        urllib.request.DataHandler,
+        _NoRedirectHandler,  # replaces HTTPRedirectHandler — refuses all redirects
+    ):
+        opener.add_handler(cls())
+    return opener
+
+
+# Module-level singleton — shared across all MoriRestClient instances that
+# don't inject a custom opener.  Thread-safe: openers are stateless.
+_SAFE_OPENER: urllib.request.OpenerDirector = _make_safe_opener()
 
 
 class MoriTransportError(Exception):
@@ -60,7 +114,10 @@ class MoriRestClient:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
-        self._urlopen = _opener if _opener is not None else urllib.request.urlopen
+        # Use the injected opener (test seam) or the module-level SSRF-safe opener
+        # (production).  Never fall back to urllib.request.urlopen directly because
+        # it follows redirects — see _SAFE_OPENER / _NoRedirectHandler (SEC-003).
+        self._urlopen = _opener if _opener is not None else _SAFE_OPENER.open
 
     # ── Public methods ──────────────────────────────────────────────────────
 

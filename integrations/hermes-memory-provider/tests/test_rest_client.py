@@ -10,6 +10,7 @@ Verifies:
   * 5xx response raises MoriTransportError.
   * Transport failure (connection refused) raises MoriTransportError.
   * list_pending status param is forwarded correctly.
+  * SEC-003: HTTP redirects are refused (no SSRF via urllib redirect following).
 """
 
 from __future__ import annotations
@@ -321,3 +322,72 @@ class TestGetMemory:
         c = _client(opener=_opener_connection_error())
         with pytest.raises(MoriTransportError):
             c.get_memory("hermes-memory-x")
+
+
+# ── SEC-003: SSRF redirect guard ──────────────────────────────────────────────
+
+
+class TestNoRedirectSsrfGuard:
+    """MoriRestClient must refuse HTTP redirects (SEC-003).
+
+    The _SAFE_OPENER installs _NoRedirectHandler which raises MoriTransportError
+    on any 3xx.  Tests here verify both the installed handler and the injected
+    seam path (to keep the test deterministic without a live server).
+    """
+
+    def test_no_redirect_handler_installed_in_safe_opener(self) -> None:
+        """_SAFE_OPENER must have _NoRedirectHandler, not HTTPRedirectHandler."""
+        import urllib.request
+
+        from hermes_mori_provider.rest_client import _SAFE_OPENER, _NoRedirectHandler
+
+        handler_classes = {type(h) for h in _SAFE_OPENER.handlers}
+        assert _NoRedirectHandler in handler_classes, (
+            "_NoRedirectHandler must be registered in _SAFE_OPENER"
+        )
+        assert urllib.request.HTTPRedirectHandler not in handler_classes, (
+            "urllib's default HTTPRedirectHandler must NOT be in _SAFE_OPENER"
+        )
+
+    def test_302_from_seam_is_not_followed(self) -> None:
+        """When the opener seam returns a 302, the client does not follow it.
+
+        Via the injection seam, a 302 HTTPError is returned to the client
+        (not followed).  The client treats non-5xx, non-429 status codes as
+        dead-letter (returns (302, body)) — the important invariant is that
+        the redirect destination is NEVER fetched.
+        """
+
+        def _redirect_opener(req: Any, timeout: int = 15) -> Any:
+            raise urllib.error.HTTPError(
+                url="http://test/",
+                code=302,
+                msg="Found",
+                hdrs={"Location": "http://169.254.169.254/"},  # type: ignore[arg-type]
+                fp=io.BytesIO(b""),
+            )
+
+        c = _client(opener=_redirect_opener)
+        # propose() returns the (status, body) tuple for all non-5xx errors.
+        status, _ = c.propose(name="x", body="body")
+        assert status == 302  # returned as-is, not followed
+
+    def test_default_client_uses_safe_opener(self) -> None:
+        """When no _opener is injected, MoriRestClient._urlopen is an OpenerDirector.open.
+
+        We cannot compare identity (the module may be imported multiple times),
+        but we CAN verify the bound method is on an OpenerDirector instance
+        (not urllib.request.urlopen, which follows redirects).
+        """
+        import urllib.request
+
+        from hermes_mori_provider.rest_client import MoriRestClient
+
+        c = MoriRestClient(base_url="http://localhost:8968", api_key="k")
+        assert c._urlopen is not urllib.request.urlopen, (
+            "Default client must use the SSRF-safe opener, not urllib.request.urlopen"
+        )
+        assert hasattr(c._urlopen, "__self__"), "Expected a bound method"
+        assert isinstance(c._urlopen.__self__, urllib.request.OpenerDirector), (
+            "Opener must be an OpenerDirector (for safe redirect handling)"
+        )

@@ -201,7 +201,13 @@ async def post_submission(
             content={"status": "rejected", "reason": decision.reason},
         )
 
-    # Insert into intake_submissions — idempotent on (session_id, stable_key).
+    # GOV-008: derive the effective session_id server-side so that one agent
+    # cannot collide with or submit proposals under another agent's session.
+    # The agent-supplied body.session_id is used as a sub-scope within the
+    # client's own namespace; the database key is ``{client_name}:{session_id}``.
+    effective_session_id = f"{client_name}:{body.session_id}"
+
+    # Insert into intake_submissions — idempotent on (effective_session_id, stable_key).
     pool = db.get_pool()
 
     provenance_json = json.dumps(body.provenance) if body.provenance is not None else None
@@ -210,6 +216,9 @@ async def post_submission(
     # conflict the row already exists, so report a duplicate hit rather than
     # 500.  Avoids the TOCTOU window a separate SELECT-then-INSERT would open
     # under concurrent identical submissions (e.g. an outbox retry).
+    # On conflict: return {duplicate:true} WITHOUT leaking the existing
+    # submission_id to prevent session-namespace collisions from being used
+    # to discover other agents' submission IDs (GOV-008).
     new_id = await pool.fetchval(
         "INSERT INTO intake_submissions "
         "  (id, session_id, agent_id, target_name, action, stable_key, "
@@ -218,7 +227,7 @@ async def post_submission(
         "ON CONFLICT (session_id, stable_key) DO NOTHING "
         "RETURNING id",
         uuid.uuid4(),
-        body.session_id,
+        effective_session_id,
         body.agent_id,
         body.target,
         body.action,
@@ -228,15 +237,11 @@ async def post_submission(
     )
 
     if new_id is None:
-        # Conflict — the (session_id, stable_key) row already exists.
-        existing_id = await pool.fetchval(
-            "SELECT id FROM intake_submissions WHERE session_id = $1 AND stable_key = $2",
-            body.session_id,
-            body.stable_key,
-        )
+        # Conflict — the (effective_session_id, stable_key) row already exists.
+        # Do NOT return the existing submission_id: leaking it would allow one
+        # agent to probe another agent's session namespace (GOV-008).
         return {
             "status": "accepted",
-            "submission_id": str(existing_id),
             "duplicate": True,
         }
 

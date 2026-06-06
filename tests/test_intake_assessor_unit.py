@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from mori_intake.assessor import AssessmentResult, _assess_one, _default_stub
+from mori_intake.normalize import content_hash
 
 # ── Async context manager helper ──────────────────────────────────────────────
 
@@ -69,16 +70,32 @@ def _make_row(candidate_id=None):
 
 
 class TestDefaultStub:
-    def test_always_unrelated(self):
+    """The default stub now returns NEEDS_REVIEW (fail closed — GOV-005/SEC-002).
+
+    Tests that want the full promotion path must inject an explicit UNRELATED
+    stub — the default stub must no longer auto-promote.
+    """
+
+    def test_returns_needs_review(self):
+        """Default stub returns NEEDS_REVIEW — fail closed, not auto-promote."""
         result = _default_stub("Some learning body.", "abc123")
-        assert result.verdict == "UNRELATED"
+        assert result.verdict == "NEEDS_REVIEW"
         assert result.matched_canon_name is None
         assert result.score == 0.0
 
     def test_ignores_inputs(self):
+        """Default stub always returns the same NEEDS_REVIEW regardless of input."""
         r1 = _default_stub("body one", "hash1")
         r2 = _default_stub("completely different body here", "hash2")
-        assert r1.verdict == r2.verdict == "UNRELATED"
+        assert r1.verdict == r2.verdict == "NEEDS_REVIEW"
+
+    def test_does_not_return_unrelated(self):
+        """UNRELATED from the default stub would auto-promote — must not happen."""
+        result = _default_stub("Some body.", "somehash")
+        assert result.verdict != "UNRELATED", (
+            "Default stub must NOT return UNRELATED — that triggers auto-promotion. "
+            "Inject an explicit stub when testing the promotion path."
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -154,6 +171,26 @@ class TestVerdictActionMapping:
 
         with pytest.raises(ValueError, match="unknown verdict"):
             asyncio.run(_assess_one(pool, row, stub))
+
+    def test_needs_review_does_not_raise_and_leaves_pending(self):
+        """NEEDS_REVIEW is a valid verdict — must not raise ValueError.
+
+        The candidate stays pending (no UPDATE issued): _assess_one must execute
+        the NEEDS_REVIEW branch without any DB write.
+        """
+        pool, conn = _make_pool_conn()
+        row = _make_row()
+
+        def stub(body, h):
+            return AssessmentResult(verdict="NEEDS_REVIEW")
+
+        result = asyncio.run(_assess_one(pool, row, stub))
+
+        assert result.verdict == "NEEDS_REVIEW"
+        # No UPDATE should have been called (candidate stays pending).
+        calls_str = " ".join(str(c) for c in conn.execute.call_args_list)
+        assert "under_review" not in calls_str
+        assert "rejected" not in calls_str
 
     def test_verdict_case_normalised_to_upper(self):
         """Lower-case verdict strings are normalised to upper before mapping."""
@@ -380,15 +417,22 @@ class TestPublicLineageAPI:
 
         candidate_id = uuid.uuid4()
         queue_id = uuid.uuid4()
-        content_hash = "ab" * 32
+        _body = "Full body of candidate memory."
+        content_hash_value = content_hash(_body)
 
-        # conn: fetchrow returns None (no existing map row), then candidate row.
+        # conn: fetchrow returns None (no existing map row), then candidate row,
+        # then the GOV-002 submission join (3rd call added for delta-hardening).
         fetchrow_results = [
             None,  # idempotency check — no existing map row
             {
-                "canonicalized_body": "Full body of candidate memory.",
-                "content_hash": content_hash,
+                "canonicalized_body": _body,
+                "content_hash": content_hash_value,
                 "reinforcement_count": 3,
+            },
+            {  # GOV-002: originating submission — eligible key so body check fires
+                "target_name": "memory",
+                "stable_key": "learned-valid-key",
+                "action": "add",
             },
         ]
         conn = AsyncMock()
@@ -416,14 +460,20 @@ class TestPublicLineageAPI:
 
         candidate_id = uuid.uuid4()
         queue_id = uuid.uuid4()
-        content_hash = "cd" * 32
+        _body = "Candidate body text."
+        content_hash_value = content_hash(_body)
 
         fetchrow_results = [
             None,
             {
-                "canonicalized_body": "Candidate body text.",
-                "content_hash": content_hash,
+                "canonicalized_body": _body,
+                "content_hash": content_hash_value,
                 "reinforcement_count": 2,
+            },
+            {  # GOV-002: originating submission — eligible key so body check fires
+                "target_name": "memory",
+                "stable_key": "learned-valid-key",
+                "action": "add",
             },
         ]
         conn = AsyncMock()
@@ -441,7 +491,7 @@ class TestPublicLineageAPI:
         asyncio.run(_promote_one(pool, mori_store, queue_id, candidate_id))
 
         call_kwargs = mori_store.record_intake_lineage.call_args.kwargs
-        expected_canon_name = f"agent-intake-{content_hash[:16]}"
+        expected_canon_name = f"agent-intake-{content_hash_value[:16]}"
         assert call_kwargs["canon_name"] == expected_canon_name
         assert call_kwargs["intake_candidate_id"] == str(candidate_id)
         assert isinstance(call_kwargs["intake_submission_ids"], list)

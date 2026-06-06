@@ -370,26 +370,59 @@ class TestReconciliation:
 
 
 class TestIsAvailable:
-    def test_true_when_key_set(self) -> None:
+    """is_available() requires both MORI_API_KEY and MORI_INTAKE_URL (ARCH-004).
+
+    Previously it only checked MORI_API_KEY.  Now it also requires
+    MORI_INTAKE_URL so callers know when writes cannot drain.
+    """
+
+    def test_true_when_both_keys_set(self) -> None:
         p = MoriMemoryProvider()
-        with patch.dict(os.environ, {"MORI_API_KEY": "some-key"}):
+        with patch.dict(
+            os.environ,
+            {"MORI_API_KEY": "some-key", "MORI_INTAKE_URL": "http://intake.example.com:8971"},
+        ):
             assert p.is_available() is True
 
-    def test_false_when_absent(self) -> None:
+    def test_false_when_api_key_absent(self) -> None:
         p = MoriMemoryProvider()
-        env = {k: v for k, v in os.environ.items() if k != "MORI_API_KEY"}
+        env = {k: v for k, v in os.environ.items() if k not in ("MORI_API_KEY", "MORI_INTAKE_URL")}
+        env["MORI_INTAKE_URL"] = "http://intake.example.com"
         with patch.dict(os.environ, env, clear=True):
             assert p.is_available() is False
 
-    def test_false_when_empty(self) -> None:
+    def test_false_when_api_key_empty(self) -> None:
         p = MoriMemoryProvider()
-        with patch.dict(os.environ, {"MORI_API_KEY": ""}):
+        with patch.dict(
+            os.environ,
+            {"MORI_API_KEY": "", "MORI_INTAKE_URL": "http://intake.example.com"},
+        ):
+            assert p.is_available() is False
+
+    def test_false_when_intake_url_absent(self) -> None:
+        """ARCH-004: without MORI_INTAKE_URL writes cannot drain — unavailable."""
+        p = MoriMemoryProvider()
+        env = {k: v for k, v in os.environ.items() if k != "MORI_INTAKE_URL"}
+        env["MORI_API_KEY"] = "some-key"
+        with patch.dict(os.environ, env, clear=True):
+            assert p.is_available() is False
+
+    def test_false_when_intake_url_empty(self) -> None:
+        """Empty MORI_INTAKE_URL → unavailable."""
+        p = MoriMemoryProvider()
+        with patch.dict(
+            os.environ,
+            {"MORI_API_KEY": "some-key", "MORI_INTAKE_URL": ""},
+        ):
             assert p.is_available() is False
 
     def test_no_network_call(self) -> None:
         p = MoriMemoryProvider()
         with patch("urllib.request.urlopen") as mock_urlopen:
-            with patch.dict(os.environ, {"MORI_API_KEY": "key"}):
+            with patch.dict(
+                os.environ,
+                {"MORI_API_KEY": "key", "MORI_INTAKE_URL": "http://x"},
+            ):
                 p.is_available()
         mock_urlopen.assert_not_called()
 

@@ -56,6 +56,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import unicodedata
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -79,8 +80,20 @@ _ACTION_OP = {
 
 
 def content_hash(content: str) -> str:
-    """Return the sha256 hex digest of *content* (used for reconciliation)."""
-    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+    """Return the SHA-256 hex digest of *content* using the canonical form.
+
+    Shared contract with ``mori_intake.normalize.content_hash`` (INTAKE-05):
+    applies Unicode NFKC normalisation then collapses all internal whitespace
+    to a single space before hashing.  This ensures provider and intake
+    produce identical digests for the same logical content — including text
+    with composed vs decomposed Unicode characters or inconsistent whitespace.
+
+    Previously this function hashed the raw content without normalisation,
+    causing digest divergence whenever the intake service normalised the body
+    before computing its hash.
+    """
+    canonical = " ".join(unicodedata.normalize("NFKC", content or "").split())
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def action_to_op(action: str) -> str:
