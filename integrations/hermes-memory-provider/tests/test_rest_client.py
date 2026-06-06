@@ -275,3 +275,49 @@ class TestListPending:
         c = _client(opener=opener)
         result = c.list_pending()
         assert result == []
+
+
+# ── get_memory tests (added v0.2.0 for reconciliation) ────────────────────────
+
+
+class TestGetMemory:
+    def test_returns_bare_memory_dict(self) -> None:
+        mem = {"name": "hermes-memory-x", "body": "the body"}
+        opener, _ = _opener_returning(200, mem)
+        c = _client(opener=opener)
+        assert c.get_memory("hermes-memory-x") == mem
+
+    def test_unwraps_memory_envelope(self) -> None:
+        mem = {"name": "hermes-memory-x", "body": "b"}
+        opener, _ = _opener_returning(200, {"memory": mem})
+        c = _client(opener=opener)
+        assert c.get_memory("hermes-memory-x") == mem
+
+    def test_404_returns_none(self) -> None:
+        opener = _opener_http_error(404, {"error": "not found"})
+        c = _client(opener=opener)
+        assert c.get_memory("hermes-memory-missing") is None
+
+    def test_name_is_url_quoted(self) -> None:
+        captured: list[Any] = []
+
+        def opener(req: Any, timeout: int = 15) -> Any:
+            captured.append(req)
+            return _make_response(200, {"name": "n", "body": "b"})
+
+        c = _client(opener=opener)
+        c.get_memory("hermes-memory-a b")
+        # Space must be percent-encoded, not a raw space.
+        assert " " not in captured[0].full_url
+        assert "hermes-memory-a%20b" in captured[0].full_url
+
+    def test_500_raises_transport_error(self) -> None:
+        opener = _opener_http_error(500, {"error": "server error"})
+        c = _client(opener=opener)
+        with pytest.raises(MoriTransportError):
+            c.get_memory("hermes-memory-x")
+
+    def test_connection_error_raises_transport_error(self) -> None:
+        c = _client(opener=_opener_connection_error())
+        with pytest.raises(MoriTransportError):
+            c.get_memory("hermes-memory-x")

@@ -1,5 +1,5 @@
 name: hermes-mori-provider
-version: "0.1.1"
+version: "0.2.0"
 description: >
   mori MemoryProvider for hermes-agent. Mirrors the agent's durable learnings
   to a self-hosted mori server as governed proposals (never direct canon), and
@@ -12,7 +12,7 @@ repository: https://github.com/fjwood69/mori/tree/main/integrations/hermes-memor
 # hermes-agent hook list — the agent calls these if the provider exposes them.
 hooks:
   - prefetch            # called before each turn; returns context string
-  - sync_turn           # called after each turn (no-op in this provider)
+  - sync_turn           # called after each turn (explicit no-op — avoids dreamer-queue flood)
   - on_session_end      # best-effort outbox flush
   - system_prompt_block # static note injected into the system prompt
   - on_pre_compress     # called before context compression (no-op)

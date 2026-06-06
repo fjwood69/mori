@@ -1,261 +1,232 @@
-"""HermesEventNormalizer — translate hermes-agent memory writes into mori proposals.
+"""HermesEventNormalizer — translate hermes-agent memory writes into mori ops.
 
-Durability is signalled via YAML/JSON frontmatter in the memory content:
+This module owns three concerns and NOTHING else:
 
-    ---
-    memory_id: my-learning
-    durability: durable
-    ---
-    The body text goes here.
+1. **Name sanitisation** — mori memory names must match
+   ``^[a-zA-Z0-9_-]{1,128}$`` (no dots, no slashes, no whitespace). Every name
+   that leaves this module is guaranteed valid.
+2. **Stable name derivation** — given a hermes ``on_memory_write`` event
+   (``target`` in {"memory", "user"} plus ``content`` and optional
+   ``metadata``) produce a deterministic ``hermes-{target}-{stable_key}`` name.
+   The same logical memory always derives the same name so that
+   ``replace``/``remove`` keep lineage with the prior ``add``.
+3. **Action -> op mapping** — translate the real hermes action vocabulary
+   ({"add", "replace", "remove"}) into the internal op the provider/outbox act
+   on ({"propose", "supersede", "retract"}).
 
-Rules
------
-* If ``durability`` is "ephemeral" (case-insensitive) → drop (return None).
-* If ``durability`` is absent AND the target basename matches any pattern in
-  ``ephemeral_target_patterns`` (configurable) → drop (return None).
-* Otherwise → DURABLE: build and return a proposal payload.
+There is **no durability/ephemeral concept** and **no frontmatter parsing** --
+those were invented against a fictional contract and have been removed. The
+real ``on_memory_write`` only fires for the agent's built-in memory tool
+editing MEMORY.md / USER.md, so every event is canon-worthy and is mirrored.
 
-For DURABLE memories:
-* ``name`` is ``hermes-<memory_id>`` when a ``memory_id`` is present in the
-  frontmatter.  When absent, a stable slug is derived from the normalised body
-  text (first 64 chars, slugified) — this is logged as a DEGRADED path because
-  the name may drift if the content is later edited.
-* Frontmatter is stripped from ``body`` before writing.
-* ``idempotency_key`` = sha256(original content including frontmatter) so that
-  the outbox idempotency guarantee survives restarts.
-* All proposals carry the tag ``source:hermes`` plus any extra tags from
-  frontmatter.
+Name derivation rules
+---------------------
+``stable_key`` is derived as follows:
 
-Retraction (``action == "remove"``)
--------------------------------------
-mori never deletes canon — a retraction is modelled as a NEW proposal whose
-body asserts the prior fact is retracted.  Name: ``hermes-<memory_id>-retracted``
-when memory_id is known, else slug with ``-retracted`` suffix.  The ``type`` is
-set to "decision" to signal intent.  The original body is embedded so a reviewer
-can confirm what is being retracted.
+* ``target == "user"``  -> ``metadata["user_id"]`` (default ``"default"``).
+* ``target == "memory"`` ->
+    * ``metadata["memory_id"]`` when present, else
+    * a deterministic slug of the first ~64 chars of ``content`` plus a short
+      content-hash suffix (``-<8 hex>``) so two different memories that share a
+      slug prefix do not collide. NEVER a random UUID.
 
-All names are namespaced under ``hermes-`` so they cannot collide with
-human-owned canon.
+The full name is then ``hermes-{target}-{stable_key}`` run through
+``sanitize_name`` which strips invalid characters, collapses consecutive
+hyphens, and right-truncates the *stable_key portion* to keep the total <= 128
+while always preserving the ``hermes-{target}-`` prefix.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Targets that are implicitly ephemeral if no durability frontmatter is present.
-_DEFAULT_EPHEMERAL_PATTERNS: list[str] = [
-    r"(?i)scratch",
-    r"(?i)temp",
-    r"(?i)wip",
-    r"(?i)draft",
-    r"(?i)ephemeral",
-]
+# mori name constraint.
+_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+_MAX_NAME_LEN = 128
 
-# Maximum characters of content to use when deriving a fallback slug.
+# Characters of content used when deriving a fallback slug.
 _SLUG_CONTENT_CHARS = 64
 
+# Real hermes targets.
+_VALID_TARGETS = ("memory", "user")
 
-def _strip_frontmatter(content: str) -> tuple[dict[str, Any], str]:
-    """Split YAML-style ``---`` frontmatter from body text.
+# action -> internal op.
+_ACTION_OP = {
+    "add": "propose",
+    "replace": "supersede",
+    "remove": "retract",
+}
 
-    Tries YAML ``---`` block first, then JSON ``{...}`` at the very start.
-    Returns ``(meta, body)`` where *meta* may be empty and *body* is the
-    remaining text with leading/trailing whitespace stripped.
 
-    Does NOT require PyYAML — uses a simple key: value parser sufficient
-    for the flat frontmatter fields this normaliser cares about.
+def content_hash(content: str) -> str:
+    """Return the sha256 hex digest of *content* (used for reconciliation)."""
+    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+
+
+def action_to_op(action: str) -> str:
+    """Map a hermes action to the internal op.
+
+    Unknown actions fall back to ``"propose"`` (safest: emit a proposal rather
+    than silently drop a write).
     """
-    content = content or ""
-
-    # ── YAML-style frontmatter ─────────────────────────────────────────────
-    yaml_match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", content, re.DOTALL)
-    if yaml_match:
-        fm_raw, body = yaml_match.group(1), yaml_match.group(2)
-        meta: dict[str, Any] = {}
-        for line in fm_raw.splitlines():
-            line = line.strip()
-            if ":" in line:
-                k, _, v = line.partition(":")
-                k = k.strip()
-                v = v.strip()
-                # Coerce simple boolean strings
-                if v.lower() == "true":
-                    meta[k] = True
-                elif v.lower() == "false":
-                    meta[k] = False
-                elif v.startswith("[") and v.endswith("]"):
-                    # Minimal inline list: [a, b, c]
-                    inner = v[1:-1]
-                    meta[k] = [i.strip().strip("'\"") for i in inner.split(",") if i.strip()]
-                else:
-                    meta[k] = v.strip("'\"")
-        return meta, body.strip()
-
-    # ── JSON object at start ───────────────────────────────────────────────
-    if content.lstrip().startswith("{"):
-        brace_depth = 0
-        end_idx = -1
-        for i, ch in enumerate(content):
-            if ch == "{":
-                brace_depth += 1
-            elif ch == "}":
-                brace_depth -= 1
-                if brace_depth == 0:
-                    end_idx = i
-                    break
-        if end_idx != -1:
-            try:
-                meta = json.loads(content[: end_idx + 1])
-                if isinstance(meta, dict):
-                    return meta, content[end_idx + 1 :].strip()
-            except json.JSONDecodeError:
-                pass
-
-    return {}, content.strip()
+    return _ACTION_OP.get((action or "").strip().lower(), "propose")
 
 
 def _slugify(text: str) -> str:
-    """Convert arbitrary text to a safe kebab-case slug for use in names.
+    """Convert arbitrary text to a safe kebab-case slug fragment.
 
-    Collapses non-alphanumeric runs to a single hyphen and strips leading/
-    trailing hyphens.  Truncated to 64 characters max.
+    Lower-cases, collapses non-alphanumeric runs to a single hyphen, strips
+    leading/trailing hyphens. Truncated to ``_SLUG_CONTENT_CHARS`` characters.
+    Does NOT guarantee the mori name constraint on its own -- callers must still
+    run the assembled name through :func:`sanitize_name`.
     """
-    text = text.lower()
+    text = (text or "").lower()
     text = re.sub(r"[^a-z0-9]+", "-", text)
     text = text.strip("-")
-    return text[:64]
+    return text[:_SLUG_CONTENT_CHARS]
 
 
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def is_valid_name(name: str) -> bool:
+    """Return True iff *name* satisfies the mori name constraint."""
+    return bool(_NAME_RE.match(name or ""))
+
+
+def sanitize_name(raw: str, *, prefix: str = "") -> str:
+    """Coerce *raw* into a valid mori name (``^[a-zA-Z0-9_-]{1,128}$``).
+
+    * Strips every character outside ``[a-zA-Z0-9_-]`` (replacing runs with a
+      single hyphen).
+    * Collapses consecutive hyphens into one.
+    * Strips leading/trailing hyphens.
+    * Right-truncates to ``_MAX_NAME_LEN`` while preserving *prefix* -- that is,
+      truncation only eats into the suffix that follows *prefix* so the
+      ``hermes-{target}-`` namespace is never lost. (If *prefix* itself exceeds
+      the limit it is hard-truncated, but that cannot happen for the fixed
+      ``hermes-memory-``/``hermes-user-`` prefixes this module uses.)
+    * Guarantees a non-empty result (``"unknown"`` fallback) so the name is
+      never the empty string.
+    """
+    raw = raw or ""
+
+    def _clean(s: str) -> str:
+        s = re.sub(r"[^a-zA-Z0-9_-]+", "-", s)
+        s = re.sub(r"-{2,}", "-", s)
+        return s.strip("-")
+
+    # Clean the prefix but KEEP a single trailing hyphen as the separator
+    # between the namespace prefix and the stable-key suffix.
+    prefix_clean = _clean(prefix) if prefix else ""
+    sep_prefix = f"{prefix_clean}-" if prefix_clean else ""
+
+    if sep_prefix and raw.startswith(prefix):
+        suffix_clean = _clean(raw[len(prefix) :])
+        budget = _MAX_NAME_LEN - len(sep_prefix)
+        if budget <= 0:
+            # Degenerate: prefix alone fills the budget. Hard-truncate.
+            result = sep_prefix[:_MAX_NAME_LEN].rstrip("-")
+        else:
+            suffix_clean = suffix_clean[:budget].rstrip("-")
+            result = f"{sep_prefix}{suffix_clean}" if suffix_clean else prefix_clean
+    else:
+        result = _clean(raw)[:_MAX_NAME_LEN].rstrip("-")
+
+    if not result:
+        result = "unknown"
+    return result
 
 
 class HermesEventNormalizer:
-    """Convert hermes-agent on_memory_write events into mori proposal payloads.
+    """Translate hermes ``on_memory_write`` events into mori name + op data.
 
-    Parameters
-    ----------
-    ephemeral_target_patterns:
-        Regex patterns (compiled case-insensitively) applied against the target
-        *basename* (last path component).  If any match AND no durability
-        frontmatter is present, the event is dropped.  Pass an empty list to
-        disable the regex fallback entirely.
+    Stateless: holds no configuration. Constructed once and reused.
     """
 
-    def __init__(
+    def derive_name(
         self,
-        ephemeral_target_patterns: list[str] | None = None,
-    ) -> None:
-        patterns = (
-            ephemeral_target_patterns
-            if ephemeral_target_patterns is not None
-            else _DEFAULT_EPHEMERAL_PATTERNS
-        )
-        self._ephemeral_re: list[re.Pattern[str]] = [re.compile(p) for p in patterns]
+        target: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Return the deterministic, sanitised mori name for an event.
+
+        ``hermes-{target}-{stable_key}`` where *stable_key* is metadata-driven
+        for ``user`` and metadata-or-content-driven for ``memory``.
+        """
+        metadata = metadata or {}
+        target_norm = self._norm_target(target)
+
+        if target_norm == "user":
+            stable_key = str(metadata.get("user_id", "default")).strip() or "default"
+        else:  # memory
+            memory_id = str(metadata.get("memory_id", "")).strip()
+            if memory_id:
+                stable_key = memory_id
+            else:
+                slug = _slugify(content[:_SLUG_CONTENT_CHARS]) or "memory"
+                suffix = content_hash(content)[:8]
+                stable_key = f"{slug}-{suffix}"
+
+        prefix = f"hermes-{target_norm}-"
+        return sanitize_name(f"{prefix}{stable_key}", prefix=prefix)
 
     def normalize(
         self,
         action: str,
         target: str,
         content: str,
-    ) -> dict[str, Any] | None:
-        """Normalise a hermes memory event into a mori proposal payload.
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Translate an event into a normalised descriptor.
 
-        Returns ``None`` if the event should be dropped (ephemeral).
-        Returns a dict ready to pass to ``MoriRestClient.propose(**payload)``
-        for durable events.
+        Returns a dict with:
+          * ``op``           — "propose" | "supersede" | "retract"
+          * ``name``         — sanitised mori name
+          * ``target``       — normalised target ("memory" | "user")
+          * ``content``      — the raw content (body)
+          * ``content_hash`` — sha256 of content
+          * ``title`` / ``description`` / ``type`` / ``tags`` — proposal fields
 
-        The ``action`` parameter is expected to be one of:
-          * "add"     — new memory
-          * "replace" — update to existing memory
-          * "remove"  — retraction request
-
-        Unknown actions are treated as "add".
+        Never returns ``None`` -- every real ``on_memory_write`` is
+        canon-worthy.
         """
-        meta, body_text = _strip_frontmatter(content)
+        metadata = metadata or {}
+        op = action_to_op(action)
+        target_norm = self._norm_target(target)
+        name = self.derive_name(target, content, metadata)
 
-        # ── Durability decision ──────────────────────────────────────────────
-        durability = str(meta.get("durability", "")).strip().lower()
-        memory_id = str(meta.get("memory_id", "")).strip()
-        extra_tags: list[str] = meta.get("tags", []) if isinstance(meta.get("tags"), list) else []
-        mem_type: str = str(meta.get("type", "project")).strip() or "project"
+        chash = content_hash(content)
+        mem_type = str(metadata.get("type", "")).strip() or (
+            "user" if target_norm == "user" else "project"
+        )
+        extra_tags = metadata.get("tags", [])
+        if not isinstance(extra_tags, list):
+            extra_tags = []
+        tags = ["source:hermes", f"target:{target_norm}", *extra_tags]
 
-        if durability == "ephemeral":
-            logger.debug(
-                "normalizer: dropping ephemeral event (frontmatter) action=%s target=%r",
-                action,
-                target,
-            )
-            return None
+        title = str(metadata.get("title", "")).strip() or name
+        description = str(metadata.get("description", "")).strip()
 
-        if not durability:
-            # No frontmatter signal — check target basename against regex patterns.
-            basename = target.replace("\\", "/").split("/")[-1]
-            for pat in self._ephemeral_re:
-                if pat.search(basename):
-                    logger.debug(
-                        "normalizer: dropping ephemeral event (regex %r) action=%s target=%r",
-                        pat.pattern,
-                        action,
-                        target,
-                    )
-                    return None
-
-        # ── Name derivation ─────────────────────────────────────────────────
-        if memory_id:
-            base_name = f"hermes-{memory_id}"
-        else:
-            # Degraded path — derive from content.
-            slug = _slugify(body_text[:_SLUG_CONTENT_CHARS]) or "unknown"
-            base_name = f"hermes-{slug}"
-            logger.warning(
-                "normalizer: no memory_id in frontmatter for target=%r — "
-                "using content-derived name %r (degraded path; name may drift)",
-                target,
-                base_name,
-            )
-
-        # Idempotency key is always from the ORIGINAL content (pre-strip) so
-        # the outbox dedup survives restarts regardless of frontmatter presence.
-        idempotency_key = _sha256(content)
-
-        tags = ["source:hermes"] + extra_tags
-
-        # ── Retraction branch ───────────────────────────────────────────────
-        if action == "remove":
-            retraction_name = f"{base_name}-retracted"
-            retraction_body = (
-                f"RETRACTION PROPOSAL\n\n"
-                f"The hermes agent has requested removal of the memory "
-                f"identified as `{base_name}`.\n\n"
-                f"Original content at time of retraction request:\n\n"
-                f"---\n{body_text or content}\n---\n\n"
-                f"A human reviewer should confirm whether this memory should "
-                f"be removed or downgraded in the canon."
-            )
-            return {
-                "name": retraction_name,
-                "title": f"Retraction: {base_name}",
-                "description": f"Agent requested removal of {base_name}",
-                "type": "decision",
-                "body": retraction_body,
-                "tags": tags + ["retraction"],
-                "idempotency_key": idempotency_key,
-            }
-
-        # ── Normal durable proposal ─────────────────────────────────────────
         return {
-            "name": base_name,
-            "title": str(meta.get("title", base_name)) or base_name,
-            "description": str(meta.get("description", "")) or "",
+            "op": op,
+            "name": name,
+            "target": target_norm,
+            "content": content,
+            "content_hash": chash,
+            "title": title,
+            "description": description,
             "type": mem_type,
-            "body": body_text,
             "tags": tags,
-            "idempotency_key": idempotency_key,
         }
+
+    @staticmethod
+    def _norm_target(target: str) -> str:
+        target_norm = (target or "").strip().lower()
+        if target_norm not in _VALID_TARGETS:
+            logger.warning("normalizer: unexpected target %r — namespacing as 'memory'", target)
+            return "memory"
+        return target_norm
