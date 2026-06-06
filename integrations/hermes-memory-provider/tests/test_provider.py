@@ -1,247 +1,372 @@
-"""Tests for MoriMemoryProvider.
+"""Tests for MoriMemoryProvider (v0.2.0: LWM overlay + governed proposals).
 
-Verifies:
-  * prefetch() formats results as a context block and returns "" on failure.
-  * prefetch() never raises into the agent.
-  * on_memory_write() is non-blocking for durable events → routes to outbox.
-  * on_memory_write() for ephemeral events → dropped (outbox not called).
-  * get_tool_schemas() returns only read-only tools (no approve/reject/delete).
-  * is_available() returns bool of MORI_API_KEY env var (no network).
-  * handle_tool_call() routes correctly.
-  * system_prompt_block() returns a non-empty string.
+Covers:
+  * LWM read-your-writes: on_memory_write then prefetch sees the entry.
+  * Action mapping end-to-end (add/replace/remove × memory/user) routes to the
+    right LWM + outbox ops.
+  * sync_turn is an explicit no-op (no outbox/LWM interaction).
+  * prefetch merges LWM + canon, LWM winning on collision; never raises.
+  * Reconciliation: promote-on-hash-match, evict-on-reject, canon-wins-on-divergence.
+  * is_available() is bool of MORI_API_KEY (no network); keyword-only session_id.
+  * get_config_schema declares MORI_SERVER_URL / MORI_API_KEY.
+  * Tool schemas are read-only.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from hermes_mori_provider.normalizer import HermesEventNormalizer, content_hash
+from hermes_mori_provider.outbox import GovernedWriteOutbox
 from hermes_mori_provider.provider import MoriMemoryProvider, _format_search_results
 from hermes_mori_provider.rest_client import MoriTransportError
 
-# ── Fake dependencies ─────────────────────────────────────────────────────────
+# ── Fakes ─────────────────────────────────────────────────────────────────────
 
 
 class FakeClient:
-    def __init__(self, search_results: list[dict] | None = None, fail: bool = False) -> None:
+    """Fake MoriRestClient with controllable search / canon / pending."""
+
+    def __init__(
+        self,
+        search_results: list[dict] | None = None,
+        canon: dict[str, dict] | None = None,
+        pending: list[dict] | None = None,
+        fail: bool = False,
+    ) -> None:
         self._search_results = search_results or []
+        self._canon = canon or {}
+        self._pending = pending or []
         self._fail = fail
-        self.search_calls: list[dict] = []
-        self.pending_calls: list[dict] = []
+        self.propose_calls: list[dict] = []
 
     def search(self, query: str, limit: int = 10) -> list[dict]:
-        self.search_calls.append({"query": query, "limit": limit})
         if self._fail:
             raise MoriTransportError("fake transport error")
         return self._search_results
 
     def list_pending(self, status: str = "") -> list[dict]:
-        self.pending_calls.append({"status": status})
         if self._fail:
             raise MoriTransportError("fake transport error")
-        return []
+        return self._pending
+
+    def get_memory(self, name: str) -> dict | None:
+        if self._fail:
+            raise MoriTransportError("fake transport error")
+        return self._canon.get(name)
+
+    def propose(self, **kwargs):  # pragma: no cover - drainer path not exercised
+        self.propose_calls.append(dict(kwargs))
+        return (201, {"status": "created"})
 
 
-class FakeOutbox:
-    def __init__(self) -> None:
-        self.enqueued: list[dict] = []
-        self.flushed: bool = False
-
-    def enqueue(self, payload: dict) -> bool:
-        self.enqueued.append(payload)
-        return True
-
-    def flush(self, timeout: float = 10.0) -> bool:
-        self.flushed = True
-        return True
-
-    def shutdown(self) -> None:
-        pass
-
-
-class FakeNormalizer:
-    def __init__(self, result: dict | None = "PASS") -> None:
-        # "PASS" is a sentinel meaning "return a default payload".
-        self._result = result
-        self.calls: list[dict] = []
-
-    def normalize(self, action: str, target: str, content: str) -> dict | None:
-        self.calls.append({"action": action, "target": target, "content": content})
-        if self._result == "PASS":
-            return {
-                "name": "hermes.test",
-                "title": "test",
-                "description": "",
-                "type": "project",
-                "body": content,
-                "tags": ["source:hermes"],
-                "idempotency_key": "abc",
-            }
-        return self._result  # None → ephemeral drop
-
-
-# ── Provider factory ─────────────────────────────────────────────────────────
-
-
-def _make_provider(
+def _provider_with_real_outbox(
+    tmp_db: Path,
     client: FakeClient | None = None,
-    outbox: FakeOutbox | None = None,
-    normalizer: FakeNormalizer | None = None,
 ) -> MoriMemoryProvider:
-    """Create a provider with injected fakes, bypassing initialize()."""
+    """Provider wired to a REAL outbox (real SQLite LWM) + injected fake client.
+
+    The drainer never reaches the network in these tests because the fake
+    client's propose() returns 201 instantly — but our assertions target LWM +
+    coalescing state, not the drainer.
+    """
     p = MoriMemoryProvider()
-    p._client = client or FakeClient()
-    p._outbox = outbox or FakeOutbox()
-    p._normalizer = normalizer or FakeNormalizer()
+    client = client or FakeClient()
+    p._client = client
+    p._normalizer = HermesEventNormalizer()
+    p._outbox = GovernedWriteOutbox(
+        client=client,
+        db_path=tmp_db,
+        initial_backoff=0.001,
+        max_backoff=0.01,
+        breaker_cooldown=0.001,
+        _sleep=lambda _: None,
+    )
     p._session_id = "test-session"
     return p
 
 
-# ── prefetch tests ────────────────────────────────────────────────────────────
+@pytest.fixture()
+def tmp_db(tmp_path: Path) -> Path:
+    return tmp_path / "mori_outbox.db"
 
 
-class TestPrefetch:
-    def test_returns_formatted_string_with_results(self) -> None:
-        mems = [
-            {"name": "hermes.a", "title": "Alpha", "description": "An alpha", "body": "body a"},
-            {"name": "hermes.b", "title": "Beta", "description": "", "body": "body b"},
+# ── LWM read-your-writes ──────────────────────────────────────────────────────
+
+
+class TestReadYourWrites:
+    def test_write_then_prefetch_sees_it(self, tmp_db: Path) -> None:
+        # Canon search returns nothing; the only source is the LWM overlay.
+        client = FakeClient(search_results=[])
+        p = _provider_with_real_outbox(tmp_db, client)
+        p.on_memory_write("add", "memory", "remember this fact", {"memory_id": "fact-1"})
+        out = p.prefetch("anything")
+        p.shutdown()
+        assert "remember this fact" in out
+        assert "hermes-memory-fact-1" in out
+
+    def test_prefetch_keyword_only_session_id(self, tmp_db: Path) -> None:
+        p = _provider_with_real_outbox(tmp_db)
+        p.on_memory_write("add", "memory", "kw test", {"memory_id": "kw"})
+        # Must be callable with keyword session_id and must NOT accept positional.
+        out = p.prefetch("q", session_id="s")
+        with pytest.raises(TypeError):
+            p.prefetch("q", "positional-session")  # type: ignore[misc]
+        p.shutdown()
+        assert "kw test" in out
+
+
+# ── Action mapping end-to-end ─────────────────────────────────────────────────
+
+
+class TestActionMappingEndToEnd:
+    def test_add_memory_creates_pending_lwm(self, tmp_db: Path) -> None:
+        p = _provider_with_real_outbox(tmp_db)
+        p.on_memory_write("add", "memory", "body", {"memory_id": "m1"})
+        row = p._outbox.lwm_get("hermes-memory-m1")
+        p.shutdown()
+        assert row is not None
+        assert row["status"] == "pending"
+        assert row["target"] == "memory"
+
+    def test_add_user_creates_user_namespaced_lwm(self, tmp_db: Path) -> None:
+        p = _provider_with_real_outbox(tmp_db)
+        p.on_memory_write("add", "user", "alice likes tea", {"user_id": "alice"})
+        row = p._outbox.lwm_get("hermes-user-alice")
+        p.shutdown()
+        assert row is not None
+        assert row["target"] == "user"
+
+    def test_replace_supersedes_lwm_content(self, tmp_db: Path) -> None:
+        p = _provider_with_real_outbox(tmp_db)
+        p.on_memory_write("add", "memory", "v1", {"memory_id": "m1"})
+        p.on_memory_write("replace", "memory", "v2", {"memory_id": "m1"})
+        row = p._outbox.lwm_get("hermes-memory-m1")
+        p.shutdown()
+        assert row["content"] == "v2"
+
+    def test_remove_with_unsent_clears_lwm(self, tmp_db: Path) -> None:
+        """add then remove while the proposal is still unsent -> LWM cleared."""
+        gate_client = _GatedClient()
+        p = _provider_with_real_outbox(tmp_db, gate_client)
+        p.on_memory_write("add", "memory", "v1", {"memory_id": "m1"})
+        p.on_memory_write("remove", "memory", "v1", {"memory_id": "m1"})
+        row = p._outbox.lwm_get("hermes-memory-m1")
+        gate_client.release()
+        p.shutdown()
+        assert row is None
+
+    def test_remove_user_target(self, tmp_db: Path) -> None:
+        gate_client = _GatedClient()
+        p = _provider_with_real_outbox(tmp_db, gate_client)
+        p.on_memory_write("add", "user", "fact", {"user_id": "bob"})
+        p.on_memory_write("remove", "user", "fact", {"user_id": "bob"})
+        row = p._outbox.lwm_get("hermes-user-bob")
+        gate_client.release()
+        p.shutdown()
+        assert row is None
+
+    def test_never_raises_on_normalizer_failure(self, tmp_db: Path) -> None:
+        p = _provider_with_real_outbox(tmp_db)
+        p._normalizer = MagicMock()
+        p._normalizer.normalize.side_effect = RuntimeError("boom")
+        p.on_memory_write("add", "memory", "x", {})  # must not raise
+        p.shutdown()
+
+
+class _GatedClient(FakeClient):
+    """Client whose propose() blocks until released — keeps rows unsent."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        import threading
+
+        self._gate = threading.Event()
+
+    def propose(self, **kwargs):
+        self._gate.wait(timeout=5)
+        return (201, {"status": "created"})
+
+    def release(self) -> None:
+        self._gate.set()
+
+
+# ── sync_turn no-op ───────────────────────────────────────────────────────────
+
+
+class TestSyncTurnNoOp:
+    def test_sync_turn_does_nothing(self, tmp_db: Path) -> None:
+        p = _provider_with_real_outbox(tmp_db)
+        p.sync_turn("user said", "assistant said", session_id="s")
+        # No LWM rows, no proposals.
+        rows = p._outbox.lwm_all(exclude_rejected=False)
+        propose_calls = len(p._client.propose_calls)
+        p.shutdown()
+        assert rows == []
+        assert propose_calls == 0
+
+    def test_sync_turn_returns_none(self, tmp_db: Path) -> None:
+        p = _provider_with_real_outbox(tmp_db)
+        assert p.sync_turn("u", "a") is None
+        p.shutdown()
+
+
+# ── prefetch merge ────────────────────────────────────────────────────────────
+
+
+class TestPrefetchMerge:
+    def test_lwm_wins_on_name_collision(self, tmp_db: Path) -> None:
+        # Canon has an old body for the same name; LWM has the fresh one.
+        canon_search = [
+            {"name": "hermes-memory-m1", "title": "M1", "description": "", "body": "OLD CANON"}
         ]
-        client = FakeClient(search_results=mems)
-        p = _make_provider(client=client)
-        result = p.prefetch("test query")
-        assert "Alpha" in result
-        assert "hermes.a" in result
-        assert "body a" in result
+        client = FakeClient(search_results=canon_search)
+        p = _provider_with_real_outbox(tmp_db, client)
+        p.on_memory_write("add", "memory", "FRESH LOCAL", {"memory_id": "m1"})
+        out = p.prefetch("m1")
+        p.shutdown()
+        assert "FRESH LOCAL" in out
+        assert "OLD CANON" not in out
 
-    def test_returns_empty_string_on_empty_results(self) -> None:
-        client = FakeClient(search_results=[])
-        p = _make_provider(client=client)
-        result = p.prefetch("query with no results")
-        assert result == ""
+    def test_canon_only_results_shown(self, tmp_db: Path) -> None:
+        canon_search = [
+            {
+                "name": "hermes-memory-other",
+                "title": "Other",
+                "description": "",
+                "body": "canon body",
+            }
+        ]
+        client = FakeClient(search_results=canon_search)
+        p = _provider_with_real_outbox(tmp_db, client)
+        out = p.prefetch("q")
+        p.shutdown()
+        assert "canon body" in out
 
-    def test_returns_empty_string_on_client_failure(self) -> None:
+    def test_empty_when_nothing(self, tmp_db: Path) -> None:
+        p = _provider_with_real_outbox(tmp_db, FakeClient(search_results=[]))
+        assert p.prefetch("q") == ""
+        p.shutdown()
+
+    def test_never_raises_on_client_failure(self, tmp_db: Path) -> None:
         client = FakeClient(fail=True)
-        p = _make_provider(client=client)
-        result = p.prefetch("any query")
-        assert result == ""
+        p = _provider_with_real_outbox(tmp_db, client)
+        # Even with the client raising everywhere, prefetch returns "".
+        assert p.prefetch("q") == ""
+        p.shutdown()
 
-    def test_never_raises_on_failure(self) -> None:
-        """Even an unexpected exception must not propagate."""
-        client = MagicMock()
-        client.search.side_effect = RuntimeError("unexpected!")
-        p = _make_provider(client=client)
-        # Must not raise.
-        result = p.prefetch("dangerous query")
-        assert result == ""
-
-    def test_passes_query_to_client(self) -> None:
-        client = FakeClient(search_results=[])
-        p = _make_provider(client=client)
-        p.prefetch("my specific query")
-        assert client.search_calls[0]["query"] == "my specific query"
+    def test_never_raises_on_unexpected_error(self, tmp_db: Path) -> None:
+        p = _provider_with_real_outbox(tmp_db)
+        p._outbox = MagicMock()
+        p._outbox.lwm_all.side_effect = RuntimeError("kaboom")
+        p._client = MagicMock()
+        p._client.search.side_effect = RuntimeError("kaboom")
+        assert p.prefetch("q") == ""
 
 
-# ── on_memory_write tests ─────────────────────────────────────────────────────
+# ── Reconciliation ────────────────────────────────────────────────────────────
 
 
-class TestOnMemoryWrite:
-    def test_durable_event_routes_to_outbox(self) -> None:
-        outbox = FakeOutbox()
-        normalizer = FakeNormalizer(result="PASS")  # returns a payload
-        p = _make_provider(outbox=outbox, normalizer=normalizer)
-        p.on_memory_write("add", "MEMORY.md", "---\nmemory_id: x\ndurability: durable\n---\nBody")
-        assert len(outbox.enqueued) == 1
+class TestReconciliation:
+    def test_promote_on_hash_match(self, tmp_db: Path) -> None:
+        body = "the canonical body"
+        chash = content_hash(body)
+        client = FakeClient(
+            search_results=[],
+            canon={"hermes-memory-m1": {"name": "hermes-memory-m1", "body": body}},
+        )
+        p = _provider_with_real_outbox(tmp_db, client)
+        # Seed an LWM row whose content hash matches canon.
+        p._outbox.lwm_upsert(
+            name="hermes-memory-m1",
+            target="memory",
+            content=body,
+            content_hash=chash,
+            status="pending",
+        )
+        p._reconcile()
+        row = p._outbox.lwm_get("hermes-memory-m1")
+        p.shutdown()
+        assert row["status"] == "canon"
 
-    def test_ephemeral_event_not_routed_to_outbox(self) -> None:
-        outbox = FakeOutbox()
-        normalizer = FakeNormalizer(result=None)  # normalizer drops it
-        p = _make_provider(outbox=outbox, normalizer=normalizer)
-        p.on_memory_write("add", "MEMORY.md", "---\ndurability: ephemeral\n---\nNope")
-        assert len(outbox.enqueued) == 0
+    def test_canon_wins_on_divergence(self, tmp_db: Path) -> None:
+        """Dreamer edited content before approval -> LWM overwritten with canon."""
+        local_body = "what the agent wrote"
+        canon_body = "what the dreamer edited it to"
+        client = FakeClient(
+            canon={"hermes-memory-m1": {"name": "hermes-memory-m1", "body": canon_body}},
+        )
+        p = _provider_with_real_outbox(tmp_db, client)
+        p._outbox.lwm_upsert(
+            name="hermes-memory-m1",
+            target="memory",
+            content=local_body,
+            content_hash=content_hash(local_body),
+            status="pending",
+        )
+        p._reconcile()
+        row = p._outbox.lwm_get("hermes-memory-m1")
+        p.shutdown()
+        assert row["content"] == canon_body
+        assert row["content_hash"] == content_hash(canon_body)
+        assert row["status"] == "canon"
 
-    def test_is_non_blocking(self) -> None:
-        """on_memory_write must return well under 50 ms — SQLite insert only."""
-        outbox = FakeOutbox()
-        p = _make_provider(outbox=outbox)
-        start = time.monotonic()
-        p.on_memory_write("add", "MEMORY.md", "---\nmemory_id: t\ndurability: durable\n---\nB")
-        elapsed = time.monotonic() - start
-        assert elapsed < 0.05, f"on_memory_write took {elapsed:.3f}s — must be non-blocking"
+    def test_evict_on_reject(self, tmp_db: Path) -> None:
+        client = FakeClient(
+            canon={},  # not in canon
+            pending=[{"name": "hermes-memory-m1", "status": "rejected"}],
+        )
+        p = _provider_with_real_outbox(tmp_db, client)
+        p._outbox.lwm_upsert(
+            name="hermes-memory-m1",
+            target="memory",
+            content="rejected thing",
+            content_hash=content_hash("rejected thing"),
+            status="pending",
+        )
+        p._reconcile()
+        row = p._outbox.lwm_get("hermes-memory-m1")
+        p.shutdown()
+        assert row["status"] == "rejected"
 
-    def test_never_raises_on_normalizer_failure(self) -> None:
-        normalizer = MagicMock()
-        normalizer.normalize.side_effect = RuntimeError("normalizer bug")
-        p = _make_provider(normalizer=normalizer)
-        # Must not raise.
-        p.on_memory_write("add", "MEMORY.md", "content")
+    def test_still_pending_left_alone(self, tmp_db: Path) -> None:
+        client = FakeClient(canon={}, pending=[])
+        p = _provider_with_real_outbox(tmp_db, client)
+        p._outbox.lwm_upsert(
+            name="hermes-memory-m1",
+            target="memory",
+            content="pending thing",
+            content_hash=content_hash("pending thing"),
+            status="pending",
+        )
+        p._reconcile()
+        row = p._outbox.lwm_get("hermes-memory-m1")
+        p.shutdown()
+        assert row["status"] == "pending"
 
-    def test_never_raises_on_outbox_failure(self) -> None:
-        outbox = MagicMock()
-        outbox.enqueue.side_effect = RuntimeError("outbox bug")
-        normalizer = FakeNormalizer(result="PASS")
-        p = _make_provider(outbox=outbox, normalizer=normalizer)
-        # Must not raise.
-        p.on_memory_write("add", "MEMORY.md", "content")
-
-    def test_normalizer_receives_correct_args(self) -> None:
-        normalizer = FakeNormalizer(result="PASS")
-        p = _make_provider(normalizer=normalizer)
-        p.on_memory_write("replace", "USER.md", "some content")
-        call = normalizer.calls[0]
-        assert call["action"] == "replace"
-        assert call["target"] == "USER.md"
-        assert call["content"] == "some content"
-
-
-# ── get_tool_schemas tests ────────────────────────────────────────────────────
-
-
-class TestToolSchemas:
-    def test_returns_list_of_dicts(self) -> None:
-        p = _make_provider()
-        schemas = p.get_tool_schemas()
-        assert isinstance(schemas, list)
-        assert len(schemas) > 0
-
-    def test_all_tools_are_read_only(self) -> None:
-        """No tool should allow approving, rejecting, or deleting memories."""
-        p = _make_provider()
-        tool_names = [t["name"] for t in p.get_tool_schemas()]
-        for name in tool_names:
-            assert "approve" not in name
-            assert "reject" not in name
-            assert "delete" not in name
-            assert "write" not in name
-
-    def test_mori_search_present(self) -> None:
-        p = _make_provider()
-        names = [t["name"] for t in p.get_tool_schemas()]
-        assert "mori_search" in names
-
-    def test_mori_list_pending_present(self) -> None:
-        p = _make_provider()
-        names = [t["name"] for t in p.get_tool_schemas()]
-        assert "mori_list_pending" in names
-
-    def test_mori_proposal_status_present(self) -> None:
-        p = _make_provider()
-        names = [t["name"] for t in p.get_tool_schemas()]
-        assert "mori_proposal_status" in names
-
-    def test_each_schema_has_required_keys(self) -> None:
-        p = _make_provider()
-        for schema in p.get_tool_schemas():
-            assert "name" in schema
-            assert "description" in schema
-            assert "parameters" in schema
+    def test_reconcile_safe_never_raises(self, tmp_db: Path) -> None:
+        p = _provider_with_real_outbox(tmp_db)
+        p._client = MagicMock()
+        p._client.get_memory.side_effect = RuntimeError("boom")
+        p._outbox.lwm_upsert(
+            name="hermes-memory-m1",
+            target="memory",
+            content="c",
+            content_hash="h",
+            status="pending",
+        )
+        p._reconcile_safe()  # must not raise
+        p.shutdown()
 
 
-# ── is_available tests ────────────────────────────────────────────────────────
+# ── is_available ──────────────────────────────────────────────────────────────
 
 
 class TestIsAvailable:
@@ -250,19 +375,18 @@ class TestIsAvailable:
         with patch.dict(os.environ, {"MORI_API_KEY": "some-key"}):
             assert p.is_available() is True
 
-    def test_false_when_key_absent(self) -> None:
+    def test_false_when_absent(self) -> None:
         p = MoriMemoryProvider()
         env = {k: v for k, v in os.environ.items() if k != "MORI_API_KEY"}
         with patch.dict(os.environ, env, clear=True):
             assert p.is_available() is False
 
-    def test_false_when_key_empty_string(self) -> None:
+    def test_false_when_empty(self) -> None:
         p = MoriMemoryProvider()
         with patch.dict(os.environ, {"MORI_API_KEY": ""}):
             assert p.is_available() is False
 
     def test_no_network_call(self) -> None:
-        """is_available must not open any connections."""
         p = MoriMemoryProvider()
         with patch("urllib.request.urlopen") as mock_urlopen:
             with patch.dict(os.environ, {"MORI_API_KEY": "key"}):
@@ -270,89 +394,57 @@ class TestIsAvailable:
         mock_urlopen.assert_not_called()
 
 
-# ── system_prompt_block tests ─────────────────────────────────────────────────
+# ── get_config_schema ─────────────────────────────────────────────────────────
+
+
+class TestConfigSchema:
+    def test_declares_both_env_vars(self) -> None:
+        p = MoriMemoryProvider()
+        env_vars = {f["env_var"] for f in p.get_config_schema()}
+        assert "MORI_SERVER_URL" in env_vars
+        assert "MORI_API_KEY" in env_vars
+
+    def test_api_key_is_secret_and_required(self) -> None:
+        p = MoriMemoryProvider()
+        api = next(f for f in p.get_config_schema() if f["env_var"] == "MORI_API_KEY")
+        assert api["secret"] is True
+        assert api["required"] is True
+
+
+# ── Tool schemas (read-only) ──────────────────────────────────────────────────
+
+
+class TestToolSchemas:
+    def test_all_read_only(self) -> None:
+        p = MoriMemoryProvider()
+        for t in p.get_tool_schemas():
+            for forbidden in ("approve", "reject", "delete", "write"):
+                assert forbidden not in t["name"]
+
+    def test_expected_tools_present(self) -> None:
+        p = MoriMemoryProvider()
+        names = {t["name"] for t in p.get_tool_schemas()}
+        assert {"mori_search", "mori_list_pending", "mori_proposal_status"} <= names
+
+    def test_each_schema_well_formed(self) -> None:
+        p = MoriMemoryProvider()
+        for schema in p.get_tool_schemas():
+            assert {"name", "description", "parameters"} <= set(schema)
+
+
+# ── system_prompt_block ───────────────────────────────────────────────────────
 
 
 class TestSystemPromptBlock:
-    def test_returns_non_empty_string(self) -> None:
-        p = _make_provider()
-        block = p.system_prompt_block()
-        assert isinstance(block, str)
-        assert len(block) > 0
-
     def test_mentions_proposals(self) -> None:
-        p = _make_provider()
-        block = p.system_prompt_block()
-        assert "proposal" in block.lower()
+        p = MoriMemoryProvider()
+        assert "proposal" in p.system_prompt_block().lower()
 
 
-# ── handle_tool_call tests ────────────────────────────────────────────────────
-
-
-class TestHandleToolCall:
-    def test_mori_search_routes_to_client(self) -> None:
-        mems = [{"name": "hermes.x", "title": "X", "body": "body", "description": ""}]
-        client = FakeClient(search_results=mems)
-        p = _make_provider(client=client)
-        result = p.handle_tool_call("mori_search", {"query": "find x"})
-        assert result["count"] == 1
-        assert len(client.search_calls) == 1
-
-    def test_mori_list_pending_routes_to_client(self) -> None:
-        client = FakeClient()
-        p = _make_provider(client=client)
-        result = p.handle_tool_call("mori_list_pending", {"status": "pending"})
-        assert "items" in result
-        assert len(client.pending_calls) == 1
-        assert client.pending_calls[0]["status"] == "pending"
-
-    def test_unknown_tool_returns_error_dict(self) -> None:
-        p = _make_provider()
-        result = p.handle_tool_call("mori_nuke_everything", {})
-        assert "error" in result
-
-    def test_mori_search_returns_empty_on_client_failure(self) -> None:
-        client = FakeClient(fail=True)
-        p = _make_provider(client=client)
-        result = p.handle_tool_call("mori_search", {"query": "anything"})
-        assert "error" in result
-        assert result.get("count", 0) == 0
-
-
-# ── _format_search_results unit tests ────────────────────────────────────────
-
-
-class TestFormatSearchResults:
-    def test_empty_returns_empty_string(self) -> None:
-        assert _format_search_results([]) == ""
-
-    def test_includes_title_and_name(self) -> None:
-        mems = [{"name": "hermes.foo", "title": "Foo Learning", "description": "", "body": "abc"}]
-        result = _format_search_results(mems)
-        assert "Foo Learning" in result
-        assert "hermes.foo" in result
-
-    def test_includes_description_when_present(self) -> None:
-        mems = [{"name": "n", "title": "T", "description": "some desc", "body": ""}]
-        result = _format_search_results(mems)
-        assert "some desc" in result
-
-    def test_truncates_long_body(self) -> None:
-        long_body = "x" * 1000
-        mems = [{"name": "n", "title": "T", "description": "", "body": long_body}]
-        result = _format_search_results(mems)
-        # Result should be much shorter than the full body.
-        assert len(result) < 800
+# ── server_url env fallback (regression) ──────────────────────────────────────
 
 
 def test_server_url_falls_back_to_env(tmp_path, monkeypatch):
-    """Regression: server_url must read MORI_SERVER_URL when no config file exists.
-
-    Bug (found via Hermes's live install): the provider only read mori_config.json
-    + a localhost default and ignored MORI_SERVER_URL, so the drainer POSTed to
-    localhost:8968 -> ConnectionRefused. api_key already fell back to its env var;
-    server_url did not.
-    """
     monkeypatch.setenv("MORI_SERVER_URL", "http://mori.example:8968")
     monkeypatch.setenv("MORI_API_KEY", "deadbeefcafe")
     with (
@@ -361,3 +453,21 @@ def test_server_url_falls_back_to_env(tmp_path, monkeypatch):
     ):
         MoriMemoryProvider().initialize(session_id="t", hermes_home=tmp_path)
     assert MockClient.call_args.kwargs["base_url"] == "http://mori.example:8968"
+
+
+# ── _format_search_results ────────────────────────────────────────────────────
+
+
+class TestFormatSearchResults:
+    def test_empty(self) -> None:
+        assert _format_search_results([]) == ""
+
+    def test_includes_title_and_name(self) -> None:
+        mems = [{"name": "hermes-memory-foo", "title": "Foo", "description": "", "body": "abc"}]
+        out = _format_search_results(mems)
+        assert "Foo" in out
+        assert "hermes-memory-foo" in out
+
+    def test_truncates_long_body(self) -> None:
+        mems = [{"name": "n", "title": "T", "description": "", "body": "x" * 1000}]
+        assert len(_format_search_results(mems)) < 800

@@ -178,6 +178,43 @@ class MoriRestClient:
         except Exception as exc:
             raise MoriTransportError(f"Transport failure listing pending: {exc}") from exc
 
+    def get_memory(self, name: str) -> dict | None:
+        """Fetch a single canon memory by exact name.
+
+        GET /api/memories/<name>
+
+        Returns the memory dict on success, ``None`` on 404 (no such canon
+        memory). Used by reconciliation to compare canon content-hash against
+        the local working-memory entry. Raises ``MoriTransportError`` on 5xx /
+        transport failure so the caller can degrade gracefully.
+
+        NOTE: added during the v0.2.0 rewrite — ``search`` is fuzzy and cannot
+        guarantee an exact-name hit, so reconciliation needs a direct lookup.
+        """
+        url = f"{self._base_url}/api/memories/{urllib.parse.quote(name, safe='')}"
+        req = urllib.request.Request(url, headers=self._headers())
+        try:
+            with self._urlopen(req, timeout=self._timeout) as resp:
+                body_bytes = resp.read().decode()
+                if not body_bytes:
+                    return None
+                data = json.loads(body_bytes)
+                # Accept either a bare memory dict or {"memory": {...}}.
+                if isinstance(data, dict) and "memory" in data:
+                    return data["memory"]
+                return data if isinstance(data, dict) else None
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            if exc.code >= 500:
+                raise MoriTransportError(
+                    f"Server error fetching {name!r}: HTTP {exc.code}", status_code=exc.code
+                ) from exc
+            logger.warning("mori get_memory HTTP %s for %r — treating as absent", exc.code, name)
+            return None
+        except Exception as exc:
+            raise MoriTransportError(f"Transport failure fetching {name!r}: {exc}") from exc
+
     # ── Internals ───────────────────────────────────────────────────────────
 
     def _headers(self) -> dict[str, str]:

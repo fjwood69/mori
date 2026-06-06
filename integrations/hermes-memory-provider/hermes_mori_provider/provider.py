@@ -1,37 +1,32 @@
 """MoriMemoryProvider — hermes-agent MemoryProvider plugin.
 
-Wires together MoriRestClient, GovernedWriteOutbox, and HermesEventNormalizer
-to mirror the agent's durable learnings to a self-hosted mori server as
-governed proposals, and to let the agent recall from mori.
+Two-tier proxy over a GOVERNED mori store:
 
-hermes-agent discovers providers via the ``register`` entry point and calls
-them duck-typed — this module does NOT import any hermes-agent ABC.
+* **Local Working Memory (LWM)** — a strongly-consistent SQLite overlay so the
+  agent's own writes are visible to ``prefetch`` immediately (read-your-writes),
+  before any governance approval.
+* **Async governed-proposal pipeline** — the existing crash-durable outbox
+  drains LWM writes to mori as PROPOSALS (held pending until a human "dreamer"
+  approves them into canon).
 
-Plugin entry point
-------------------
-    from hermes_mori_provider import register
+hermes-agent calls this provider duck-typed via the real MemoryProvider
+contract; this module does NOT import any hermes-agent ABC.
 
-    register(ctx)  # ctx.register_memory_provider(provider_instance)
+Hook choices (validated architecture)
+-------------------------------------
+* ``on_memory_write`` is the ONLY hook that drives mori proposals. It fires only
+  when the agent's built-in memory tool edits MEMORY.md / USER.md.
+* ``sync_turn`` is an explicit **no-op** — mirroring every turn would flood the
+  dreamer queue with noise.
+* ``prefetch`` merges the LWM overlay with mori canon (LWM wins on collision),
+  and opportunistically reconciles LWM against canon. It NEVER raises into the
+  agent.
 
-MemoryProvider interface (duck-typed)
---------------------------------------
-Required:
-  name                                         → str
-  is_available()                               → bool
-  initialize(session_id, **kwargs)             → None
-  get_tool_schemas()                           → list[dict]
-  handle_tool_call(tool_name, args, **kwargs)  → Any
-  get_config_schema()                          → list[dict]
-  save_config(values, hermes_home)             → None
-
-Optional hooks (all no-ops safe to omit):
-  prefetch(query, *, session_id="")            → str
-  sync_turn(user_content, assistant_content, *, session_id="", messages=None) → None
-  on_session_end(messages)                     → None
-  system_prompt_block()                        → str
-  on_pre_compress(messages)                    → None
-  on_memory_write(action, target, content)     → None
-  shutdown()                                   → None
+Real ``on_memory_write`` contract
+---------------------------------
+``action`` in {"add", "replace", "remove"}; ``target`` in {"memory", "user"};
+plus ``content`` and optional ``metadata``. There is NO durability/ephemeral
+concept.
 """
 
 from __future__ import annotations
@@ -49,11 +44,11 @@ _FLUSH_TIMEOUT = 8.0
 
 
 class MoriMemoryProvider:
-    """hermes-agent MemoryProvider that mirrors durable learnings to mori.
+    """hermes-agent MemoryProvider mirroring durable learnings to mori.
 
-    The provider is intentionally defensive: every method that calls the
-    network is wrapped so that failures are logged but never raised into
-    the agent — hermes-agent must never be disrupted by a mori outage.
+    Every method that touches the network is wrapped so failures are logged but
+    never raised into the agent — hermes must never be disrupted by a mori
+    outage.
     """
 
     # ── Identity ──────────────────────────────────────────────────────────
@@ -65,20 +60,11 @@ class MoriMemoryProvider:
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
     def is_available(self) -> bool:
-        """Return True iff MORI_API_KEY is set in the environment.
-
-        Deliberately performs NO network call — hermes-agent may call this
-        frequently to check provider readiness.
-        """
+        """Return True iff MORI_API_KEY is set. Performs NO network call."""
         return bool(os.environ.get("MORI_API_KEY", "").strip())
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
-        """Set up the client, normaliser, and outbox.
-
-        ``kwargs`` contains at minimum ``hermes_home`` (a ``Path``-like value
-        pointing to the agent's data directory).  Config is read from the
-        persisted config file written by ``save_config``.
-        """
+        """Set up the client, normaliser, and outbox (with LWM table)."""
         from .normalizer import HermesEventNormalizer
         from .outbox import GovernedWriteOutbox
         from .rest_client import MoriRestClient
@@ -103,11 +89,7 @@ class MoriMemoryProvider:
     # ── Config schema ──────────────────────────────────────────────────────
 
     def get_config_schema(self) -> list[dict[str, Any]]:
-        """Return the list of configuration fields for this provider.
-
-        hermes-agent uses this to render a setup wizard.  Secrets are stored
-        in .env; non-secrets go to the plain config file.
-        """
+        """Declare configuration fields so hermes can manage them standardly."""
         return [
             {
                 "key": "server_url",
@@ -146,12 +128,7 @@ class MoriMemoryProvider:
     # ── Tool schemas ───────────────────────────────────────────────────────
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
-        """Return READ-ONLY tool schemas the agent may call.
-
-        The agent is intentionally limited to reading back its own proposals
-        and searching the store.  It cannot approve its own proposals — that
-        requires a human reviewer with the ``dreamer`` role.
-        """
+        """Return READ-ONLY tool schemas. The agent cannot approve its own work."""
         return [
             {
                 "name": "mori_search",
@@ -207,7 +184,7 @@ class MoriMemoryProvider:
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "The proposal name (e.g. 'hermes.my-learning')",
+                            "description": "The proposal name (e.g. 'hermes-memory-my-learning')",
                         }
                     },
                     "required": ["name"],
@@ -228,16 +205,23 @@ class MoriMemoryProvider:
     # ── Memory hooks ───────────────────────────────────────────────────────
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Search mori for relevant context and return a formatted block.
+        """Recall: merge LWM overlay + mori canon, LWM winning on collision.
 
-        Called by hermes-agent before each turn.  NEVER raises — failures
-        return an empty string so the agent proceeds normally.
+        Called before each turn. NEVER raises — returns "" on any failure so
+        the agent proceeds normally. ``session_id`` is KEYWORD-ONLY (a
+        positional signature would raise TypeError in hermes and silently fail).
         """
         try:
-            results = self._client.search(query=query, limit=_SEARCH_RESULT_LIMIT)
-            if not results:
+            # Opportunistic, best-effort reconciliation of the LWM overlay.
+            self._reconcile_safe()
+
+            lwm_rows = self._safe_lwm_all()
+            canon = self._safe_search(query, _SEARCH_RESULT_LIMIT)
+
+            merged = self._merge(lwm_rows, canon)
+            if not merged:
                 return ""
-            return _format_search_results(results)
+            return _format_search_results(merged)
         except Exception as exc:
             logger.warning("mori prefetch failed (query=%r): %s", query, exc)
             return ""
@@ -250,28 +234,62 @@ class MoriMemoryProvider:
         session_id: str = "",
         messages: list[dict] | None = None,
     ) -> None:
-        """No-op — turn-level syncing is not required by this provider."""
+        """Explicit NO-OP.
+
+        Mirroring every turn would flood the dreamer governance queue with
+        noise. Only ``on_memory_write`` drives mori proposals.
+        """
         return
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror a durable memory write to mori as a governed proposal.
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Bridge hook: mirror a memory-tool edit to LWM + the outbox.
 
-        NON-BLOCKING — normalisation is cheap, and the outbox enqueue is a
-        single SQLite INSERT that returns immediately.  The network call
-        happens in the background drainer thread.
+        Synchronous LWM write (read-your-writes) + non-blocking outbox enqueue.
+        ``action`` in {"add","replace","remove"}; ``target`` in {"memory","user"}.
+        Never raises into the agent.
         """
         try:
-            payload = self._normalizer.normalize(action=action, target=target, content=content)
-            if payload is None:
-                logger.debug("mori: dropping ephemeral write action=%s target=%r", action, target)
+            desc = self._normalizer.normalize(
+                action=action, target=target, content=content, metadata=metadata
+            )
+            op = desc["op"]
+            name = desc["name"]
+
+            payload = {
+                "op": op,
+                "name": name,
+                "title": desc["title"],
+                "description": desc["description"],
+                "type": desc["type"],
+                "body": desc["content"],
+                "tags": desc["tags"],
+                "idempotency_key": desc["content_hash"],
+            }
+
+            if op == "retract":
+                self._handle_retract(desc, payload)
                 return
+
+            # add (propose) / replace (supersede): LWM overlay first (sync),
+            # then enqueue the governed proposal (non-blocking).
+            self._outbox.lwm_upsert(
+                name=name,
+                target=desc["target"],
+                content=desc["content"],
+                content_hash=desc["content_hash"],
+                session_id=self._session_id,
+                status="pending",
+            )
             enqueued = self._outbox.enqueue(payload)
             if not enqueued:
-                logger.warning(
-                    "mori: outbox backpressure — proposal dropped for %r", payload.get("name")
-                )
+                logger.warning("mori: outbox backpressure — proposal dropped for %r", name)
         except Exception as exc:
-            # Never propagate into the agent.
             logger.error(
                 "mori on_memory_write failed (action=%s target=%r): %s", action, target, exc
             )
@@ -307,6 +325,167 @@ class MoriMemoryProvider:
                 self._outbox.shutdown()
         except Exception as exc:
             logger.warning("mori shutdown error: %s", exc)
+
+    # ── on_memory_write helpers ──────────────────────────────────────────────
+
+    def _handle_retract(self, desc: dict[str, Any], payload: dict[str, Any]) -> None:
+        """Handle a ``remove`` action.
+
+        If the prior proposal is still unsent in the outbox, ``enqueue`` cancels
+        it (add-then-remove while local = no-op) and we drop the LWM row too.
+        Otherwise we emit a retraction proposal (mori never hard-deletes canon)
+        and leave the LWM row visible until governance acts.
+        """
+        name = payload["name"]
+        had_unsent = self._outbox.pending_count() > 0 and self._unsent_exists(name)
+
+        # enqueue() handles both cases: cancels an unsent row, else emits retract.
+        self._outbox.enqueue(payload)
+
+        if had_unsent:
+            # Nothing was ever sent — remove the optimistic overlay too.
+            self._outbox.lwm_delete(name)
+            logger.info("mori: retract cancelled never-sent proposal %r (LWM cleared)", name)
+        else:
+            # A retraction proposal is now in flight; keep the LWM row but mark
+            # it so prefetch can de-emphasise it. We leave content intact for
+            # the reviewer; status stays pending until the dreamer decides.
+            logger.info("mori: retraction proposal enqueued for %r", name)
+
+    def _unsent_exists(self, name: str) -> bool:
+        """True if an unsent outbox row exists for *name* (best-effort)."""
+        try:
+            return self._outbox._unsent_row_for(name) is not None
+        except Exception:
+            return False
+
+    # ── Reconciliation ───────────────────────────────────────────────────────
+
+    def _reconcile_safe(self) -> None:
+        """Reconcile LWM pending rows against mori. Never raises."""
+        try:
+            self._reconcile()
+        except Exception as exc:
+            logger.debug("mori reconciliation skipped: %s", exc)
+
+    def _reconcile(self) -> None:
+        """Promote/evict LWM rows by comparing against mori canon + pending.
+
+        For each LWM row still ``pending``:
+          * If mori has a canon memory with the same name:
+              - content-hash matches  -> promote LWM row to ``canon``.
+              - content-hash diverges -> a dreamer edited it before approval;
+                overwrite the LWM row with the canon version (canon wins).
+          * Else if the proposal appears in the pending queue with a
+            rejected/declined status -> mark the LWM row ``rejected``.
+          * Else -> still pending; leave as-is.
+        """
+        from .normalizer import content_hash
+        from .outbox import LWM_CANON, LWM_PENDING, LWM_REJECTED
+
+        rows = [
+            r for r in self._outbox.lwm_all(exclude_rejected=True) if r["status"] == LWM_PENDING
+        ]
+        if not rows:
+            return
+
+        # Build a name -> status map from the pending queue (rejected detection).
+        try:
+            pending_items = self._client.list_pending(status="")
+        except Exception:
+            pending_items = []
+        pending_status: dict[str, str] = {}
+        for item in pending_items:
+            iname = item.get("name")
+            if iname:
+                pending_status[iname] = str(item.get("status", "")).lower()
+
+        for row in rows:
+            name = row["name"]
+            # Direct canon lookup (exact name).
+            try:
+                canon = self._client.get_memory(name)
+            except Exception:
+                canon = None
+
+            if canon is not None:
+                canon_body = canon.get("body", "")
+                canon_hash = content_hash(canon_body)
+                if canon_hash == row["content_hash"]:
+                    self._outbox.lwm_mark(name, LWM_CANON)
+                    logger.debug("mori reconcile: promoted %r to canon (hash match)", name)
+                else:
+                    # Dreamer edited before approving — canon wins.
+                    self._outbox.lwm_set_content(name, canon_body, canon_hash, LWM_CANON)
+                    logger.info("mori reconcile: %r diverged — overwrote LWM with canon", name)
+                continue
+
+            # No canon yet — was it rejected?
+            st = pending_status.get(name, "")
+            if st in ("rejected", "declined", "denied"):
+                self._outbox.lwm_mark(name, LWM_REJECTED)
+                logger.info(
+                    "mori reconcile: %r rejected by governance — evicted from overlay", name
+                )
+
+    # ── Merge / read helpers ─────────────────────────────────────────────────
+
+    def _merge(
+        self, lwm_rows: list[dict[str, Any]], canon: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Merge LWM overlay with canon search results, LWM winning by name.
+
+        LWM rows are mapped to the search-result shape so formatting is uniform.
+        On name collision the LWM (optimistic) entry replaces the canon entry.
+        LWM-only rows are appended (most-recent first, since lwm_all is ordered).
+        """
+        from .outbox import LWM_CANON, LWM_PENDING
+
+        by_name: dict[str, dict[str, Any]] = {}
+        ordered: list[str] = []
+
+        for mem in canon:
+            nm = mem.get("name", "")
+            if nm and nm not in by_name:
+                ordered.append(nm)
+            by_name[nm] = mem
+
+        for row in lwm_rows:
+            nm = row["name"]
+            status = row.get("status", LWM_PENDING)
+            overlay = {
+                "name": nm,
+                "title": nm,
+                "description": (
+                    "(pending governance review)" if status == LWM_PENDING else "(local)"
+                ),
+                "body": row.get("content", ""),
+                "_lwm_status": status,
+            }
+            if nm not in by_name:
+                ordered.append(nm)
+            # LWM wins on collision UNLESS it is already canon and identical;
+            # either way the optimistic/local copy is acceptable to show.
+            if status == LWM_CANON and nm in by_name:
+                # Prefer the richer canon record but keep it ordered.
+                continue
+            by_name[nm] = overlay
+
+        return [by_name[nm] for nm in ordered if nm in by_name]
+
+    def _safe_lwm_all(self) -> list[dict[str, Any]]:
+        try:
+            return self._outbox.lwm_all(exclude_rejected=True)
+        except Exception as exc:
+            logger.debug("mori: lwm_all failed: %s", exc)
+            return []
+
+    def _safe_search(self, query: str, limit: int) -> list[dict[str, Any]]:
+        try:
+            return self._client.search(query=query, limit=limit)
+        except Exception as exc:
+            logger.debug("mori: canon search failed: %s", exc)
+            return []
 
     # ── Tool handlers ───────────────────────────────────────────────────────
 
@@ -376,7 +555,6 @@ def _format_search_results(results: list[dict[str, Any]]) -> str:
         if description:
             lines.append(f"   {description}")
         if body:
-            # Indent body for readability; truncate very long bodies.
             snippet = body[:500].rstrip()
             if len(body) > 500:
                 snippet += " …"

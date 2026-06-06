@@ -7,16 +7,33 @@ never direct canon.
 
 ## What it does
 
-- **Recall** — `prefetch()` searches mori before each turn so the agent starts
-  informed, not cold.
-- **Mirror** — `on_memory_write()` intercepts durable agent learnings and
-  enqueues them as proposals.  A human reviewer with the `dreamer` role must
-  approve before they become canon.
-- **Non-blocking** — writes are queued in a local SQLite outbox and sent by a
-  background thread.  Crash-durable: pending rows survive process restarts.
-- **Governance** — read-only tools (`mori_search`, `mori_list_pending`,
-  `mori_proposal_status`) let the agent query its own proposal backlog.  It
-  cannot approve its own proposals.
+A **two-tier proxy** over a governed mori store:
+
+- **Local Working Memory (LWM)** — a strongly-consistent SQLite overlay. When
+  the agent's built-in memory tool edits MEMORY.md / USER.md, the write lands in
+  the LWM **synchronously**, so `prefetch()` sees it on the very next turn
+  (read-your-writes) — before mori governance has approved anything.
+- **Governed proposal pipeline** — the same write is enqueued (non-blocking) in
+  a crash-durable outbox and drained to mori as a **proposal**. A human reviewer
+  with the `dreamer` role must approve it before it becomes canon. Pending rows
+  survive process restarts.
+- **Recall** — `prefetch()` merges the LWM overlay with mori canon search
+  results, LWM winning on name collision. It never raises into the agent.
+- **Reconciliation** — opportunistically (during `prefetch`) the provider
+  promotes LWM rows to `canon` on content-hash match, evicts them on rejection,
+  and — if a dreamer edited the content before approving — overwrites the local
+  copy with the canon version.
+- **Governance-safe tools** — read-only tools (`mori_search`,
+  `mori_list_pending`, `mori_proposal_status`) let the agent query its own
+  proposal backlog. It cannot approve its own proposals.
+
+### Hook usage
+
+| Hook | Behaviour |
+|---|---|
+| `on_memory_write(action, target, content, metadata=None)` | The **only** hook that drives proposals. `action ∈ {add, replace, remove}`, `target ∈ {memory, user}`. |
+| `prefetch(query, *, session_id="")` | Merge LWM + canon; reconcile; never raises. `session_id` is keyword-only. |
+| `sync_turn(...)` | Explicit **no-op** — mirroring every turn would flood the dreamer queue with noise. |
 
 ## Requirements
 
@@ -59,36 +76,39 @@ export MORI_SERVER_URL=https://mori.example.com
 hermes-agent will call `get_config_schema()` during setup and write
 non-secret config to `~/.hermes/mori_config.json`.
 
-## Durability signal
+## Naming
 
-The provider reads a YAML frontmatter block at the top of each memory file to
-determine durability:
+Every mirrored memory gets a deterministic, sanitised mori name of the form
+`hermes-{target}-{stable_key}`, guaranteed to match `^[a-zA-Z0-9_-]{1,128}$`
+(invalid characters stripped, consecutive hyphens collapsed, right-truncated to
+128 while always preserving the `hermes-{target}-` prefix):
 
-```markdown
----
-memory_id: my-learning
-durability: durable
-type: pattern
-tags: [python, async]
----
-
-Body text here — frontmatter is stripped before writing to mori.
-```
-
-| Signal | Result |
+| Target | `stable_key` source |
 |---|---|
-| `durability: ephemeral` | Dropped — not sent to mori |
-| `durability: durable` | Proposed to mori for review |
-| No frontmatter, ephemeral target (scratch/temp/wip/draft) | Dropped |
-| No frontmatter, other target | Proposed (degraded path — no stable name) |
+| `user` | `metadata["user_id"]` (default `"default"`) |
+| `memory` | `metadata["memory_id"]`, else a deterministic slug of the first ~64 chars of content + an 8-char content-hash suffix |
 
-### Retraction proposals
+Names are stable so `replace`/`remove` keep lineage with the original `add`.
+There are **no random UUIDs** and **no frontmatter parsing** (a misconception
+from an earlier draft — removed in 0.2.0).
 
-When hermes-agent emits `action="remove"`, the provider creates a **retraction
-proposal** — a new mori memory that asserts the prior fact should be removed.
-mori never deletes canon; a human reviewer confirms the retraction.
+## Action mapping & coalescing
 
-Retraction names use a `.retracted` suffix: `hermes.my-learning.retracted`.
+| `action` | Op | Behaviour |
+|---|---|---|
+| `add` | propose | LWM upsert + enqueue a proposal. |
+| `replace` | supersede | LWM upsert; if the prior proposal is still **unsent** in the outbox, the queued row is updated in place (no duplicate proposal). |
+| `remove` | retract | If the prior proposal is still unsent, the outbox row is deleted and the LWM entry cleared (add-then-remove while local = net no-op). Otherwise a **retraction proposal** is emitted — mori never hard-deletes canon; a reviewer confirms. |
+
+## Outbox back-pressure & circuit breaker
+
+If more than 100 proposals are queued and unsent, new enqueues are dropped with
+a WARNING log (configurable via `max_pending`). The background drainer retries
+transport errors and 429s with capped exponential back-off, and **opens a
+circuit breaker** after repeated mori unavailability to stop hammering the
+server. 4xx (non-429) responses dead-letter the row. Lightweight counters are
+exposed via `outbox.metrics_snapshot()` (`outbox_depth`, `lwm_pending`,
+`proposals_sent`, `proposals_failed`, `breaker_trips`).
 
 ## Outbox back-pressure
 
