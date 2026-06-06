@@ -23,7 +23,6 @@ include = ["mori_advisor*"]
 # compact emergency prompts. (The container already gets them via Dockerfile COPY.)
 [tool.setuptools.package-data]
 mori_advisor = ["prompts/*.txt"]
-
 # ── Dev tooling ────────────────────────────────────────────────────────────────
 
 [tool.ruff]
