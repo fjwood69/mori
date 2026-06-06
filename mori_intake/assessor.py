@@ -33,6 +33,7 @@ promote → canon) fully exercisable with a deterministic stub.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import uuid
 from dataclasses import dataclass
@@ -177,9 +178,11 @@ async def _assess_one(
     body: str = row["canonicalized_body"]
     content_hash_hex: str = row["content_hash"]
 
-    # Call the injected assess function (synchronous; B2 may make it async,
-    # at which point this call site will need an await or inspect.isawaitable).
-    result: AssessmentResult = assess(body, content_hash_hex)
+    # Call the injected assess function.  The B1 stub and the B2 real assessor
+    # are both synchronous (BifrostClient.consult is a blocking OpenAI call).
+    # If a caller ever supplies an async assess fn, await it transparently.
+    _raw = assess(body, content_hash_hex)
+    result: AssessmentResult = await _raw if inspect.isawaitable(_raw) else _raw
 
     verdict = result.verdict.upper()
 
