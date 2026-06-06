@@ -48,6 +48,36 @@ from mori_advisor.throttle import (
 
 logger = logging.getLogger(__name__)
 
+
+def _load_user_env() -> None:
+    """Load ~/.config/mori/env before module-level config is read.
+
+    Enables Homebrew / local installs to configure mori via a plain env file
+    without touching the system environment.  Uses os.environ.setdefault so
+    variables already set in the process environment (e.g. from a Docker
+    --env-file or a systemd EnvironmentFile) always take priority.
+
+    Only called when the module is run as __main__ (i.e. `python -m
+    mori_advisor.main`), never when imported — so tests and the ingestion
+    server are not affected.
+    """
+    env_path = Path.home() / ".config" / "mori" / "env"
+    if not env_path.is_file():
+        return
+    try:
+        with env_path.open() as fh:
+            for raw in fh:
+                line = raw.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, val = line.partition("=")
+                    os.environ.setdefault(key.strip(), val.strip())
+    except OSError:
+        pass  # unreadable config is not fatal
+
+
+if __name__ == "__main__":
+    _load_user_env()
+
 # ── Configuration from environment ──────────────────────────────────────
 
 DATA_DIR = Path(os.environ.get("MORI_ADVISOR_DATA", "/data/mori-advisor"))
