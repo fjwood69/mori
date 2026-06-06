@@ -55,6 +55,27 @@
   took the silent default won't re-prompt on update** — clear the plugin cache and
   reinstall, or set `pluginConfigs."mori@mori".options.server_url` manually.
 
+## v2.2.13 — Homebrew tap support (env-file loader + `deploy/homebrew/`)
+
+Adds a self-hosted **Homebrew install path** for mori, validated end-to-end on Linuxbrew
+(`brew style` + `brew audit --strict` clean; `brew install --build-from-source` + `brew test`
+pass). The tap lives at [`fjwood69/homebrew-mori`](https://github.com/fjwood69/homebrew-mori).
+
+- **`_load_user_env()`** (`mori_advisor/main.py`) — loads `~/.config/mori/env` before module-level
+  config is read, so a Homebrew/local install configures mori via a plain env file with no bash
+  wrapper. Uses `os.environ.setdefault` (a real environment var or a Docker `--env-file` / systemd
+  `EnvironmentFile` always wins), no-ops if the file is absent, and runs **only under `__main__`** —
+  so imports (tests, the ingestion server) and the existing GCE/Docker deployment are unaffected.
+- **`pyproject.toml`** — adds `[build-system]` (`setuptools.build_meta`) + `[project]` +
+  `[tool.setuptools.packages.find]` so `pip install --no-deps .` works from the formula. Runtime
+  deps stay in `requirements.txt`. Inert for the Docker image (which installs from `requirements.txt`
+  and COPYs the source; it never `pip install .`).
+- **`deploy/homebrew/`** — `mori-setup.sh` (config wizard: prompts URL/key/model, writes
+  `~/.config/mori/env`, offers Linux linger, starts the service, health-checks, opt-in plugin
+  wiring) + `mori.env.example`.
+- **Note:** the formula is **untested on macOS** (no Mac available) — validated by inspection +
+  Linuxbrew; the launchd service path is unverified and flagged in the tap's caveats.
+
 ## v2.2.12 — agent-memory governance Stage-1 enablement (write-only intake, hardened)
 
 > **Stage 1 of the governance pipeline (mori #16): write-only intake.** The intake service
