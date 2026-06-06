@@ -33,6 +33,7 @@ Accept otherwise.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 # ── Type ─────────────────────────────────────────────────────────────────────
@@ -53,6 +54,34 @@ _USER_ALLOW_PREFIXES: tuple[str, ...] = ("preference-", "accessibility-")
 # Hard-deny list for user target: always rejected, even before the general default-deny.
 _USER_HARD_DENY_PREFIXES: tuple[str, ...] = ("psychology-", "health-", "mood-")
 
+# ── GOV-001: substring denylist (case-insensitive) ────────────────────────────
+# Rejections apply to ANY stable_key that contains one of these substrings
+# ANYWHERE — not just at the prefix.  This closes the bypass where an agent
+# uses an allowlisted prefix to smuggle denied content (e.g.
+# ``learned-psychology-user123`` or ``fact-health-record``).
+#
+# These terms cover the sensitive categories that must never be inferred or
+# stored about users, plus credential/secret material.
+_KEY_DENY_SUBSTRINGS: tuple[str, ...] = (
+    "psychology",
+    "health",
+    "mood",
+    "medical",
+    "diagnos",
+    "secret",
+    "credential",
+    "password",
+    "passwd",
+    "token",
+    "apikey",
+    "ssn",
+)
+
+# ── GOV-001: strict format constraint ─────────────────────────────────────────
+# stable_key must be lowercase alphanumeric + hyphens only, start with a
+# letter or digit, and be 1–128 characters long.
+_STABLE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,127}$")
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _DENY = Decision(eligible=False, reason="")  # placeholder — always overridden with a reason
@@ -61,6 +90,30 @@ _ACCEPT = Decision(eligible=True, reason="ok")
 
 def _deny(reason: str) -> Decision:
     return Decision(eligible=False, reason=reason)
+
+
+def _check_stable_key_format(stable_key: str) -> Decision | None:
+    """Validate stable_key format and denylist substrings.
+
+    Returns a ``_deny(...)`` Decision if the key is invalid, or ``None``
+    when the key passes both checks (caller continues with namespace gate).
+
+    Two checks (GOV-001):
+    1. Format: ``^[a-z0-9][a-z0-9\\-]{0,127}$`` — rejects uppercase,
+       dots, slashes, spaces, and keys longer than 128 characters.
+    2. Substring denylist (case-insensitive): rejects keys that contain
+       any sensitive term ANYWHERE, even after a valid allowlisted prefix.
+       This closes the bypass ``learned-psychology-user123``.
+    """
+    if not _STABLE_KEY_RE.match(stable_key):
+        return _deny("invalid-stable-key-format")
+
+    lower = stable_key.lower()
+    for term in _KEY_DENY_SUBSTRINGS:
+        if term in lower:
+            return _deny("namespace-not-allowlisted")
+
+    return None  # passes both checks
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -90,6 +143,13 @@ def evaluate(target: str, action: str, stable_key: str, body: str) -> Decision:
     # remove is NEVER auto-eligible: retraction requires a human in the loop.
     if action == "remove":
         return _deny("retraction-requires-human")
+
+    # ── 1b. stable_key format + denylist (GOV-001) ────────────────────────────
+    # Applied before the namespace gate so a smuggled key (e.g.
+    # ``learned-psychology-user123``) is caught before prefix matching.
+    key_check = _check_stable_key_format(stable_key)
+    if key_check is not None:
+        return key_check
 
     # ── 2. Namespace gate ─────────────────────────────────────────────────────
     if target == "memory":

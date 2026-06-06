@@ -65,6 +65,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import asyncpg
 
+from mori_intake.eligibility import evaluate as eligibility_evaluate
+
 logger = logging.getLogger(__name__)
 
 # Maximum promotion attempts per queue row before it is marked ``failed`` and
@@ -236,11 +238,147 @@ async def _promote_one(
         body: str = candidate["canonicalized_body"]
         reinforcement_count: int = candidate["reinforcement_count"]
 
+        # ── GOV-002: defence-in-depth eligibility re-check ────────────────
+        # Re-run the eligibility gate against the candidate body before
+        # writing to canon.  If the intake DB has been tampered with (or the
+        # gate rules tightened since submission), this prevents arbitrary
+        # content from flowing into canon.
+        #
+        # Re-check the candidate's REAL governance values (target / stable_key /
+        # action), fetched from one of its originating submissions via the
+        # corroboration ledger — NOT a synthesised key — so the namespace gate
+        # and the GOV-001 substring deny are re-applied with full fidelity.
+        content_hash_hex: str = candidate["content_hash"]
+
+        # ── GOV-002: body-integrity check ─────────────────────────────────
+        # The stored canonicalized_body must hash to the stored content_hash
+        # (the hash contract is idempotent over the NFKC canonical form).  A
+        # mismatch means the intake DB row was tampered with between dedup and
+        # promotion — reject rather than write attacker-controlled content to
+        # canon.
+        from mori_intake.normalize import content_hash as _compute_hash
+
+        if _compute_hash(body) != content_hash_hex:
+            logger.error(
+                "canon_writer: GOV-002 body-integrity FAILED for candidate %s "
+                "(stored content_hash does not match the body) — marking rejected",
+                candidate_id,
+            )
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE intake_candidates SET status = 'rejected', "
+                    "rejection_reason = $1, updated_at = NOW() WHERE id = $2",
+                    "promotion-body-integrity-mismatch",
+                    candidate_id,
+                )
+                await _mark_failed(conn, queue_id, "body-integrity mismatch")
+            return False
+
+        _orig = await conn.fetchrow(
+            """
+            SELECT s.target_name, s.stable_key, s.action
+            FROM intake_submissions s
+            JOIN intake_corroborations c ON c.submission_id = s.id
+            WHERE c.candidate_id = $1
+            ORDER BY s.received_at
+            LIMIT 1
+            """,
+            candidate_id,
+        )
+        if _orig is not None:
+            _recheck_target = _orig["target_name"]
+            _recheck_key = _orig["stable_key"]
+            _recheck_action = _orig["action"]
+        else:
+            # No originating submission found (should not happen) — fall back to
+            # a synthetic memory/add key so body/proposition checks still fire.
+            _recheck_target = "memory"
+            _recheck_key = f"learned-{content_hash_hex[:32]}"
+            _recheck_action = "add"
+        _body_decision = eligibility_evaluate(
+            target=_recheck_target,
+            action=_recheck_action,
+            stable_key=_recheck_key,
+            body=body,
+        )
+        if not _body_decision.eligible:
+            logger.error(
+                "canon_writer: GOV-002 eligibility re-check FAILED for candidate %s "
+                "(reason=%r) — marking rejected instead of promoting",
+                candidate_id,
+                _body_decision.reason,
+            )
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE intake_candidates
+                    SET status = 'rejected',
+                        rejection_reason = $1,
+                        updated_at = NOW()
+                    WHERE id = $2
+                    """,
+                    f"promotion-eligibility-recheck:{_body_decision.reason}",
+                    candidate_id,
+                )
+                await _mark_failed(
+                    conn, queue_id, f"eligibility recheck failed: {_body_decision.reason}"
+                )
+            return False
+
+        # ── Body validation ────────────────────────────────────────────────
+        # Non-empty, length cap, valid UTF-8 (defence-in-depth, GOV-002).
+        if not body or not body.strip():
+            logger.error(
+                "canon_writer: empty body for candidate %s — marking rejected",
+                candidate_id,
+            )
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE intake_candidates SET status='rejected', "
+                    "rejection_reason='empty-body', updated_at=NOW() WHERE id=$1",
+                    candidate_id,
+                )
+                await _mark_failed(conn, queue_id, "empty body at promotion time")
+            return False
+
+        _MAX_BODY_BYTES = 1_048_576  # 1 MiB
+        try:
+            body_bytes = body.encode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError) as exc:
+            logger.error(
+                "canon_writer: body for candidate %s is not valid UTF-8 — rejecting: %s",
+                candidate_id,
+                exc,
+            )
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE intake_candidates SET status='rejected', "
+                    "rejection_reason='invalid-encoding', updated_at=NOW() WHERE id=$1",
+                    candidate_id,
+                )
+                await _mark_failed(conn, queue_id, f"invalid UTF-8: {exc}")
+            return False
+
+        if len(body_bytes) > _MAX_BODY_BYTES:
+            logger.error(
+                "canon_writer: body for candidate %s exceeds 1 MiB (%d bytes) — rejecting",
+                candidate_id,
+                len(body_bytes),
+            )
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE intake_candidates SET status='rejected', "
+                    "rejection_reason='body-too-large', updated_at=NOW() WHERE id=$1",
+                    candidate_id,
+                )
+                await _mark_failed(conn, queue_id, f"body too large: {len(body_bytes)} bytes")
+            return False
+
         # ── Derive canon name ──────────────────────────────────────────────
         # Use a deterministic name derived from the content hash so that a
         # re-drive produces the same name (name collisions are handled by
         # mori's upsert — it updates the existing row).
-        content_hash_hex: str = candidate["content_hash"]
+        # content_hash_hex is already bound above (GOV-002 eligibility re-check).
         canon_name = f"agent-intake-{content_hash_hex[:16]}"
 
         # ── Write to mori canon ────────────────────────────────────────────

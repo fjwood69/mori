@@ -6,6 +6,8 @@ applies the verdict→action mapping:
 
     SUPERSEDES / RELATED  → candidate ``rejected``
                             (``rejection_reason='duplicate-of-canon:<name>'``)
+    NEEDS_REVIEW          → candidate left ``pending`` (no promotion enqueued)
+                            used on any error/exception/uncertain path — fail closed
     UNRELATED             → candidate ``under_review``
                             + enqueue ``promotion_queue``
 
@@ -23,12 +25,20 @@ been transitioned to ``under_review``, ``rejected``, or ``promoted`` will
 never be picked up again.  Within a single run, a per-row attempt cap prevents
 a poison row from hot-looping.
 
-Default stub
-------------
-When no ``assess`` function is supplied, the built-in stub always returns
-``UNRELATED`` — i.e. treat every pending candidate as novel and forward it
-to the promotion queue.  This makes the B1 end-to-end path (seed → assess →
-promote → canon) fully exercisable with a deterministic stub.
+Default stub (FAIL CLOSED)
+--------------------------
+When no ``assess`` function is supplied, the built-in stub returns
+``NEEDS_REVIEW`` — i.e. leave every candidate pending, awaiting a real
+assessor.  This is intentionally conservative: the ungoverned fast-path
+(default stub → auto-promote) is a security risk that must be gated behind
+an explicitly injected UNRELATED verdict.
+
+To exercise the full B1 promotion path in tests, inject an explicit stub::
+
+    def _unrelated_stub(body, h):
+        return AssessmentResult(verdict="UNRELATED")
+
+    await assess_once(pool, assess=_unrelated_stub)
 """
 
 from __future__ import annotations
@@ -62,16 +72,23 @@ class AssessmentResult:
     Attributes
     ----------
     verdict:
-        One of ``"SUPERSEDES"``, ``"RELATED"``, or ``"UNRELATED"``.
+        One of ``"SUPERSEDES"``, ``"RELATED"``, ``"UNRELATED"``, or
+        ``"NEEDS_REVIEW"``.
+
+        * ``SUPERSEDES`` / ``RELATED`` → candidate rejected as duplicate.
+        * ``UNRELATED`` → candidate queued for promotion.
+        * ``NEEDS_REVIEW`` → candidate left ``pending``; no promotion
+          enqueued.  Used on any error, empty-store, or uncertain path so
+          the system fails closed rather than auto-promoting everything.
     matched_canon_name:
         The mori canon memory name that was matched, or ``None`` when
-        verdict is ``"UNRELATED"``.
+        verdict is ``"UNRELATED"`` or ``"NEEDS_REVIEW"``.
     score:
         Similarity / confidence score in ``[0.0, 1.0]``.  For the default
         stub this is always ``0.0``.
     """
 
-    verdict: str  # "SUPERSEDES" | "RELATED" | "UNRELATED"
+    verdict: str  # "SUPERSEDES" | "RELATED" | "UNRELATED" | "NEEDS_REVIEW"
     matched_canon_name: str | None = None
     score: float = 0.0
 
@@ -80,12 +97,17 @@ class AssessmentResult:
 
 
 def _default_stub(body: str, content_hash: str) -> AssessmentResult:  # noqa: ARG001
-    """Default assess stub — always returns UNRELATED (treat as novel).
+    """Default assess stub — returns NEEDS_REVIEW (fail closed).
 
-    This is the B1 placeholder.  Replace in B2 with the real cheap-model
-    vs-canon check via Bifrost.
+    No real assessment has been wired in.  Rather than auto-promoting every
+    candidate (the old UNRELATED default), we leave candidates ``pending``
+    until an explicit assess callable is injected.
+
+    Replace in B2 with the real cheap-model vs-canon check via Bifrost.
+    Tests that exercise the promotion path must inject an explicit
+    UNRELATED stub — see module docstring for the pattern.
     """
-    return AssessmentResult(verdict="UNRELATED", matched_canon_name=None, score=0.0)
+    return AssessmentResult(verdict="NEEDS_REVIEW", matched_canon_name=None, score=0.0)
 
 
 # ── In-memory attempt counter (reset on process restart) ─────────────────────
@@ -127,8 +149,15 @@ async def assess_once(
         if _attempt_counts.get(cid, 0) >= _MAX_ATTEMPTS:
             continue  # already logged at cap; skip silently
         try:
-            await _assess_one(pool, row, assess)
-            processed += 1
+            result = await _assess_one(pool, row, assess)
+            # Only count as processed when the candidate was transitioned out
+            # of pending (SUPERSEDES/RELATED → rejected; UNRELATED → under_review).
+            # NEEDS_REVIEW leaves the candidate pending — not counted so the
+            # caller knows useful work was done only on real transitions.
+            if result.verdict != "NEEDS_REVIEW":
+                processed += 1
+            # Successful call: clear any prior error count (QUAL-001 memory leak fix).
+            _attempt_counts.pop(cid, None)
         except Exception as exc:
             _attempt_counts[cid] = _attempt_counts.get(cid, 0) + 1
             count = _attempt_counts[cid]
@@ -172,8 +201,12 @@ async def _assess_one(
     pool: "asyncpg.Pool",
     row,
     assess: Callable[[str, str], AssessmentResult],
-) -> None:
-    """Assess one candidate and apply the verdict→action mapping."""
+) -> AssessmentResult:
+    """Assess one candidate and apply the verdict→action mapping.
+
+    Returns the AssessmentResult so the caller can distinguish NEEDS_REVIEW
+    (candidate left pending) from genuine terminal verdicts.
+    """
     candidate_id: uuid.UUID = row["id"]
     body: str = row["canonicalized_body"]
     content_hash_hex: str = row["content_hash"]
@@ -238,7 +271,20 @@ async def _assess_one(
                     candidate_id,
                 )
 
+            elif verdict == "NEEDS_REVIEW":
+                # Fail-closed path: the assessor could not reach a confident
+                # verdict (model error, empty store, search failure, or the
+                # default stub is still wired in).  Leave the candidate in
+                # ``pending`` — it will be re-examined on the next pass.
+                # Do NOT enqueue for promotion.
+                logger.info(
+                    "assessor: candidate %s → NEEDS_REVIEW (left pending; no promotion enqueued)",
+                    candidate_id,
+                )
+
             else:
                 raise ValueError(
                     f"assessor: unknown verdict {verdict!r} for candidate {candidate_id}"
                 )
+
+    return result

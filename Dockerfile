@@ -47,6 +47,7 @@ RUN adduser \
 
 # Copy source code
 COPY mori_advisor/ ./mori_advisor/
+COPY mori_intake/ ./mori_intake/
 COPY scripts/ ./scripts/
 COPY standards/ ./standards/
 COPY skills/ ./skills/

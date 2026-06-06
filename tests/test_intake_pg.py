@@ -255,18 +255,23 @@ async def test_post_idempotent_duplicate(pool):
 
     assert r1.status_code == 202
     assert r1.json()["duplicate"] is False
+    assert "submission_id" in r1.json()
     assert r2.status_code == 202
     assert r2.json()["duplicate"] is True
-    assert r1.json()["submission_id"] == r2.json()["submission_id"]
+    # GOV-008: the duplicate response must NOT leak the existing submission_id.
+    assert "submission_id" not in r2.json()
 
+    # Exactly one row. The stored session is namespaced by the API key
+    # (GOV-008 effective_session = "<key>:<session_id>"), so count by the unique
+    # stable_key rather than the raw session_id.
     count = await pool.fetchval(
-        "SELECT COUNT(*) FROM intake_submissions WHERE session_id = $1",
-        payload["session_id"],
+        "SELECT COUNT(*) FROM intake_submissions WHERE stable_key = $1",
+        payload["stable_key"],
     )
     assert count == 1
 
     await pool.execute(
-        "DELETE FROM intake_submissions WHERE session_id = $1", payload["session_id"]
+        "DELETE FROM intake_submissions WHERE stable_key = $1", payload["stable_key"]
     )
 
 

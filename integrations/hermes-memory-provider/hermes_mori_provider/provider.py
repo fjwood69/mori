@@ -68,8 +68,17 @@ class MoriMemoryProvider:
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
     def is_available(self) -> bool:
-        """Return True iff MORI_API_KEY is set. Performs NO network call."""
-        return bool(os.environ.get("MORI_API_KEY", "").strip())
+        """Return True iff the provider is fully configured for reads AND writes.
+
+        Requires both ``MORI_API_KEY`` (for reads/auth) and
+        ``MORI_INTAKE_URL`` (for governed writes) to be set.  When
+        ``MORI_INTAKE_URL`` is absent, writes queue locally but never drain
+        — callers that depend on writes reaching mori should treat the
+        provider as unavailable (ARCH-004).
+        """
+        return bool(os.environ.get("MORI_API_KEY", "").strip()) and bool(
+            os.environ.get("MORI_INTAKE_URL", "").strip()
+        )
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
         """Set up the client, normaliser, and outbox (with LWM table)."""
@@ -412,9 +421,20 @@ class MoriMemoryProvider:
 
         If the prior proposal is still unsent in the outbox, ``enqueue`` cancels
         it (add-then-remove while local = no-op) and we drop the LWM row too.
-        Otherwise we emit a retraction proposal (mori never hard-deletes canon)
-        and leave the LWM row visible until governance acts.
+
+        Otherwise the agent has locally removed the memory.  We ALWAYS resolve
+        the LWM row to ``rejected`` status at this point — regardless of whether
+        the retraction submission reaches the intake service.  Intake currently
+        rejects all ``remove`` actions (retraction-requires-human), so the
+        outbox row will 422 and dead-letter, leaving the LWM row stuck in
+        ``pending`` forever if we don't resolve it here (ARCH-003).
+
+        Server-side human-reviewed retraction of canon is a later tranche.  The
+        agent's local intent is clear: the memory should no longer be surfaced.
+        We honour that by marking the LWM row ``rejected`` immediately.
         """
+        from .outbox import LWM_REJECTED
+
         name = payload["name"]
         had_unsent = self._outbox.pending_count() > 0 and self._unsent_exists(name)
 
@@ -426,15 +446,25 @@ class MoriMemoryProvider:
             self._outbox.lwm_delete(name)
             logger.info("mori: retract cancelled never-sent proposal %r (LWM cleared)", name)
         else:
-            # A retraction proposal is now in flight; keep the LWM row but mark
-            # it so prefetch can de-emphasise it. We leave content intact for
-            # the reviewer; status stays pending until the dreamer decides.
-            logger.info("mori: retraction proposal enqueued for %r", name)
+            # A retraction proposal is in flight but intake will 422 it
+            # (retraction-requires-human).  Resolve the LWM row immediately
+            # so it doesn't stay pending forever (ARCH-003).
+            self._outbox.lwm_mark(name, LWM_REJECTED)
+            logger.info(
+                "mori: retraction for %r — LWM row marked rejected immediately "
+                "(server-side human retraction is a later tranche)",
+                name,
+            )
 
     def _unsent_exists(self, name: str) -> bool:
-        """True if an unsent outbox row exists for *name* (best-effort)."""
+        """True if an unsent outbox row exists for *name* (best-effort).
+
+        Uses the public thread-safe ``has_unsent`` API instead of calling
+        the private ``_unsent_row_for`` method directly, which requires the
+        caller to hold ``self._lock`` (INTAKE-02).
+        """
         try:
-            return self._outbox._unsent_row_for(name) is not None
+            return self._outbox.has_unsent(name)
         except Exception:
             return False
 

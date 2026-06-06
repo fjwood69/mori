@@ -99,6 +99,12 @@ CREATE TABLE IF NOT EXISTS lwm (
     proposed_at        REAL NOT NULL,
     last_reconciled_at REAL
 );
+
+-- SCALE-001: indexes on the outbox table so drain/count queries avoid full-table scans.
+-- (status, id) covers both _pending_count() and _next_row() which filter on status and
+-- sort by id.  (name, status) covers _unsent_row_for() which filters on both.
+CREATE INDEX IF NOT EXISTS idx_outbox_status_id ON outbox(status, id);
+CREATE INDEX IF NOT EXISTS idx_outbox_name_status ON outbox(name, status);
 """
 
 # Columns added in v0.3.0 — applied via ALTER TABLE when an existing DB is
@@ -289,6 +295,17 @@ class GovernedWriteOutbox:
         """Return the number of unsent outbox rows."""
         with self._lock:
             return self._pending_count()
+
+    def has_unsent(self, name: str) -> bool:
+        """Return True if an unsent outbox row exists for *name*.
+
+        Thread-safe (acquires ``self._lock`` internally).  Use this instead of
+        calling the private ``_unsent_row_for`` directly, which requires the
+        caller to hold the lock — an invariant that is easy to violate across
+        module boundaries (INTAKE-02).
+        """
+        with self._lock:
+            return self._unsent_row_for(name) is not None
 
     def flush(self, timeout: float = 10.0) -> bool:
         """Block until the outbox is empty or *timeout* expires.
@@ -514,6 +531,11 @@ class GovernedWriteOutbox:
         """Account a transport failure, trip the breaker if needed, sleep.
 
         Returns the next back-off value (doubled, capped).
+
+        ARCH-001: the breaker cooldown uses ``_stop_event.wait`` rather than a
+        plain ``_sleep`` so that a shutdown request is honoured promptly even
+        during the full cooldown period.  The short retry back-offs also use
+        ``_stop_event.wait`` for the same reason.
         """
         self._consecutive_failures += 1
         self.metrics["proposals_failed"] += 1
@@ -524,8 +546,13 @@ class GovernedWriteOutbox:
                 self._consecutive_failures,
                 self._breaker_cooldown,
             )
-            self._sleep(self._breaker_cooldown)
+            # ARCH-001: use stop_event.wait so shutdown is responsive during
+            # the full breaker cooldown (replacing the old self._sleep call
+            # which would block the drain thread for the full 30s).
+            self._stop_event.wait(self._breaker_cooldown)
         else:
+            # Regular retry back-off uses the injected _sleep (which tests can
+            # replace with an instant no-op to keep tests fast).
             self._sleep(backoff)
         return min(backoff * 2, self._max_backoff)
 

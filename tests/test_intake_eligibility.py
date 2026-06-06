@@ -57,13 +57,19 @@ class TestMemoryNamespace:
             "unknown-key",
             "random",
             "hermes-internal",
-            "",
         ],
     )
     def test_unknown_prefix_denied(self, stable_key):
         d = evaluate("memory", "add", stable_key, _VALID_BODY)
         assert not d.eligible
         assert d.reason == "namespace-not-allowlisted"
+
+    def test_empty_key_denied_format(self):
+        """Empty stable_key fails format check before namespace gate."""
+        d = evaluate("memory", "add", "", _VALID_BODY)
+        assert not d.eligible
+        # Empty string fails the format regex.
+        assert d.reason == "invalid-stable-key-format"
 
 
 # ── Namespace gate: user target ───────────────────────────────────────────────
@@ -104,13 +110,18 @@ class TestUserNamespace:
             "learned-something",  # memory prefix, wrong target
             "fact-something",
             "random-key",
-            "",
         ],
     )
     def test_non_allowlisted_prefix_denied(self, stable_key):
         d = evaluate("user", "add", stable_key, _PROP_BODY)
         assert not d.eligible
         assert d.reason == "namespace-not-allowlisted"
+
+    def test_empty_key_denied_format(self):
+        """Empty stable_key fails format check."""
+        d = evaluate("user", "add", "", _PROP_BODY)
+        assert not d.eligible
+        assert d.reason == "invalid-stable-key-format"
 
 
 # ── Unknown target ────────────────────────────────────────────────────────────

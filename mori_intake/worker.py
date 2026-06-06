@@ -83,6 +83,8 @@ async def drain_once(pool: "asyncpg.Pool") -> int:
         try:
             await _process_one(pool, row)
             processed += 1
+            # Success: clear error counter to prevent unbounded growth (QUAL-001).
+            _attempt_counts.pop(sid, None)
         except Exception as exc:
             _attempt_counts[sid] = _attempt_counts.get(sid, 0) + 1
             count = _attempt_counts[sid]

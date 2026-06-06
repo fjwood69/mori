@@ -149,8 +149,13 @@ class TestMakeCanonAssessor:
 
     # ── malformed model output ────────────────────────────────────────────────
 
-    def test_malformed_model_output_defaults_to_unrelated(self):
-        """Model returns something unrecognised → UNRELATED, not a crash."""
+    def test_malformed_model_output_returns_needs_review(self):
+        """Model returns something unrecognised → NEEDS_REVIEW (fail closed), not a crash.
+
+        Changed from UNRELATED in delta-hardening: unrecognised output is
+        uncertain, not novel.  NEEDS_REVIEW leaves the candidate pending for
+        human review rather than silently auto-promoting.
+        """
         reader = _make_reader([_canon_row("canon-epsilon")], body_map={"canon-epsilon": "Body."})
         # Model returns prose instead of a single word.
         client = _make_client(["I think they are somewhat related but different."])
@@ -158,20 +163,26 @@ class TestMakeCanonAssessor:
         assess = make_canon_assessor(reader, client)
         result = _run(assess, "Body text.", "c" * 64)
 
-        assert result.verdict == "UNRELATED"
+        assert result.verdict == "NEEDS_REVIEW"
 
-    def test_empty_model_response_defaults_to_unrelated(self):
-        """Empty model response → UNRELATED, not a crash."""
+    def test_empty_model_response_returns_needs_review(self):
+        """Empty model response → NEEDS_REVIEW (fail closed), not a crash.
+
+        Changed from UNRELATED in delta-hardening.
+        """
         reader = _make_reader([_canon_row("canon-zeta")], body_map={"canon-zeta": "Body."})
         client = _make_client([""])
 
         assess = make_canon_assessor(reader, client)
         result = _run(assess, "Body text.", "d" * 64)
 
-        assert result.verdict == "UNRELATED"
+        assert result.verdict == "NEEDS_REVIEW"
 
-    def test_none_model_response_defaults_to_unrelated(self):
-        """None model response (e.g. model returned empty) → UNRELATED."""
+    def test_none_model_response_returns_needs_review(self):
+        """None model response → NEEDS_REVIEW (fail closed), not a crash.
+
+        Changed from UNRELATED in delta-hardening.
+        """
         reader = _make_reader([_canon_row("canon-eta")], body_map={"canon-eta": "Body."})
         client = MagicMock()
         client.consult = MagicMock(return_value=None)
@@ -179,12 +190,16 @@ class TestMakeCanonAssessor:
         assess = make_canon_assessor(reader, client)
         result = _run(assess, "Body text.", "e" * 64)
 
-        assert result.verdict == "UNRELATED"
+        assert result.verdict == "NEEDS_REVIEW"
 
     # ── model exception ───────────────────────────────────────────────────────
 
-    def test_model_exception_defaults_to_unrelated(self):
-        """Model raises → UNRELATED for that neighbour, overall UNRELATED, no crash."""
+    def test_model_exception_returns_needs_review(self):
+        """Model raises → NEEDS_REVIEW (fail closed) for that neighbour, no crash.
+
+        Changed from UNRELATED in delta-hardening: a model failure is uncertain,
+        not evidence that the candidate is novel.
+        """
         reader = _make_reader([_canon_row("canon-theta")], body_map={"canon-theta": "Body."})
         client = MagicMock()
         client.consult = MagicMock(side_effect=RuntimeError("Bifrost timeout"))
@@ -192,13 +207,17 @@ class TestMakeCanonAssessor:
         assess = make_canon_assessor(reader, client)
         result = _run(assess, "Body text.", "f" * 64)
 
-        assert result.verdict == "UNRELATED"
+        assert result.verdict == "NEEDS_REVIEW"
         assert result.matched_canon_name is None
 
     # ── search callable exception ─────────────────────────────────────────────
 
-    def test_search_exception_defaults_to_unrelated(self):
-        """search callable raises → UNRELATED, no crash."""
+    def test_search_exception_returns_needs_review(self):
+        """search callable raises → NEEDS_REVIEW (fail closed), no crash.
+
+        Changed from UNRELATED in delta-hardening: search failure is uncertain,
+        not evidence of novelty.
+        """
         reader = CanonReader(
             search=MagicMock(side_effect=Exception("DB gone")),
             fetch_body=MagicMock(return_value=""),
@@ -208,7 +227,7 @@ class TestMakeCanonAssessor:
         assess = make_canon_assessor(reader, client)
         result = _run(assess, "Body.", "g" * 64)
 
-        assert result.verdict == "UNRELATED"
+        assert result.verdict == "NEEDS_REVIEW"
         client.consult.assert_not_called()
 
     # ── scan stops at first match ─────────────────────────────────────────────

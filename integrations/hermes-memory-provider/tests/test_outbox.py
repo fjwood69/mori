@@ -315,15 +315,17 @@ class TestBackoff:
 class TestCircuitBreaker:
     def test_breaker_trips_after_threshold(self, tmp_db: Path) -> None:
         # Fail 5 times then succeed; breaker_threshold=3 -> trips once.
+        # ARCH-001: the breaker cooldown now uses _stop_event.wait instead of
+        # _sleep so that shutdown is responsive.  The test verifies that the
+        # breaker trips (metrics counter) rather than checking _sleep calls.
         ic = TransportErrorIntakeClient(fail_n=5)
-        cooldowns: list[float] = []
         outbox = _make_outbox(
             FakeReadClient(),
             tmp_db,
             intake_client=ic,
             breaker_threshold=3,
-            breaker_cooldown=0.123,
-            _sleep=cooldowns.append,
+            breaker_cooldown=0.001,  # tiny cooldown so test is fast
+            _sleep=lambda t: None,
         )
         outbox.enqueue(_payload("hermes-memory-breaker"))
         drained = _wait_drain(outbox)
@@ -331,8 +333,6 @@ class TestCircuitBreaker:
         outbox.shutdown()
         assert drained
         assert snap["breaker_trips"] >= 1
-        # The cooldown value must have been used at least once.
-        assert any(abs(c - 0.123) < 1e-9 for c in cooldowns)
 
     def test_breaker_resets_on_success(self, tmp_db: Path) -> None:
         ic = TransportErrorIntakeClient(fail_n=2)

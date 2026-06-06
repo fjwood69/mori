@@ -52,7 +52,8 @@ from mori_intake.assessor import AssessmentResult
 
 logger = logging.getLogger(__name__)
 
-# Verdicts the model may return — anything else collapses to UNRELATED.
+# Verdicts the model may return — these are the ONLY terminal verdicts
+# accepted from the model.  Anything else collapses to NEEDS_REVIEW.
 _VALID_VERDICTS = frozenset({"SUPERSEDES", "RELATED", "UNRELATED"})
 
 # Confidence score assigned to a SUPERSEDES/RELATED match.  The fast model
@@ -145,12 +146,16 @@ def make_canon_assessor(
         Number of canon neighbours to retrieve and check.  Default 5.
     """
 
-    async def _search_canon(body: str) -> list[dict]:
+    async def _search_canon(body: str) -> list[dict] | None:
         """Retrieve top-k canonical memories most relevant to *body*.
 
         Awaits the reader's search callable (async on Postgres, sync on any
         stub).  Filters by ``tier == 'canonical'`` post-retrieval.  Fetches
         ``top_k * 2`` so the canonical filter has headroom.
+
+        Returns ``None`` on any exception (signals NEEDS_REVIEW to caller),
+        an empty list when the store has no canonical neighbours (store is
+        genuinely empty — UNRELATED is safe), or the canonical rows.
         """
         import inspect as _inspect
 
@@ -160,8 +165,8 @@ def make_canon_assessor(
             # Filter to canonical tier only.
             return [m for m in raw if m.get("tier") == "canonical"][:top_k]
         except Exception as exc:
-            logger.warning("assess_model: canon search failed: %s", exc)
-            return []
+            logger.warning("assess_model: canon search failed — NEEDS_REVIEW: %s", exc)
+            return None  # signals caller to return NEEDS_REVIEW
 
     async def _classify(body: str, neighbour: dict) -> str:
         """Ask the fast model to classify *body* vs *neighbour*.
@@ -206,15 +211,23 @@ def make_canon_assessor(
             if word in _VALID_VERDICTS:
                 return word
             # Model may return a sentence; take the first word and retry.
-            first = word.split()[0] if word else "UNRELATED"
-            return first if first in _VALID_VERDICTS else "UNRELATED"
+            first = word.split()[0] if word else ""
+            if first in _VALID_VERDICTS:
+                return first
+            # Unrecognised / empty response → NEEDS_REVIEW (fail closed).
+            logger.warning(
+                "assess_model: unrecognised model output %r for neighbour %s — NEEDS_REVIEW",
+                word,
+                name,
+            )
+            return "NEEDS_REVIEW"
         except Exception as exc:
             logger.warning(
-                "assess_model: model call failed for neighbour %s: %s",
+                "assess_model: model call failed for neighbour %s — NEEDS_REVIEW: %s",
                 name,
                 exc,
             )
-            return "UNRELATED"
+            return "NEEDS_REVIEW"
 
     async def assess(body: str, content_hash: str) -> AssessmentResult:  # noqa: ARG001
         """Compare *body* against top-k canon neighbours; return the verdict.
@@ -225,16 +238,32 @@ def make_canon_assessor(
         Steps
         -----
         1. Retrieve top-k canonical memories via text search.
-        2. For each neighbour (highest-ranked first), fetch its full body
+           Search failure → NEEDS_REVIEW (fail closed, not UNRELATED).
+        2. Empty store (no canonical neighbours) → UNRELATED (safe: nothing
+           in canon means this IS genuinely novel).
+        3. For each neighbour (highest-ranked first), fetch its full body
            and ask the fast model to classify candidate vs neighbour.
-        3. Return the first SUPERSEDES or RELATED match found.
-        4. If all neighbours are UNRELATED (or there are none), return UNRELATED.
+           Any model error / malformed response → NEEDS_REVIEW for that call.
+        4. Return the first SUPERSEDES or RELATED match found.
+        5. If any neighbour returned NEEDS_REVIEW, propagate NEEDS_REVIEW
+           (uncertainty from any classification step → fail closed).
+        6. If all neighbours are UNRELATED, return UNRELATED.
+
+        The only path that returns UNRELATED is a genuine model confirmation
+        that the candidate is novel.  Every uncertain/error path → NEEDS_REVIEW.
         """
         neighbours = await _search_canon(body)
+
+        # None → search raised an exception → fail closed.
+        if neighbours is None:
+            return AssessmentResult(verdict="NEEDS_REVIEW", matched_canon_name=None, score=0.0)
+
+        # Empty list → store has no canonical memories → genuinely novel.
         if not neighbours:
             logger.debug("assess_model: no canon neighbours found — UNRELATED")
             return AssessmentResult(verdict="UNRELATED", matched_canon_name=None, score=0.0)
 
+        seen_needs_review = False
         for neighbour in neighbours:
             verdict = await _classify(body, neighbour)
             name = neighbour.get("name")
@@ -249,6 +278,15 @@ def make_canon_assessor(
                     matched_canon_name=name,
                     score=_MATCH_SCORE,
                 )
+            if verdict == "NEEDS_REVIEW":
+                seen_needs_review = True
+                # Continue scanning — a later neighbour may give a definitive
+                # SUPERSEDES/RELATED that still allows rejection.  But if no
+                # match is found, uncertainty propagates.
+
+        if seen_needs_review:
+            # At least one classification was uncertain → fail closed.
+            return AssessmentResult(verdict="NEEDS_REVIEW", matched_canon_name=None, score=0.0)
 
         return AssessmentResult(verdict="UNRELATED", matched_canon_name=None, score=0.0)
 
