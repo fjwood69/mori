@@ -34,6 +34,21 @@ The full name is then ``hermes-{target}-{stable_key}`` run through
 ``sanitize_name`` which strips invalid characters, collapses consecutive
 hyphens, and right-truncates the *stable_key portion* to keep the total <= 128
 while always preserving the ``hermes-{target}-`` prefix.
+
+Intake stable_key mapping
+-------------------------
+The intake service requires an *eligibility-namespaced* ``stable_key`` that
+satisfies the server-side namespace gate.  The mapping is:
+
+* ``target == "memory"`` -> ``learned-{suffix}`` where ``{suffix}`` is the
+  same suffix used for the mori name derivation (``memory_id`` when present,
+  else ``slug-hash8``).  Prefix ``learned-`` is always used regardless of the
+  original suffix contents.
+* ``target == "user"``   -> ``preference-{user_id}`` where ``user_id`` comes
+  from ``metadata["user_id"]`` (default ``"default"``).
+
+The mori NAME (``hermes-{target}-{stable_key}``) used by LWM and reconcile is
+unchanged.  Only the intake submission uses the eligibility-namespaced key.
 """
 
 from __future__ import annotations
@@ -174,6 +189,45 @@ class HermesEventNormalizer:
         prefix = f"hermes-{target_norm}-"
         return sanitize_name(f"{prefix}{stable_key}", prefix=prefix)
 
+    def derive_intake_stable_key(
+        self,
+        target: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Return the eligibility-namespaced stable_key for the intake service.
+
+        This key must satisfy the intake server's namespace gate.  It is ONLY
+        used for the intake submission payload; the mori name (used by LWM and
+        reconcile) is derived separately by :meth:`derive_name`.
+
+        Mapping:
+          * ``target == "memory"`` -> ``learned-{suffix}``
+            where ``{suffix}`` is the same raw suffix used in the mori name
+            (``memory_id`` or ``slug-hash8``), so the key is stable across
+            add/replace/remove calls for the same logical memory.
+          * ``target == "user"``   -> ``preference-{user_id}``
+            where ``user_id`` comes from ``metadata["user_id"]``
+            (default ``"default"``).
+
+        The returned key is plain text — no sanitisation for mori-name constraints
+        is needed here (the intake server stores it as a plain text field).
+        """
+        metadata = metadata or {}
+        target_norm = self._norm_target(target)
+
+        if target_norm == "user":
+            user_id = str(metadata.get("user_id", "default")).strip() or "default"
+            return f"preference-{user_id}"
+        else:  # memory
+            memory_id = str(metadata.get("memory_id", "")).strip()
+            if memory_id:
+                suffix = memory_id
+            else:
+                slug = _slugify(content[:_SLUG_CONTENT_CHARS]) or "memory"
+                suffix = f"{slug}-{content_hash(content)[:8]}"
+            return f"learned-{suffix}"
+
     def normalize(
         self,
         action: str,
@@ -184,20 +238,24 @@ class HermesEventNormalizer:
         """Translate an event into a normalised descriptor.
 
         Returns a dict with:
-          * ``op``           — "propose" | "supersede" | "retract"
-          * ``name``         — sanitised mori name
-          * ``target``       — normalised target ("memory" | "user")
-          * ``content``      — the raw content (body)
-          * ``content_hash`` — sha256 of content
+          * ``op``                — "propose" | "supersede" | "retract"
+          * ``action``            — original hermes action ("add" | "replace" | "remove")
+          * ``name``              — sanitised mori name (hermes-{target}-{key})
+          * ``intake_stable_key`` — eligibility-namespaced key for the intake service
+          * ``target``            — normalised target ("memory" | "user")
+          * ``content``           — the raw content (body)
+          * ``content_hash``      — sha256 of content
           * ``title`` / ``description`` / ``type`` / ``tags`` — proposal fields
 
         Never returns ``None`` -- every real ``on_memory_write`` is
         canon-worthy.
         """
         metadata = metadata or {}
-        op = action_to_op(action)
+        action_norm = (action or "").strip().lower()
+        op = action_to_op(action_norm)
         target_norm = self._norm_target(target)
         name = self.derive_name(target, content, metadata)
+        intake_key = self.derive_intake_stable_key(target, content, metadata)
 
         chash = content_hash(content)
         mem_type = str(metadata.get("type", "")).strip() or (
@@ -213,7 +271,9 @@ class HermesEventNormalizer:
 
         return {
             "op": op,
+            "action": action_norm,
             "name": name,
+            "intake_stable_key": intake_key,
             "target": target_norm,
             "content": content,
             "content_hash": chash,

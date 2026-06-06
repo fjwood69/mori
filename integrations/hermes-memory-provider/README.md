@@ -67,14 +67,44 @@ in the server's `MORI_API_KEYS`; sending it in the header returns `401 Unauthori
 export MORI_API_KEY=<your-64-char-bare-secret>   # must be a write-role key
 ```
 
-Optionally override the server URL (default: `http://localhost:8968`):
+Set the intake governance service URL for writes (required for the write path to drain):
+
+```bash
+export MORI_INTAKE_URL=http://localhost:8971   # base URL of the intake service
+```
+
+The same `MORI_API_KEY` is used for both the mori server and the intake service — no
+separate credential is needed. If `MORI_INTAKE_URL` is unset, write rows queue in the
+local outbox but never drain; an `ERROR` is logged once at startup. Read operations
+(prefetch, search, reconcile) are unaffected.
+
+Optionally override the mori read/search server URL (default: `http://localhost:8968`):
 
 ```bash
 export MORI_SERVER_URL=https://mori.example.com
 ```
 
+Optional intake identifiers (defaults are fine for most deployments):
+
+```bash
+export MORI_INTAKE_AGENT_ID=hermes      # agent identifier in submissions (default "hermes")
+export MORI_INTAKE_SESSION_ID=hermes    # session identifier in submissions (default: live session_id)
+```
+
 hermes-agent will call `get_config_schema()` during setup and write
 non-secret config to `~/.hermes/mori_config.json`.
+
+### Eligible namespace mapping
+
+The intake service enforces a server-side namespace gate. The provider maps:
+
+| Target | Intake `stable_key` |
+|---|---|
+| `memory` | `learned-{suffix}` where `{suffix}` is `memory_id` (if present) or `slug-hash8` (content-derived) |
+| `user` | `preference-{user_id}` where `user_id` comes from `metadata["user_id"]` (default `"default"`) |
+
+These prefixes (`learned-`, `preference-`) are always allowed by the gate. The mori
+canon NAME (`hermes-{target}-{stable_key}`) used by LWM and reconcile is **unchanged**.
 
 ## Naming
 

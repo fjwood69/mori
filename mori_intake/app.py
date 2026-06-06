@@ -29,6 +29,7 @@ from mori_advisor.policy import ROLE_LEVELS, role_for
 from mori_intake import migrations
 from mori_intake.config import WORKER_INTERVAL, check_data_boundary
 from mori_intake.eligibility import evaluate as eligibility_evaluate
+from mori_intake.ratelimit import get_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,17 @@ async def post_submission(
     403 Forbidden
         Key role < write.
     """
-    _require_write(x_api_key)
+    client_name = _require_write(x_api_key)
+
+    # Rate-limit: POST /intake/submissions only, keyed on authenticated key name.
+    limiter = get_limiter()
+    verdict = limiter.check(client_name)
+    if not verdict.allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"status": "rate_limited", "retry_after": verdict.retry_after},
+            headers={"Retry-After": str(verdict.retry_after)},
+        )
 
     # Validate required fields that Pydantic alone cannot enforce.
     if not body.session_id:
