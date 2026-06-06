@@ -314,3 +314,42 @@ class BaseStore(ABC):
     def get_requirements(
         self, project: str = "", status: str = "", tag: str = "", limit: int = 50
     ) -> list: ...
+
+    # ── Agent-memory intake lineage ────────────────────────────────────────
+
+    @abstractmethod
+    def record_intake_lineage(
+        self,
+        canon_name: str,
+        intake_candidate_id: str,
+        intake_submission_ids: list[str],
+        trust_snapshot: dict,
+        promoted_at,
+    ) -> None:
+        """Idempotently insert a row into ``memory_intake_lineage``.
+
+        ON CONFLICT (canon_name) DO NOTHING — re-driving after a crash that
+        already wrote the canon memory will silently skip rather than raise.
+
+        Parameters
+        ----------
+        canon_name:
+            Name of the promoted canon memory (PK).
+        intake_candidate_id:
+            UUID string of the ``intake_candidates`` row.
+        intake_submission_ids:
+            List of UUID strings from ``intake_corroborations``.
+        trust_snapshot:
+            Arbitrary JSON-serialisable dict (reinforcement counts, agents…).
+        promoted_at:
+            :class:`datetime.datetime` (tz-aware UTC).
+        """
+
+    @abstractmethod
+    def get_intake_lineage(self, canon_name: str) -> dict | None:
+        """Return the ``memory_intake_lineage`` row for *canon_name*, or None.
+
+        Returns a plain dict with keys:
+          ``canon_name``, ``intake_candidate_id``, ``intake_submission_ids``,
+          ``trust_snapshot``, ``promoted_at``.
+        """

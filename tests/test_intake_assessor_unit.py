@@ -262,3 +262,286 @@ class TestPromotionQueueStateMachine:
         args = conn.execute.call_args[0]
         # First positional arg after the SQL is the canon_name.
         assert "agent-intake-abc123" in args
+
+    def test_mark_failed_resets_status_to_queued_below_cap(self):
+        """_mark_failed sets status back to 'queued' (not 'processing') below cap."""
+        from mori_intake.canon_writer import _mark_failed
+
+        conn = AsyncMock()
+        conn.execute = AsyncMock()
+        asyncio.run(_mark_failed(conn, uuid.uuid4(), "transient error"))
+        sql = conn.execute.call_args[0][0]
+        # The CASE expression should produce 'failed' or 'queued' — never
+        # 'processing', which would prevent stale-lease reclaim.
+        assert "queued" in sql
+        assert "processing" not in sql
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Fix 3: processing lease + stale-lease reclaim
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestProcessingLease:
+    """_fetch_and_lease_batch sets status='processing' atomically."""
+
+    def test_fetch_and_lease_sets_processing_status(self):
+        """Batch fetch must UPDATE status='processing' inside the same transaction."""
+        from mori_intake.canon_writer import _fetch_and_lease_batch
+
+        queue_id = uuid.uuid4()
+        candidate_id = uuid.uuid4()
+
+        row = MagicMock()
+        row.__getitem__ = lambda self, key: {
+            "id": queue_id,
+            "candidate_id": candidate_id,
+            "attempt_count": 0,
+        }[key]
+        row.__iter__ = lambda self: iter({"id": queue_id})
+
+        conn = AsyncMock()
+        conn.fetch = AsyncMock(return_value=[row])
+        conn.execute = AsyncMock(return_value=None)
+        conn.transaction = MagicMock(return_value=_AsyncCtxMgr(conn))
+
+        pool = MagicMock()
+        pool.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+
+        asyncio.run(_fetch_and_lease_batch(pool, 20))
+
+        # The UPDATE … SET status = 'processing' must have been called.
+        all_sql = " ".join(str(c) for c in conn.execute.call_args_list)
+        assert "processing" in all_sql
+
+    def test_fetch_query_reclaims_stale_leases(self):
+        """The fetch SQL must include the stale-lease reclaim clause."""
+        from mori_intake.canon_writer import _fetch_and_lease_batch
+
+        conn = AsyncMock()
+        conn.fetch = AsyncMock(return_value=[])
+        conn.execute = AsyncMock(return_value=None)
+        conn.transaction = MagicMock(return_value=_AsyncCtxMgr(conn))
+
+        pool = MagicMock()
+        pool.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+
+        asyncio.run(_fetch_and_lease_batch(pool, 20))
+
+        # The SELECT SQL must filter for stale processing rows.
+        fetch_sql = conn.fetch.call_args[0][0]
+        assert "processing" in fetch_sql, "Fetch query must address 'processing' rows"
+        assert "updated_at" in fetch_sql, "Fetch query must check updated_at for stale lease"
+
+    def test_no_double_promote_after_crash_via_idempotency_guard(self):
+        """Crash-after-canon-write scenario: re-drive hits idempotency guard.
+
+        Simulates: canon written + lineage written, but final intake commit
+        failed (promotion_map absent).  On re-drive the promotion_map check
+        fires (row now present from a prior committed pass) → write() skipped.
+
+        This test verifies the idempotency guard path from _promote_one.
+        """
+        from mori_intake.canon_writer import _promote_one
+
+        candidate_id = uuid.uuid4()
+        queue_id = uuid.uuid4()
+        canon_name = "agent-intake-crashtest12345678"
+
+        conn = AsyncMock()
+        # First fetchrow (idempotency check) returns an existing map row.
+        conn.fetchrow = AsyncMock(return_value={"canon_name": canon_name})
+        conn.execute = AsyncMock(return_value=None)
+        pool = MagicMock()
+        pool.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+
+        mori_store = MagicMock()
+        mori_store.write = MagicMock(return_value="written")
+        mori_store.record_intake_lineage = MagicMock(return_value=None)
+
+        result = asyncio.run(_promote_one(pool, mori_store, queue_id, candidate_id))
+
+        assert result is True
+        mori_store.write.assert_not_called()
+        mori_store.record_intake_lineage.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Fix 4: public record_intake_lineage — no _get_conn() access
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPublicLineageAPI:
+    """canon_writer uses mori_store.record_intake_lineage() not _get_conn()."""
+
+    def test_record_lineage_called_not_get_conn(self):
+        """canon_writer must call record_intake_lineage(), never _get_conn()."""
+        from mori_intake.canon_writer import _promote_one
+
+        candidate_id = uuid.uuid4()
+        queue_id = uuid.uuid4()
+        content_hash = "ab" * 32
+
+        # conn: fetchrow returns None (no existing map row), then candidate row.
+        fetchrow_results = [
+            None,  # idempotency check — no existing map row
+            {
+                "canonicalized_body": "Full body of candidate memory.",
+                "content_hash": content_hash,
+                "reinforcement_count": 3,
+            },
+        ]
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(side_effect=fetchrow_results)
+        conn.fetch = AsyncMock(return_value=[])  # no corroborations
+        conn.execute = AsyncMock(return_value=None)
+        conn.transaction = MagicMock(return_value=_AsyncCtxMgr(conn))
+        pool = MagicMock()
+        pool.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+
+        mori_store = MagicMock()
+        mori_store.write = MagicMock(return_value="Memory 'agent-intake-...' written")
+        mori_store.record_intake_lineage = MagicMock(return_value=None)
+
+        asyncio.run(_promote_one(pool, mori_store, queue_id, candidate_id))
+
+        # Public method must have been called.
+        mori_store.record_intake_lineage.assert_called_once()
+        # Private _get_conn must NOT have been called (Fix 4).
+        assert not hasattr(mori_store, "_get_conn") or not mori_store._get_conn.called
+
+    def test_record_lineage_receives_correct_args(self):
+        """record_intake_lineage is called with the right keyword arguments."""
+        from mori_intake.canon_writer import _promote_one
+
+        candidate_id = uuid.uuid4()
+        queue_id = uuid.uuid4()
+        content_hash = "cd" * 32
+
+        fetchrow_results = [
+            None,
+            {
+                "canonicalized_body": "Candidate body text.",
+                "content_hash": content_hash,
+                "reinforcement_count": 2,
+            },
+        ]
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(side_effect=fetchrow_results)
+        conn.fetch = AsyncMock(return_value=[])
+        conn.execute = AsyncMock(return_value=None)
+        conn.transaction = MagicMock(return_value=_AsyncCtxMgr(conn))
+        pool = MagicMock()
+        pool.acquire = MagicMock(return_value=_AsyncCtxMgr(conn))
+
+        mori_store = MagicMock()
+        mori_store.write = MagicMock(return_value="written")
+        mori_store.record_intake_lineage = MagicMock(return_value=None)
+
+        asyncio.run(_promote_one(pool, mori_store, queue_id, candidate_id))
+
+        call_kwargs = mori_store.record_intake_lineage.call_args.kwargs
+        expected_canon_name = f"agent-intake-{content_hash[:16]}"
+        assert call_kwargs["canon_name"] == expected_canon_name
+        assert call_kwargs["intake_candidate_id"] == str(candidate_id)
+        assert isinstance(call_kwargs["intake_submission_ids"], list)
+        assert isinstance(call_kwargs["trust_snapshot"], dict)
+        assert "promoted_at" in call_kwargs
+
+    def test_sqlite_store_record_lineage_creates_fresh_connection(self, tmp_path):
+        """SQLiteStore.record_intake_lineage opens its own connection and closes it.
+
+        Verifies that the public method does not grab or close any externally
+        owned connection — it is fully self-contained.  SQLiteStore is not
+        constructed here (it requires the `nats` module which is not installed
+        in CI); instead we exercise the underlying SQLite logic directly via a
+        minimal stub that carries only the two fields our methods use.
+        """
+        import sqlite3
+        from datetime import datetime, timezone
+        from unittest.mock import MagicMock
+
+        db_path = tmp_path / "memories.db"
+
+        # Bootstrap the memory_intake_lineage table (same DDL as migration 10).
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS memory_intake_lineage ("
+            "  canon_name             TEXT        PRIMARY KEY,"
+            "  intake_candidate_id    TEXT        NOT NULL,"
+            "  intake_submission_ids  TEXT        NOT NULL DEFAULT '[]',"
+            "  trust_snapshot         TEXT        NOT NULL DEFAULT '{}',"
+            "  promoted_at            TEXT        NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+        conn.commit()
+        conn.close()
+
+        # Build a minimal stub that has only the db_path attribute needed by
+        # SQLiteStore.record_intake_lineage / get_intake_lineage.
+        stub = MagicMock(spec=[])  # empty spec — no accidental write methods
+        stub.db_path = db_path
+
+        # Bind the real methods from SQLiteStore onto the stub so we test
+        # the actual SQL without constructing the full store.
+        from mori_advisor.store.sqlite_store import SQLiteStore
+
+        stub.record_intake_lineage = SQLiteStore.record_intake_lineage.__get__(stub)
+        stub.get_intake_lineage = SQLiteStore.get_intake_lineage.__get__(stub)
+
+        stub.record_intake_lineage(
+            canon_name="test-lineage-canon",
+            intake_candidate_id=str(uuid.uuid4()),
+            intake_submission_ids=[str(uuid.uuid4())],
+            trust_snapshot={"reinforcement_count": 1},
+            promoted_at=datetime.now(timezone.utc),
+        )
+
+        # Verify the row was written.
+        result = stub.get_intake_lineage("test-lineage-canon")
+        assert result is not None
+        assert result["canon_name"] == "test-lineage-canon"
+        assert result["trust_snapshot"]["reinforcement_count"] == 1
+
+    def test_sqlite_store_record_lineage_idempotent(self, tmp_path):
+        """Calling record_intake_lineage twice for the same canon_name is a no-op."""
+        import sqlite3
+        from datetime import datetime, timezone
+        from unittest.mock import MagicMock
+
+        db_path = tmp_path / "memories.db"
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS memory_intake_lineage ("
+            "  canon_name             TEXT        PRIMARY KEY,"
+            "  intake_candidate_id    TEXT        NOT NULL,"
+            "  intake_submission_ids  TEXT        NOT NULL DEFAULT '[]',"
+            "  trust_snapshot         TEXT        NOT NULL DEFAULT '{}',"
+            "  promoted_at            TEXT        NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+        conn.commit()
+        conn.close()
+
+        stub = MagicMock(spec=[])
+        stub.db_path = db_path
+
+        from mori_advisor.store.sqlite_store import SQLiteStore
+
+        stub.record_intake_lineage = SQLiteStore.record_intake_lineage.__get__(stub)
+        stub.get_intake_lineage = SQLiteStore.get_intake_lineage.__get__(stub)
+
+        cid = str(uuid.uuid4())
+        kwargs = dict(
+            canon_name="idempotent-canon",
+            intake_candidate_id=cid,
+            intake_submission_ids=[],
+            trust_snapshot={"reinforcement_count": 1},
+            promoted_at=datetime.now(timezone.utc),
+        )
+        stub.record_intake_lineage(**kwargs)
+        stub.record_intake_lineage(**kwargs)  # second call must not raise
+
+        result = stub.get_intake_lineage("idempotent-canon")
+        assert result is not None  # exactly one row

@@ -52,11 +52,14 @@ def _build_real_assess_fn(mori_store):
     environment variables (``MORI_BASE_URL``, ``MORI_PROVIDER_MODE``, etc.)
     and wraps it with :func:`~mori_intake.assess_model.make_canon_assessor`.
 
+    The assessor receives a read-only :class:`~mori_intake.assess_model.CanonReader`
+    built from the store's read-only methods — it has NO write path to canon.
+
     Only called when ``--real-assessor`` is passed.  Tests never exercise this
     path — they inject their own mock.
     """
     from mori_advisor.bifrost_client import BifrostClient
-    from mori_intake.assess_model import make_canon_assessor
+    from mori_intake.assess_model import CanonReader, make_canon_assessor
 
     client = BifrostClient()
     logger.info(
@@ -64,7 +67,32 @@ def _build_real_assess_fn(mori_store):
         client.mode,
         client.base_url,
     )
-    return make_canon_assessor(mori_store, client)
+
+    # Build read-only reader from the store's READ-ONLY methods only.
+    # SQLiteStore wraps MemoryStore via _mem; we extract only search_json
+    # and get_memory (no side-effects, no write capability).
+    if hasattr(mori_store, "_mem"):
+        # SQLiteStore path
+        mem = mori_store._mem
+
+        def _search(query: str, limit: int) -> list[dict]:
+            return mem.search_json(query=query, limit=limit)
+
+        def _fetch_body(name: str) -> str:
+            row = mem.get_memory(name)
+            return (row or {}).get("body") or ""
+
+    else:
+        # PostgresStore path: search_json is async — not supported by the
+        # synchronous assessor in this CLI.  Raise early with a clear message.
+        raise RuntimeError(
+            "cli: PostgresStore detected — the synchronous assessor CLI does not "
+            "support the async PostgresStore search path.  Use an async runner or "
+            "provide a custom CanonReader with sync-wrapped coroutines."
+        )
+
+    reader = CanonReader(search=_search, fetch_body=_fetch_body)
+    return make_canon_assessor(reader, client)
 
 
 async def _run(assess_only: bool, drain_only: bool, real_assessor: bool) -> None:
