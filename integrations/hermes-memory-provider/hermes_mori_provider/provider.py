@@ -42,6 +42,14 @@ _DEFAULT_SERVER_URL = "http://localhost:8968"
 _SEARCH_RESULT_LIMIT = 8
 _FLUSH_TIMEOUT = 8.0
 
+# ── Intake config ──────────────────────────────────────────────────────────────
+# MORI_INTAKE_URL: base URL of the intake governance service (e.g. http://host:8971).
+# When set, on_memory_write drains to POST /intake/submissions.
+# When unset, writes queue and wait — logged once as a clear ERROR; reads still work.
+# Auth key is the SAME as MORI_API_KEY (intake reuses mori's MORI_API_KEYS registry).
+_INTAKE_AGENT_ID_DEFAULT = "hermes"
+_INTAKE_SESSION_ID_DEFAULT = "hermes"
+
 
 class MoriMemoryProvider:
     """hermes-agent MemoryProvider mirroring durable learnings to mori.
@@ -78,11 +86,46 @@ class MoriMemoryProvider:
         )
         api_key: str = cfg.get("api_key") or os.environ.get("MORI_API_KEY", "")
 
+        # Intake governance service configuration.
+        # WRITES go to the intake service; READS stay on the mori server.
+        # The same API key is reused (intake reuses mori's MORI_API_KEYS registry).
+        intake_url: str = os.environ.get("MORI_INTAKE_URL", "").strip()
+        intake_agent_id: str = (
+            os.environ.get("MORI_INTAKE_AGENT_ID", "").strip() or _INTAKE_AGENT_ID_DEFAULT
+        )
+        intake_session_id: str = (
+            os.environ.get("MORI_INTAKE_SESSION_ID", "").strip()
+            or session_id
+            or _INTAKE_SESSION_ID_DEFAULT
+        )
+
+        # Read client — always pointed at the mori server (search, get_memory, list_pending).
         self._client = MoriRestClient(base_url=server_url, api_key=api_key)
         self._normalizer = HermesEventNormalizer()
+
+        # Intake write client — pointed at the intake service base URL.
+        # If MORI_INTAKE_URL is unset: log a clear ERROR once; rows queue and wait.
+        intake_client: Any = None
+        if intake_url:
+            intake_client = MoriRestClient(base_url=intake_url, api_key=api_key)
+            logger.info(
+                "mori provider: write path → intake service at %s (agent=%s)",
+                intake_url,
+                intake_agent_id,
+            )
+        else:
+            logger.error(
+                "MORI_INTAKE_URL is not set — the write path cannot drain. "
+                "Outbox rows will queue until MORI_INTAKE_URL is configured. "
+                "Read operations (prefetch, search) are unaffected."
+            )
+
         self._outbox = GovernedWriteOutbox(
             client=self._client,
             db_path=hermes_home / "mori_outbox.db",
+            intake_client=intake_client,
+            intake_agent_id=intake_agent_id,
+            intake_session_id=intake_session_id,
         )
         logger.info("mori provider initialised (server=%s, session=%s)", server_url, session_id)
 
@@ -94,7 +137,7 @@ class MoriMemoryProvider:
             {
                 "key": "server_url",
                 "description": (
-                    "URL of your mori server "
+                    "URL of your mori server (for reads/search/reconcile) "
                     "(e.g. http://localhost:8968 or https://mori.example.com)"
                 ),
                 "secret": False,
@@ -111,6 +154,38 @@ class MoriMemoryProvider:
                 "secret": True,
                 "required": True,
                 "env_var": "MORI_API_KEY",
+            },
+            {
+                "key": "intake_url",
+                "description": (
+                    "Base URL of the mori intake governance service (for writes). "
+                    "e.g. http://localhost:8971 — the write path posts to "
+                    "{intake_url}/intake/submissions.  Uses the same MORI_API_KEY. "
+                    "If unset, write rows queue but never drain (reads still work)."
+                ),
+                "secret": False,
+                "required": False,
+                "env_var": "MORI_INTAKE_URL",
+                "default": "",
+            },
+            {
+                "key": "intake_agent_id",
+                "description": "Agent identifier sent in intake submissions (default 'hermes').",
+                "secret": False,
+                "required": False,
+                "env_var": "MORI_INTAKE_AGENT_ID",
+                "default": _INTAKE_AGENT_ID_DEFAULT,
+            },
+            {
+                "key": "intake_session_id",
+                "description": (
+                    "Session identifier for intake submissions.  Defaults to the live "
+                    "session_id if available, else 'hermes'."
+                ),
+                "secret": False,
+                "required": False,
+                "env_var": "MORI_INTAKE_SESSION_ID",
+                "default": _INTAKE_SESSION_ID_DEFAULT,
             },
         ]
 
@@ -263,7 +338,11 @@ class MoriMemoryProvider:
 
             payload = {
                 "op": op,
+                "action": desc["action"],
                 "name": name,
+                "intake_stable_key": desc["intake_stable_key"],
+                "target": desc["target"],
+                "session_id": self._session_id,
                 "title": desc["title"],
                 "description": desc["description"],
                 "type": desc["type"],

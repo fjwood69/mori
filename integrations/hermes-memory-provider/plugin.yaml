@@ -1,9 +1,9 @@
 name: hermes-mori-provider
-version: "0.2.0"
+version: "0.3.0"
 description: >
   mori MemoryProvider for hermes-agent. Mirrors the agent's durable learnings
-  to a self-hosted mori server as governed proposals (never direct canon), and
-  lets the agent recall from mori. Requires write-role API key.
+  to the mori intake governance service as proposals (never direct canon), and
+  lets the agent recall from mori canon. Requires write-role API key.
 author: fjwood69
 license: AGPL-3.0-only
 homepage: https://github.com/fjwood69/mori
@@ -29,9 +29,19 @@ tools:
 env:
   - MORI_API_KEY
 
-# Optional environment variable (override default server URL).
+# Optional environment variables.
+# MORI_SERVER_URL: override the mori read/search server (default http://localhost:8968).
+# MORI_INTAKE_URL: base URL of the intake governance service for writes
+#   (e.g. http://localhost:8971).  If unset, write rows queue but never drain.
+#   Uses the same MORI_API_KEY — no separate credential needed.
+# MORI_INTAKE_AGENT_ID: agent identifier in intake submissions (default "hermes").
+# MORI_INTAKE_SESSION_ID: session identifier in intake submissions (default: live
+#   session_id if available, else "hermes").
 env_optional:
   - MORI_SERVER_URL
+  - MORI_INTAKE_URL
+  - MORI_INTAKE_AGENT_ID
+  - MORI_INTAKE_SESSION_ID
 
 install:
   # hermes-agent's plugin loader scans $HERMES_HOME/plugins/<name>/ for an

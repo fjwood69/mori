@@ -5,7 +5,7 @@ Two SQLite-backed tables in one DB file under ``hermes_home / "mori_outbox.db"``
 ``outbox``
     The async governed-proposal pipeline. Rows are written atomically before
     the caller returns; a single background daemon thread drains them by calling
-    ``MoriRestClient.propose`` in a loop.
+    ``MoriRestClient.submit_intake`` via the configured ``intake_client``.
 
 ``lwm`` (Local Working Memory)
     A strongly-consistent optimistic overlay so ``prefetch`` sees the agent's
@@ -70,19 +70,23 @@ _OP_RETRACT = "retract"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS outbox (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT    NOT NULL,
-    title       TEXT    NOT NULL DEFAULT '',
-    description TEXT    NOT NULL DEFAULT '',
-    type        TEXT    NOT NULL DEFAULT 'project',
-    body        TEXT    NOT NULL DEFAULT '',
-    tags        TEXT    NOT NULL DEFAULT '[]',
-    idempotency TEXT    NOT NULL DEFAULT '',
-    op          TEXT    NOT NULL DEFAULT 'propose',
-    status      TEXT    NOT NULL DEFAULT 'pending',
-    attempts    INTEGER NOT NULL DEFAULT 0,
-    created_at  REAL    NOT NULL,
-    updated_at  REAL    NOT NULL
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    name              TEXT    NOT NULL,
+    title             TEXT    NOT NULL DEFAULT '',
+    description       TEXT    NOT NULL DEFAULT '',
+    type              TEXT    NOT NULL DEFAULT 'project',
+    body              TEXT    NOT NULL DEFAULT '',
+    tags              TEXT    NOT NULL DEFAULT '[]',
+    idempotency       TEXT    NOT NULL DEFAULT '',
+    op                TEXT    NOT NULL DEFAULT 'propose',
+    action            TEXT    NOT NULL DEFAULT '',
+    intake_stable_key TEXT    NOT NULL DEFAULT '',
+    target            TEXT    NOT NULL DEFAULT 'memory',
+    session_id        TEXT    NOT NULL DEFAULT '',
+    status            TEXT    NOT NULL DEFAULT 'pending',
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    created_at        REAL    NOT NULL,
+    updated_at        REAL    NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS lwm (
@@ -97,6 +101,15 @@ CREATE TABLE IF NOT EXISTS lwm (
 );
 """
 
+# Columns added in v0.3.0 — applied via ALTER TABLE when an existing DB is
+# opened (idempotent: silently skipped if the column already exists).
+_V030_COLUMNS: list[tuple[str, str]] = [
+    ("action", "TEXT NOT NULL DEFAULT ''"),
+    ("intake_stable_key", "TEXT NOT NULL DEFAULT ''"),
+    ("target", "TEXT NOT NULL DEFAULT 'memory'"),
+    ("session_id", "TEXT NOT NULL DEFAULT ''"),
+]
+
 
 def _now() -> float:
     return time.time()
@@ -108,9 +121,25 @@ class GovernedWriteOutbox:
     Parameters
     ----------
     client:
-        A ``MoriRestClient``-compatible object with a ``propose()`` method.
+        A ``MoriRestClient``-compatible object used for reads (search,
+        get_memory, list_pending).  The ``propose()`` method on this object
+        is never called by the drain loop — all writes go through
+        ``intake_client``.
     db_path:
         Path to the SQLite database file. Created if absent.
+    intake_client:
+        Client pointed at the intake governance service base URL.  The drain
+        loop calls ``submit_intake()`` on this object for every pending row.
+        When ``None`` the drain **FAILS CLOSED**: rows remain queued, an
+        ERROR is logged (once) naming ``MORI_INTAKE_URL``, and the
+        ungoverned ``/api/memories`` path is NEVER used as a fallback.
+        Reads (prefetch / search / reconcile) are unaffected.
+    intake_agent_id:
+        Agent identifier sent in every intake submission (default ``"hermes"``).
+    intake_session_id:
+        Session identifier sent in intake submissions.  A stable per-instance
+        value is acceptable (intake idempotency key is ``(session_id,
+        stable_key)`` — stable enough for the provider's use-case).
     max_pending:
         Maximum unsent outbox rows before new enqueues are dropped.
     initial_backoff / max_backoff:
@@ -128,6 +157,9 @@ class GovernedWriteOutbox:
         client: Any,
         db_path: Path,
         *,
+        intake_client: Any = None,
+        intake_agent_id: str = "hermes",
+        intake_session_id: str = "hermes",
         max_pending: int = 100,
         initial_backoff: float = 1.0,
         max_backoff: float = 60.0,
@@ -137,6 +169,9 @@ class GovernedWriteOutbox:
         _sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._client = client
+        self._intake_client = intake_client
+        self._intake_agent_id = intake_agent_id
+        self._intake_session_id = intake_session_id
         self._db_path = db_path
         self._max_pending = max_pending
         self._initial_backoff = initial_backoff
@@ -223,8 +258,9 @@ class GovernedWriteOutbox:
                 """
                 INSERT INTO outbox
                     (name, title, description, type, body, tags, idempotency,
-                     op, status, attempts, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                     op, action, intake_stable_key, target, session_id,
+                     status, attempts, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
                     name,
@@ -235,6 +271,10 @@ class GovernedWriteOutbox:
                     json.dumps(payload.get("tags", [])),
                     payload.get("idempotency_key", ""),
                     op,
+                    payload.get("action", ""),
+                    payload.get("intake_stable_key", ""),
+                    payload.get("target", "memory"),
+                    payload.get("session_id", ""),
                     _PENDING,
                     now,
                     now,
@@ -380,7 +420,28 @@ class GovernedWriteOutbox:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(_SCHEMA)
         conn.commit()
+        # v0.3.0 migration: add new columns to existing outbox tables.
+        self._apply_v030_columns(conn)
         return conn
+
+    @staticmethod
+    def _apply_v030_columns(conn: sqlite3.Connection) -> None:
+        """Add v0.3.0 columns to an existing outbox table (idempotent)."""
+        existing: set[str] = set()
+        for row in conn.execute("PRAGMA table_info(outbox)"):
+            existing.add(row["name"])
+        for col_name, col_def in _V030_COLUMNS:
+            if col_name not in existing:
+                try:
+                    conn.execute(f"ALTER TABLE outbox ADD COLUMN {col_name} {col_def}")
+                    conn.commit()
+                    logger.debug(
+                        "outbox: added column %r to outbox table (v0.3.0 migration)", col_name
+                    )
+                except sqlite3.OperationalError as exc:
+                    # Silently skip if the column already exists (race or repeat call).
+                    if "duplicate column" not in str(exc).lower():
+                        raise
 
     def _pending_count(self) -> int:
         """Count unsent rows. Must be called with ``self._lock`` held."""
@@ -402,7 +463,8 @@ class GovernedWriteOutbox:
             """
             UPDATE outbox
             SET title = ?, description = ?, type = ?, body = ?, tags = ?,
-                idempotency = ?, op = ?, updated_at = ?
+                idempotency = ?, op = ?, action = ?, intake_stable_key = ?,
+                target = ?, session_id = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -413,6 +475,10 @@ class GovernedWriteOutbox:
                 json.dumps(payload.get("tags", [])),
                 payload.get("idempotency_key", ""),
                 payload.get("op", _OP_SUPERSEDE),
+                payload.get("action", ""),
+                payload.get("intake_stable_key", ""),
+                payload.get("target", "memory"),
+                payload.get("session_id", ""),
                 _now(),
                 row_id,
             ),
@@ -499,45 +565,51 @@ class GovernedWriteOutbox:
 
                 row_id: int = row["id"]
                 name: str = row["name"]
-                try:
-                    tags = json.loads(row["tags"] or "[]")
-                except (json.JSONDecodeError, TypeError):
-                    tags = []
 
-                try:
-                    status_code, resp = self._client.propose(
-                        name=name,
-                        title=row["title"],
-                        description=row["description"],
-                        type=row["type"],
-                        body=row["body"],
-                        tags=tags,
-                        idempotency_key=row["idempotency"],
-                    )
-                except MoriTransportError as exc:
-                    if not self._stop_event.is_set():
-                        with self._lock:
-                            self._increment_attempts(row_id)
-                    logger.warning(
-                        "outbox: transport error for %r — retry after %.1fs: %s",
-                        name,
-                        backoff,
-                        exc,
-                    )
-                    backoff = self._record_failure(backoff)
-                    continue
-                except Exception as exc:
-                    if not self._stop_event.is_set():
-                        with self._lock:
-                            self._increment_attempts(row_id)
-                    logger.error(
-                        "outbox: unexpected error for %r — retry after %.1fs: %s",
-                        name,
-                        backoff,
-                        exc,
-                    )
-                    backoff = self._record_failure(backoff)
-                    continue
+                # ── Governed write path (FAIL CLOSED) ───────────────────────
+                # POST to the intake service /intake/submissions. If no intake
+                # client is configured we FAIL CLOSED — we never fall back to the
+                # ungoverned /api/memories path (which lands working-tier-direct,
+                # the exact hole the governance pipeline closes). See else branch.
+                if self._intake_client is not None:
+                    try:
+                        status_code, resp = self._send_to_intake(row)
+                    except MoriTransportError as exc:
+                        if not self._stop_event.is_set():
+                            with self._lock:
+                                self._increment_attempts(row_id)
+                        logger.warning(
+                            "outbox: intake transport error for %r — retry after %.1fs: %s",
+                            name,
+                            backoff,
+                            exc,
+                        )
+                        backoff = self._record_failure(backoff)
+                        continue
+                    except Exception as exc:
+                        if not self._stop_event.is_set():
+                            with self._lock:
+                                self._increment_attempts(row_id)
+                        logger.error(
+                            "outbox: unexpected intake error for %r — retry after %.1fs: %s",
+                            name,
+                            backoff,
+                            exc,
+                        )
+                        backoff = self._record_failure(backoff)
+                        continue
+                else:
+                    # Fail closed: no governed intake target configured. NEVER
+                    # fall back to the ungoverned /api/memories path — leave rows
+                    # queued and warn loudly (once) until MORI_INTAKE_URL is set.
+                    if not getattr(self, "_warned_no_intake", False):
+                        logger.error(
+                            "outbox: MORI_INTAKE_URL not configured — refusing the "
+                            "ungoverned /api/memories fallback; writes remain queued "
+                            "until the intake service URL is set."
+                        )
+                        self._warned_no_intake = True
+                    break
 
                 if status_code == 429:
                     if not self._stop_event.is_set():
@@ -550,15 +622,39 @@ class GovernedWriteOutbox:
                     continue
 
                 if 200 <= status_code < 300:
+                    duplicate = resp.get("duplicate", False) if isinstance(resp, dict) else False
                     with self._lock:
                         self._mark(row_id, _DONE)
                     self.metrics["proposals_sent"] += 1
                     self._reset_breaker()
-                    logger.debug("outbox: sent %r (HTTP %d)", name, status_code)
+                    logger.debug(
+                        "outbox: sent %r (HTTP %d%s)",
+                        name,
+                        status_code,
+                        " duplicate" if duplicate else "",
+                    )
                     backoff = self._initial_backoff
                     continue
 
-                # 4xx (not 429) — permanent failure, dead-letter.
+                # 422 from the intake service — eligibility rejection (policy).
+                # Dead-letter immediately; never retry (the gate is server-side
+                # and the payload won't change).
+                if status_code == 422:
+                    with self._lock:
+                        self._mark(row_id, _FAILED)
+                    self.metrics["proposals_failed"] += 1
+                    reason = resp.get("reason", "unknown") if isinstance(resp, dict) else "unknown"
+                    logger.warning(
+                        "outbox: intake eligibility rejection for %r — dead-lettering"
+                        " (reason=%r): %s",
+                        name,
+                        reason,
+                        resp,
+                    )
+                    self._reset_breaker()
+                    continue
+
+                # Other 4xx (not 429/422) — permanent failure, dead-letter.
                 with self._lock:
                     self._mark(row_id, _FAILED)
                 self.metrics["proposals_failed"] += 1
@@ -568,6 +664,47 @@ class GovernedWriteOutbox:
                     status_code,
                     resp,
                 )
-                # A clean 4xx response means mori is reachable; reset breaker.
+                # A clean 4xx response means the server is reachable; reset breaker.
                 self._reset_breaker()
                 continue
+
+    def _send_to_intake(self, row: sqlite3.Row) -> tuple[int, dict]:
+        """Build an intake payload from *row* and call ``submit_intake``.
+
+        The ``session_id`` comes from the row (set at enqueue time from the
+        provider's session).  ``agent_id`` comes from the outbox config.
+        The ``action`` is the original hermes action (add/replace/remove).
+        The ``intake_stable_key`` is the eligibility-namespaced key stored on
+        enqueue.
+
+        Provenance includes lineage fields for audit.
+        """
+        action = row["action"] or "add"
+        intake_stable_key = row["intake_stable_key"] or row["name"]
+        session_id = row["session_id"] or self._intake_session_id
+        target = row["target"] or "memory"
+
+        try:
+            tags = json.loads(row["tags"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            tags = []
+
+        provenance: dict = {
+            "mori_name": row["name"],
+            "content_hash": row["idempotency"],  # idempotency stores content_hash
+            "op": row["op"],
+            "type": row["type"],
+            "title": row["title"],
+            "tags": tags,
+            "plugin_version": "0.3.0",
+        }
+
+        return self._intake_client.submit_intake(
+            session_id=session_id,
+            agent_id=self._intake_agent_id,
+            target=target,
+            action=action,
+            stable_key=intake_stable_key,
+            content=row["body"],
+            provenance=provenance,
+        )

@@ -178,6 +178,70 @@ class MoriRestClient:
         except Exception as exc:
             raise MoriTransportError(f"Transport failure listing pending: {exc}") from exc
 
+    def submit_intake(
+        self,
+        session_id: str,
+        agent_id: str,
+        target: str,
+        action: str,
+        stable_key: str,
+        content: str,
+        provenance: dict | None = None,
+    ) -> tuple[int, dict]:
+        """POST a memory proposal to the intake governance service.
+
+        Target: ``{intake_base}/intake/submissions``
+
+        Returns ``(status_code, response_body)`` so the drain loop can branch:
+          * 202           — accepted (may include ``"duplicate": true``)
+          * 422           — policy rejection — dead-letter, never retry
+          * 429           — rate-limited — caller should back off + retry
+          * other 4xx     — dead-letter (bad payload)
+          * Raises MoriTransportError on connection failure or 5xx.
+        """
+        payload: dict = {
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "target": target,
+            "action": action,
+            "stable_key": stable_key,
+            "content": content,
+        }
+        if provenance is not None:
+            payload["provenance"] = provenance
+
+        data = json.dumps(payload).encode()
+        headers = self._headers()
+        headers["Content-Type"] = "application/json"
+
+        req = urllib.request.Request(
+            f"{self._base_url}/intake/submissions",
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with self._urlopen(req, timeout=self._timeout) as resp:
+                body_bytes = resp.read().decode()
+                return resp.status, json.loads(body_bytes) if body_bytes else {}
+        except urllib.error.HTTPError as exc:
+            body_bytes = exc.read().decode() if exc.fp else ""
+            try:
+                resp_body = json.loads(body_bytes) if body_bytes else {}
+            except Exception:
+                resp_body = {"raw": body_bytes}
+            if exc.code >= 500:
+                raise MoriTransportError(
+                    f"Server error submitting intake {stable_key!r}: HTTP {exc.code}",
+                    status_code=exc.code,
+                ) from exc
+            # 4xx / 429 — return to caller for dispatch
+            return exc.code, resp_body
+        except Exception as exc:
+            raise MoriTransportError(
+                f"Transport failure submitting intake {stable_key!r}: {exc}"
+            ) from exc
+
     def get_memory(self, name: str) -> dict | None:
         """Fetch a single canon memory by exact name.
 

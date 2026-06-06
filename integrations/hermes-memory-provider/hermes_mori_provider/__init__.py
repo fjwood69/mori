@@ -12,7 +12,7 @@ The ``ctx`` object must expose ``register_memory_provider(provider)``.
 from .provider import MoriMemoryProvider
 
 __all__ = ["MoriMemoryProvider", "register"]
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 def register(ctx: object) -> None:
