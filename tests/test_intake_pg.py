@@ -55,7 +55,16 @@ async def pool():
     "attached to a different loop".  Migrations are idempotent (CREATE IF NOT
     EXISTS + ledger), so applying them per test is cheap.  All intake tables are
     truncated for a hermetic starting state.
+
+    Isolation note: ``mori_intake.db._pool`` is a module-level global shared
+    across test modules.  A sibling module (e.g. ``test_intake_assessor``) may
+    call ``close_pool()`` and null the global between fixture setup and a test
+    that exercises app handlers via ``db.get_pool()``.  We therefore force a
+    clean pool creation by resetting ``db._pool = None`` before ``create_pool()``
+    so the module-global is always rebound to the live test pool for the duration
+    of this test, regardless of what another fixture left behind.
     """
+    db._pool = None  # force fresh pool; deterministically rebind the global
     p = await db.create_pool()
     await migrations.apply(p)
     await p.execute(
@@ -232,6 +241,13 @@ async def test_post_idempotent_duplicate(pool):
         "content": "Connection pooling materially improves throughput under sustained load.",
     }
 
+    # Bind the live fixture pool on the EXACT db module the handler uses.
+    # A sibling test module's sys.modules churn can leave the app's
+    # mori_intake.db bound to a different instance than this test module's
+    # `db`, so set _pool via the app module's own reference (what get_pool reads).
+    import mori_intake.app as _appmod
+
+    _appmod.db._pool = pool
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         r1 = await client.post("/intake/submissions", json=payload)
@@ -308,6 +324,9 @@ async def test_candidates_endpoint_returns_pending(pool):
     sid = await _insert_submission(pool, content=content)
     await worker.drain_once(pool)
 
+    import mori_intake.app as _appmod
+
+    _appmod.db._pool = pool  # bind on the exact db module the handler uses
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/intake/candidates?status=pending&limit=100")

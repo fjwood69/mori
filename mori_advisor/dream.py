@@ -140,6 +140,22 @@ class DreamPipeline:
         Returns:
             List of memory dicts that were (or would be) written.
         """
+        # B3 — intake promotion (flag-gated, Postgres-only, additive).
+        # Runs FIRST so it fires on every invocation, regardless of whether
+        # this dream run produces any distilled memories (it must not be
+        # skipped by the no-events or no-memories early-returns below).
+        # Defence-in-depth: the outer try/except catches any catastrophic
+        # failure that escapes the method's own internal guard (e.g. an
+        # exception raised before the method's try block is entered).
+        try:
+            await self._run_intake_promotion()
+        except Exception as _exc:
+            logger.error(
+                "run(): _run_intake_promotion raised unexpectedly (continuing): %s",
+                _exc,
+                exc_info=True,
+            )
+
         last_id = await self._get_watermark()
         events = await _a(self.session_log.read_events(since_event_id=last_id, limit=500))
         if not events:
@@ -253,6 +269,91 @@ class DreamPipeline:
 
         logger.info("Done: %s written, %s errors, watermark at id %s", written, errors, max_id)
         return memories
+
+    # ── B3: intake promotion ──────────────────────────────────────────────
+
+    async def _run_intake_promotion(self) -> None:
+        """Run one assess + drain pass over the intake pipeline (B3).
+
+        This method is a no-op unless ALL of the following hold:
+
+        1. ``MORI_INTAKE_PROMOTION_ENABLED`` env var is ``"true"`` (case-
+           insensitive).  Default: ``false``.  The flag is checked first so
+           that cold-start import cost is zero when the feature is off.
+        2. ``MORI_INTAKE_DATABASE_URL`` env var is set (the intake Postgres
+           DSN).  Without it there is nothing to connect to.
+        3. The mori canon store is a ``PostgresStore`` (detected via
+           ``hasattr(self.store, "pool")``).  On a SQLite canon store the
+           feature is UNAVAILABLE by design — SQLite is the dev/UAT backend
+           and does not support the async ``canon_reader()`` interface.
+
+        When the flag is off OR the store is SQLite: logs once at debug/info
+        level and returns immediately.  No import of ``mori_intake.db``; no
+        connection attempt.
+
+        On any exception: logs at ERROR level and returns silently.  This
+        method MUST NOT raise into ``run()`` — a broken intake Postgres must
+        never abort a dream run.
+        """
+        flag = os.environ.get("MORI_INTAKE_PROMOTION_ENABLED", "false").strip().lower()
+        if flag != "true":
+            logger.debug("_run_intake_promotion: flag off — skipping")
+            return
+
+        intake_dsn = os.environ.get("MORI_INTAKE_DATABASE_URL", "").strip()
+        if not intake_dsn:
+            logger.info("_run_intake_promotion: MORI_INTAKE_DATABASE_URL not set — skipping")
+            return
+
+        # Postgres-only guard: SQLiteStore does not have an async pool.
+        if not hasattr(self.store, "pool"):
+            logger.info(
+                "_run_intake_promotion: mori canon store is not a PostgresStore "
+                "(no 'pool' attribute) — feature UNAVAILABLE on SQLite backend; skipping"
+            )
+            return
+
+        try:
+            import asyncpg
+
+            from mori_intake.assess_model import make_canon_assessor, make_canon_reader_from_store
+            from mori_intake.assessor import assess_once
+            from mori_intake.canon_writer import drain_once
+
+            # Create a fresh intake pool for this promotion pass.
+            # We do NOT use the module-level singleton (intake_db._pool) to
+            # avoid lifecycle coupling with the intake HTTP server; instead we
+            # create and close our own pool here.
+            intake_pool = await asyncpg.create_pool(
+                intake_dsn,
+                min_size=1,
+                max_size=3,
+                statement_cache_size=0,
+                ssl=False,
+            )
+            try:
+                # Build the read-only canon reader from the mori Postgres store.
+                reader = make_canon_reader_from_store(self.store)
+                assessor_fn = make_canon_assessor(reader, self.client)
+
+                assessed = await assess_once(intake_pool, assess=assessor_fn)
+                committed = await drain_once(intake_pool, self.store)
+
+                logger.info(
+                    "_run_intake_promotion: assessed=%d committed=%d",
+                    assessed,
+                    committed,
+                )
+            finally:
+                await intake_pool.close()
+
+        except Exception as exc:
+            # NEVER propagate into run() — a broken intake must not abort dream.
+            logger.error(
+                "_run_intake_promotion: error during intake promotion (skipped): %s",
+                exc,
+                exc_info=True,
+            )
 
     # ── Internal helpers ─────────────────────────────────────────────────
 
