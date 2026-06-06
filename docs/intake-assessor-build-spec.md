@@ -114,6 +114,35 @@ Reads intake `intake_candidates WHERE status='pending'`, and for each:
   network, no real sleeps.
 - `ruff format` + `ruff check` clean (pre-commit ruff hook silently blocks unformatted commits).
 
+## Build order — de-risk the dream-touch (B1 → B2 → B3)
+
+Stream B touches the existing dream and an external fast model, so it is built in
+increments that are each independently verifiable, riskiest part last:
+
+- **B1 (this slice) — the deterministic core, ZERO edits to existing dream logic.**
+  - `memory_intake_lineage` migration (additive, in mori's migration registry).
+  - The single **canon writer**: drains `promotion_queue` (`FOR UPDATE SKIP LOCKED`),
+    writes the canon memory + `memory_intake_lineage` + `intake_promotion_map`,
+    populates `origin_clients`, marks `committed`. **At-least-once + idempotent**
+    (check `intake_promotion_map` before re-insert).
+  - The Step-2 **assessor worker** with the fast-model `assess()` as an **injected,
+    stubbable function** (default stub → `UNRELATED`, i.e. treat as novel). Reads
+    `pending` candidates, applies the verdict→action mapping, transitions status,
+    enqueues survivors to `promotion_queue`.
+  - A **manual/CLI trigger** (or a thin worker) to drain the queue in MVV — NOT the
+    dream. This proves the whole `pending → assess → promote → canon+lineage` loop
+    end-to-end, deterministically, with the model stubbed.
+  - Verify against real Postgres (intake) + SQLite (canon): seed a `pending`
+    candidate → assessor → queue → canon writer → assert canon memory + lineage +
+    promotion_map; **re-drive → no duplicate canon row** (idempotent).
+- **B2 — real fast-model `/assess`.** Replace the stub with the cheap contradiction
+  model via Bifrost + canon top-k retrieval. Stateless, read-only. Keep it injectable
+  so tests stay deterministic (stub in tests, real model in prod).
+- **B3 — dream as the trigger (the only edit to existing dream logic).** Wire
+  `DreamPipeline` to consume `under_review` candidates and enqueue `promotion_queue`
+  instead of the manual trigger. Read + blast-radius map of `DreamPipeline.run` first;
+  additive plumbing only; do not change the dream's cadence or event watermark.
+
 ## Definition of done (Stream B)
 `gitnexus_impact` reported for every touched existing symbol; unit tests green unconditionally;
 PG-integration green against throwaway Postgres with a stubbed fast model; the A→B→canon path

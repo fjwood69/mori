@@ -143,6 +143,29 @@ MIGRATIONS: tuple[_Migration, ...] = (
     _Migration(id=4, name="promotion_queue", sql=_BASELINE_PROMOTION_QUEUE.strip()),
     _Migration(id=5, name="intake_promotion_map", sql=_BASELINE_PROMOTION_MAP.strip()),
     _Migration(id=6, name="idx_content_hash", sql=_INDEX_CONTENT_HASH.strip()),
+    # Migration 7 — add error_message to promotion_queue (needed by the canon
+    # writer to record retry diagnostics without losing the queued row).
+    # Additive: existing rows remain unaffected (column is nullable).
+    _Migration(
+        id=7,
+        name="promotion_queue_error_message",
+        sql=("ALTER TABLE promotion_queue ADD COLUMN IF NOT EXISTS error_message TEXT"),
+    ),
+    # Migration 8 — add rejection columns to intake_candidates so the assessor
+    # can record which candidate was rejected and why.  Both columns already
+    # referenced in the assessor spec; adding them here keeps the schema explicit
+    # and avoids the "silent failure on upgrade" anti-pattern.
+    # Additive: existing rows keep NULL values for both columns.
+    _Migration(
+        id=8,
+        name="intake_candidates_rejection_columns",
+        sql=(
+            "ALTER TABLE intake_candidates "
+            "ADD COLUMN IF NOT EXISTS rejection_reason TEXT; "
+            "ALTER TABLE intake_candidates "
+            "ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0"
+        ),
+    ),
 )
 
 
