@@ -46,7 +46,12 @@ log "pg superuser check OK (mori is superuser)"
 mkdir -p "$INTAKE_DIR"
 if [ ! -s "$ENVFILE" ]; then
   INTAKE_APP_PW=$(openssl rand -hex 24)
-  INTAKE_WRITE_KEY=$(openssl rand -hex 32)
+  # The provider (v0.3.0) uses ONE MORI_API_KEY for both its read client (mori
+  # canon, :8968) and its intake write client (:8971). To avoid breaking the
+  # agent's existing reads we register the agent's EXISTING key here as the
+  # write-role key. Pass it in via INTAKE_WRITE_KEY; otherwise a fresh key is
+  # generated (and the agent must then be pointed at it for both paths).
+  INTAKE_WRITE_KEY="${INTAKE_WRITE_KEY:-$(openssl rand -hex 32)}"
   cat > "$ENVFILE" <<EOF
 # mori-intake Stage-1 env (mode 600). Single source of truth; persists on /data.
 # NOTE: deliberately NO MORI_DATABASE_URL — the running service must never carry
