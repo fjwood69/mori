@@ -39,6 +39,10 @@ if [ -n "$DATA_DEV" ] && ! mountpoint -q /data; then
   mkdir -p /data/mori-advisor
   chown mori:mori /data/mori-advisor
   chmod 755 /data/mori-advisor
+  # mori-intake state dir (its .env + secrets persist here across reboots).
+  mkdir -p /data/mori-intake
+  chown mori:mori /data/mori-intake
+  chmod 700 /data/mori-intake
   # Postgres pgdata must be owned by the host uid that the mori user's rootless
   # Podman maps container uid 999 (postgres) to: subuid_base + (999 - 1).
   # Derived from /etc/subuid so it is correct for whatever uid/subuid mori got.

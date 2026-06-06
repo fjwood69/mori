@@ -43,7 +43,12 @@ fi
 log "pg superuser check OK (mori is superuser)"
 
 # ── 2. Generate + persist intake secrets (first run only) ─────────────────────
-mkdir -p "$INTAKE_DIR"
+# /data is root-owned; create the intake dir via sudo and hand it to mori.
+if [ ! -d "$INTAKE_DIR" ]; then
+  sudo mkdir -p "$INTAKE_DIR"
+  sudo chown "$(id -un):$(id -gn)" "$INTAKE_DIR"
+  sudo chmod 700 "$INTAKE_DIR"
+fi
 if [ ! -s "$ENVFILE" ]; then
   INTAKE_APP_PW=$(openssl rand -hex 24)
   # The provider (v0.3.0) uses ONE MORI_API_KEY for both its read client (mori
@@ -105,6 +110,23 @@ REVOKE ALL      ON DATABASE mori FROM intake_app;
 GRANT  CONNECT  ON DATABASE mori TO mori;   -- belt-and-braces: owner keeps access
 SQL
 log "boundary set: REVOKE CONNECT ON mori FROM PUBLIC (intake_app kernel-blocked)"
+
+# pg_hba: authenticate intake_app → the `intake` DB only, over loopback (scram).
+# mori-pg's pg_hba is hardened to allow only `mori` over TCP; the service connects
+# via 127.0.0.1, so add a tightly-scoped entry. ADDITIVE + loopback-only + scoped
+# to (intake_app, intake DB) — canon (mori DB) auth is untouched, and the REVOKE
+# above still blocks intake_app from canon at the authorization layer. Idempotent.
+# (Authorised by the operator; pg_hba persists on the /data pgdata volume.)
+HBA=/var/lib/postgresql/data/pg_hba.conf
+podman exec mori-pg bash -c '
+  HBA='"$HBA"'
+  add() { grep -qE "^host[[:space:]]+intake[[:space:]]+intake_app[[:space:]]+$1" "$HBA" || \
+          printf "host    intake          intake_app      %-23s scram-sha-256\n" "$1" >> "$HBA"; }
+  add "127.0.0.1/32"
+  add "::1/128"
+'
+podman exec mori-pg psql -U mori -d postgres -tAc "SELECT pg_reload_conf()" >/dev/null
+log "pg_hba: intake_app→intake loopback entry ensured + reloaded"
 
 # Sanity: prove intake_app cannot reach canon, and CAN reach intake.
 if podman exec -e PGPASSWORD="$INTAKE_APP_PW" mori-pg psql -U intake_app -d mori -tAc "SELECT 1" >/dev/null 2>&1; then
