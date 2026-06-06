@@ -128,3 +128,49 @@ an agent's summary straight to canon, ungated; a phantom-bug memory was deleted)
 **agent-sourced writes skipping the review chokepoint.** One principle fixes both — make the
 review/promotion path the single gate for anything an agent originates (Hermes's writes *and*
 the dream's agent-distillations).
+
+## DB / storage layer (from /consult, 2026-06-06)
+
+**Topology:** intake is a **physically separate Postgres** (own cluster/DB, pools, WAL,
+backup) — NOT mori's SQLite/Postgres. SQLite is disqualifying for intake (file-lock
+serialises concurrent agent writes). **No external queue in MVV** — the agent's outbox is
+the first buffer; the `intake_submissions` table IS the ingestion log, drained by async
+workers. Add NATS JetStream/Redis only if a single Postgres node is proven the bottleneck
+(>1–2k/sec).
+
+**Five tables + pgvector** (separate raw / dedup-candidate / trust / seam):
+- `intake_submissions` — immutable raw firehose (session_id, agent_id, target_name, action,
+  raw_source_text, stable_key, provenance jsonb, content_hash). UNIQUE(session_id, stable_key).
+- `intake_candidates` — dedup+similarity layer (canonicalized_body, content_hash UNIQUE,
+  embedding vector(768), status[pending|under_review|promoted|rejected|decayed], trust_score,
+  reinforcement_count, decay_score, promoted_canon_name). HNSW index on embedding; hash index.
+- `intake_corroborations` — trust ledger (candidate_id, submission_id, agent_id,
+  source_weight). UNIQUE(candidate_id, submission_id).
+- `promotion_queue` — the seam (candidate_id, status[queued|processing|committed|failed],
+  canon_name, attempt_count).
+- `intake_promotion_map` — cross-system lineage (canon_name PK, candidate_id, submission_ids[],
+  provenance_snapshot). Lives in intake (mori canon must not learn intake's schema).
+
+**The seam — single canon writer:** the dream evaluates candidates → writes decisions into
+`promotion_queue`. **Only mori's governance ingester** holds canon write creds; it polls
+the queue (`FOR UPDATE SKIP LOCKED` on PG, single conn on SQLite), writes the canon memory
+(populating `origin_clients` with corroborating agent_ids + a new mori `memory_intake_lineage`
+table), then marks `committed`. **At-least-once + idempotent** (check `intake_promotion_map`
+before re-insert) — NOT XA/2PC (don't couple canon availability to intake).
+
+**Scalability:** HTTP handler ONLY validates + inserts to `intake_submissions` → 202; never
+computes embeddings on the request path. Embedding/dedup/trust in **horizontal workers**
+polling submissions. Partition submissions by month; archive rejected/decayed >90d.
+Back-pressure is fine — agent reads its own writes from LWM, so intake can lag seconds/minutes.
+
+**Consistency:** read-your-writes = the provider's **LWM** (not intake). Intake→canon is
+eventual, reconciled by the promotion queue + the provider's hash compare vs canon.
+**CRITICAL invariant:** intake must compute `content_hash` with the IDENTICAL normalisation
+mori canon uses (NFKC + whitespace collapse) or the provider sees false hash mismatches.
+
+**MVV:** one dedicated Postgres for intake; mori stays as-is; the 5 tables (no partitioning);
+pgvector IVFFlat if HNSW unavailable, or hash-only dedup if no pgvector; one async worker;
+dream→promotion_queue→a lightweight mori poll-and-insert (or dream inserts directly in MVV,
+refactor to single-writer before multi-agent). Nightly delete of old submissions + vacuum.
+
+Full DDL sketch is in the consult log (2026-06-06).
