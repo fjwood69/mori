@@ -94,7 +94,18 @@ def _since_or_none(since: str | None) -> str | None:
 # every filtered call site and a future index change only needs one edit.
 _ACTIVE = "deleted_at IS NULL"
 
-VALID_TYPES = {"project", "profile", "pattern", "decision", "standard", "requirement"}
+VALID_TYPES = {
+    "project",
+    "profile",
+    "pattern",
+    "decision",
+    "standard",
+    "requirement",
+    # Memories promoted from the agent-intake pipeline (Fix 5).  Kept separate
+    # from human-authored types so the trust-curve can key off type + the
+    # ``memory_intake_lineage`` table without relying on tags alone.
+    "agent-intake",
+}
 VALID_TIERS = {"ephemeral", "working", "canonical"}
 DEFAULT_EXPORT_DIR = "exports"
 MAX_VERSIONS_PER_MEMORY = 20

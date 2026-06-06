@@ -477,6 +477,43 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ON memories (name) WHERE deleted_at IS NULL"
         ),
     ),
+    # ── Stage F: agent-memory governance lineage (Stream B) ───────────────
+    Migration(
+        id=10,
+        name="memory_intake_lineage",
+        target="memories",
+        # New mori-side table that records every canon memory that arrived via
+        # the intake → promotion pipeline.  Purely additive — no existing
+        # table or column is altered.
+        #
+        # SQLite: lightweight analogue (TEXT timestamps, no JSONB/arrays —
+        # intake is Postgres-only in production, but the table must exist on
+        # SQLite so mori servers that run SQLite can run migrations without
+        # errors; the canon writer will only be called from a Postgres context).
+        # trust_snapshot and intake_submission_ids are stored as JSON TEXT on
+        # SQLite.
+        #
+        # Postgres: intake_candidate_id / intake_submission_ids are UUIDs;
+        # trust_snapshot is JSONB; promoted_at is TIMESTAMPTZ.
+        sqlite_sql=(
+            "CREATE TABLE IF NOT EXISTS memory_intake_lineage ("
+            "  canon_name             TEXT        PRIMARY KEY,"
+            "  intake_candidate_id    TEXT        NOT NULL,"
+            "  intake_submission_ids  TEXT        NOT NULL DEFAULT '[]',"
+            "  trust_snapshot         TEXT        NOT NULL DEFAULT '{}',"
+            "  promoted_at            TEXT        NOT NULL DEFAULT (datetime('now'))"
+            ")",
+        ),
+        postgres_sql=(
+            "CREATE TABLE IF NOT EXISTS memory_intake_lineage ("
+            "  canon_name             VARCHAR(128) PRIMARY KEY,"
+            "  intake_candidate_id    UUID         NOT NULL,"
+            "  intake_submission_ids  UUID[]       NOT NULL DEFAULT '{}',"
+            "  trust_snapshot         JSONB        NOT NULL DEFAULT '{}',"
+            "  promoted_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()"
+            ")"
+        ),
+    ),
 )
 
 

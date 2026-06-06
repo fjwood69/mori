@@ -1875,6 +1875,102 @@ class PostgresStore(BaseStore):
             for r in rows
         ]
 
+    # ── Agent-memory intake lineage ────────────────────────────────────────
+
+    async def record_intake_lineage(
+        self,
+        canon_name: str,
+        intake_candidate_id: str,
+        intake_submission_ids: list[str],
+        trust_snapshot: dict,
+        promoted_at,
+    ) -> None:
+        """Idempotently insert a ``memory_intake_lineage`` row (Postgres).
+
+        Uses ``ON CONFLICT (canon_name) DO NOTHING`` so a re-drive after a
+        crash that already wrote the lineage row simply does nothing — no
+        duplicate, no error.
+        """
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO memory_intake_lineage
+                    (canon_name, intake_candidate_id, intake_submission_ids,
+                     trust_snapshot, promoted_at)
+                VALUES ($1, $2::uuid, $3::uuid[], $4, $5)
+                ON CONFLICT (canon_name) DO NOTHING
+                """,
+                canon_name,
+                intake_candidate_id,
+                intake_submission_ids,
+                json.dumps(trust_snapshot),
+                promoted_at,
+            )
+
+    async def get_intake_lineage(self, canon_name: str) -> dict | None:
+        """Return the ``memory_intake_lineage`` row for *canon_name*, or None."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT canon_name, intake_candidate_id, intake_submission_ids, "
+                "trust_snapshot, promoted_at "
+                "FROM memory_intake_lineage WHERE canon_name = $1",
+                canon_name,
+            )
+        if row is None:
+            return None
+        trust = row["trust_snapshot"]
+        if isinstance(trust, str):
+            try:
+                trust = json.loads(trust)
+            except (json.JSONDecodeError, TypeError):
+                trust = {}
+        sub_ids = row["intake_submission_ids"]
+        if isinstance(sub_ids, str):
+            try:
+                sub_ids = json.loads(sub_ids)
+            except (json.JSONDecodeError, TypeError):
+                sub_ids = []
+        promoted = row["promoted_at"]
+        if hasattr(promoted, "isoformat"):
+            promoted = promoted.isoformat()
+        return {
+            "canon_name": row["canon_name"],
+            "intake_candidate_id": str(row["intake_candidate_id"]),
+            "intake_submission_ids": [str(s) for s in (sub_ids or [])],
+            "trust_snapshot": trust,
+            "promoted_at": promoted,
+        }
+
+    def canon_reader(self):
+        """Return a ``(search, fetch_body)`` pair of read-only **async** callables.
+
+        Both callables are coroutines that must be ``await``-ed by the caller.
+        They delegate to the existing async pool methods and do NOT bump
+        ``retrieval_count`` — pure read access.
+
+        Returns
+        -------
+        search : ``async (query: str, limit: int) -> list[dict]``
+            Delegates to ``self.search_json(query=query, limit=limit)``.
+            Returns a list of dicts with at least ``name`` and ``tier`` keys.
+        fetch_body : ``async (name: str) -> str``
+            Returns the full ``body`` text of a single memory, or ``""`` when
+            not found.  Delegates to ``self.get_memory(name)`` which does NOT
+            bump ``retrieval_count``.
+        """
+        from mori_intake.assess_model import CanonReader
+
+        async def _search(query: str, limit: int) -> list[dict]:
+            return await self.search_json(query=query, limit=limit)
+
+        async def _fetch_body(name: str) -> str:
+            mem = await self.get_memory(name)
+            return (mem or {}).get("body") or ""
+
+        return CanonReader(search=_search, fetch_body=_fetch_body)
+
     async def get_requirements(
         self, project: str = "", status: str = "", tag: str = "", limit: int = 50
     ) -> list:

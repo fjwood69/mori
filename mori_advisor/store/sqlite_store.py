@@ -601,6 +601,87 @@ class SQLiteStore(BaseStore):
         finally:
             conn.close()
 
+    # ── Agent-memory intake lineage ────────────────────────────────────────
+
+    def record_intake_lineage(
+        self,
+        canon_name: str,
+        intake_candidate_id: str,
+        intake_submission_ids: list[str],
+        trust_snapshot: dict,
+        promoted_at,
+    ) -> None:
+        """Idempotently insert a ``memory_intake_lineage`` row (SQLite).
+
+        Uses ``INSERT OR IGNORE`` so a re-drive after a crash that already
+        wrote the lineage row simply does nothing — no duplicate, no error.
+        The connection is obtained and closed inside this method; no shared
+        connection is grabbed or closed externally.
+        """
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO memory_intake_lineage
+                    (canon_name, intake_candidate_id, intake_submission_ids,
+                     trust_snapshot, promoted_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    canon_name,
+                    intake_candidate_id,
+                    json.dumps(intake_submission_ids),
+                    json.dumps(trust_snapshot),
+                    promoted_at.isoformat()
+                    if hasattr(promoted_at, "isoformat")
+                    else str(promoted_at),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_intake_lineage(self, canon_name: str) -> dict | None:
+        """Return the ``memory_intake_lineage`` row for *canon_name*, or None."""
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT canon_name, intake_candidate_id, intake_submission_ids, "
+                "trust_snapshot, promoted_at "
+                "FROM memory_intake_lineage WHERE canon_name = ?",
+                (canon_name,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        return {
+            "canon_name": row["canon_name"],
+            "intake_candidate_id": row["intake_candidate_id"],
+            "intake_submission_ids": json.loads(row["intake_submission_ids"] or "[]"),
+            "trust_snapshot": json.loads(row["trust_snapshot"] or "{}"),
+            "promoted_at": row["promoted_at"],
+        }
+
+    def canon_reader(self):
+        """Raise unconditionally — agent-intake promotion is Postgres-only.
+
+        SQLite is the UAT / dev backend.  The canon-reader feature requires
+        async Postgres methods (``search_json``, ``get_memory``); there is no
+        synchronous equivalent suitable for the assessor hot-path.  Do not
+        implement a SQLite path — on a SQLite canon store the feature is simply
+        UNAVAILABLE by design.
+        """
+        raise NotImplementedError(
+            "agent-intake promotion requires a Postgres canon store. "
+            "SQLiteStore does not support canon_reader() — the feature is "
+            "UNAVAILABLE on the SQLite backend."
+        )
+
     def get_requirements(
         self, project: str = "", status: str = "", tag: str = "", limit: int = 50
     ) -> list:

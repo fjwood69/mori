@@ -314,3 +314,73 @@ class BaseStore(ABC):
     def get_requirements(
         self, project: str = "", status: str = "", tag: str = "", limit: int = 50
     ) -> list: ...
+
+    # ── Agent-memory intake lineage ────────────────────────────────────────
+
+    @abstractmethod
+    def record_intake_lineage(
+        self,
+        canon_name: str,
+        intake_candidate_id: str,
+        intake_submission_ids: list[str],
+        trust_snapshot: dict,
+        promoted_at,
+    ) -> None:
+        """Idempotently insert a row into ``memory_intake_lineage``.
+
+        ON CONFLICT (canon_name) DO NOTHING — re-driving after a crash that
+        already wrote the canon memory will silently skip rather than raise.
+
+        Parameters
+        ----------
+        canon_name:
+            Name of the promoted canon memory (PK).
+        intake_candidate_id:
+            UUID string of the ``intake_candidates`` row.
+        intake_submission_ids:
+            List of UUID strings from ``intake_corroborations``.
+        trust_snapshot:
+            Arbitrary JSON-serialisable dict (reinforcement counts, agents…).
+        promoted_at:
+            :class:`datetime.datetime` (tz-aware UTC).
+        """
+
+    @abstractmethod
+    def get_intake_lineage(self, canon_name: str) -> dict | None:
+        """Return the ``memory_intake_lineage`` row for *canon_name*, or None.
+
+        Returns a plain dict with keys:
+          ``canon_name``, ``intake_candidate_id``, ``intake_submission_ids``,
+          ``trust_snapshot``, ``promoted_at``.
+        """
+
+    # ── Agent-intake canon reader ──────────────────────────────────────────
+
+    def canon_reader(self):
+        """Return a ``(search, fetch_body)`` pair of read-only async callables.
+
+        The returned callables are **async** on ``PostgresStore`` and raise
+        ``NotImplementedError`` on ``SQLiteStore`` — the agent-intake promotion
+        feature requires a Postgres canon store.
+
+        ``search(query: str, limit: int) -> list[dict]``
+            FTS-ranked search over canon memories.  No retrieval_count bump.
+        ``fetch_body(name: str) -> str``
+            Return the full body text of a single memory, or ``""`` if not
+            found.  No retrieval_count bump.
+
+        Both callables are *read-only* — the assessor has no write path to
+        canon through this interface.
+
+        Implementation notes
+        --------------------
+        * ``PostgresStore`` returns **async** callables (``search_json`` and
+          ``get_memory`` are coroutines on the Postgres backend).
+        * ``SQLiteStore`` raises ``NotImplementedError`` unconditionally — the
+          feature is Postgres-only by design (SQLite is for UAT / dev).
+        * Callers must ``await`` the returned callables when on Postgres.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement canon_reader(). "
+            "Agent-intake promotion requires a Postgres canon store."
+        )
