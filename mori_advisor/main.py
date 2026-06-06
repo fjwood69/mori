@@ -74,6 +74,12 @@ NATS_URL = os.environ.get("MORI_NATS_URL", "nats://localhost:4222")
 # Set to "false" to suppress consult output capture (e.g. for sensitive/experimental questions)
 CONSULT_CAPTURE = os.environ.get("MORI_CONSULT_CAPTURE", "true").lower() != "false"
 
+# Set to "false" to disable the per-memory LLM freshness check on the brief() hot path.
+# The check is bounded (24h cache, 5-worker cap) and safe for single-operator/low-concurrency
+# use, but operators running brief() frequently across many concurrent clients may wish to
+# disable it here and schedule check_freshness() as a background task instead.
+FRESHNESS_ON_BRIEF = os.environ.get("MORI_FRESHNESS_ON_BRIEF", "true").lower() != "false"
+
 # ── System prompts ──────────────────────────────────────────────────────
 
 ADVISOR_SYSTEM_PROMPT = """You are a senior technical advisor. A developer or AI coding assistant running as a faster model is consulting you for strategic guidance mid-task.
@@ -169,6 +175,167 @@ BINARY_EXTENSIONS = {
 MAX_FILE_SIZE = 50 * 1024  # 50KB per file
 MAX_TOTAL_FILE_SIZE = 200 * 1024  # 200KB total
 
+
+# ── Consult file-read security ────────────────────────────────────────────
+# Paths allowed as roots for _read_files().  Defaults to cwd; can be
+# overridden (os.pathsep-separated) by setting MORI_CONSULT_FILE_ROOTS.
+# Each requested path is resolved and must be relative_to at least one root.
+#
+# WARNING: if MORI_CONSULT_FILE_ROOTS is unset the allowed root defaults to
+# the process cwd (typically the repo root).  Operators should set this to a
+# dedicated read-only directory in production to restrict the blast radius of
+# any future path-escape bugs.
+def _build_consult_roots() -> list[Path]:
+    raw = os.environ.get("MORI_CONSULT_FILE_ROOTS", "")
+    if raw:
+        return [Path(p).resolve() for p in raw.split(os.pathsep) if p.strip()]
+    return [Path.cwd().resolve()]
+
+
+CONSULT_FILE_ROOTS: list[Path] = _build_consult_roots()
+
+
+# Standards-specific allowed roots.  Callers that pass a ``standards_dir``
+# parameter to import_standards() must keep the resolved directory inside
+# one of these roots.  Defaults to STANDARDS_DIR (when set) or the same
+# roots used for consult file reads.
+def _build_standards_roots() -> list[Path]:
+    raw_std = os.environ.get("MORI_STANDARDS_ROOTS", "")
+    if raw_std:
+        return [Path(p).resolve() for p in raw_std.split(os.pathsep) if p.strip()]
+    # Fall back to the configured STANDARDS_DIR if available.
+    std_dir = os.environ.get("MORI_STANDARDS_DIR", "")
+    if std_dir:
+        p = Path(std_dir).resolve()
+        if p.is_dir():
+            return [p]
+    return CONSULT_FILE_ROOTS
+
+
+STANDARDS_ROOTS: list[Path] = _build_standards_roots()
+
+
+def _is_within_standards_roots(resolved: Path) -> bool:
+    """Return True if *resolved* falls under at least one allowed standards root."""
+    for root in STANDARDS_ROOTS:
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+# Basenames (lowercased, exact match) that are always rejected regardless of
+# location.  Lower-cased so the check is case-insensitive.
+SENSITIVE_BASENAMES: frozenset[str] = frozenset(
+    {
+        ".env",
+        ".secrets",
+        ".credentials",
+        ".netrc",
+        ".htpasswd",
+        "passwd",
+        "shadow",
+        "sudoers",
+        "id_rsa",
+        "id_ecdsa",
+        "id_ed25519",
+        "id_dsa",
+    }
+)
+
+# Prefixes (lowercased) of basenames that are always rejected.
+# Covers .env, .env.local, .env.production, etc.
+SENSITIVE_BASENAME_PREFIXES: tuple[str, ...] = (".env",)
+
+# Substrings (lowercased) that, when present in the lowercased basename, mark
+# the file as sensitive.
+SENSITIVE_BASENAME_SUBSTRINGS: tuple[str, ...] = ("secret", "credential")
+
+# Suffixes (lowercased) that are always rejected.
+SENSITIVE_SUFFIXES: frozenset[str] = frozenset(
+    {
+        ".key",
+        ".pem",
+        ".p12",
+        ".pfx",
+        ".crt",
+        ".cer",
+        ".der",
+        ".sqlite",
+        ".db",
+        ".credentials",
+    }
+)
+
+# Path segment (directory name) — reject any file whose resolved path passes
+# through a directory with this name.
+SENSITIVE_SEGMENTS: frozenset[str] = frozenset({".git", ".ssh", ".gnupg"})
+
+
+def _is_sensitive_path(resolved: Path) -> bool:
+    """Return True if the resolved path matches any sensitive pattern.
+
+    All checks are case-insensitive on the basename so that ``PASSWD``,
+    ``Secrets.txt``, ``.Env.local``, etc. are caught alongside their
+    lower-case siblings.
+    """
+    name_lower = resolved.name.lower()
+
+    # Exact basename match (case-insensitive).
+    if name_lower in SENSITIVE_BASENAMES:
+        return True
+
+    # Prefix match — catches .env, .env.local, .env.production, etc.
+    for prefix in SENSITIVE_BASENAME_PREFIXES:
+        if name_lower.startswith(prefix):
+            return True
+
+    # Substring match — catches Secrets.txt, my-credentials.json, etc.
+    for substr in SENSITIVE_BASENAME_SUBSTRINGS:
+        if substr in name_lower:
+            return True
+
+    # Suffix match (already lowercased).
+    suffix = resolved.suffix.lower()
+    if suffix in SENSITIVE_SUFFIXES:
+        return True
+
+    # Directory segment match (e.g. .git/config, .ssh/id_rsa).
+    for part in resolved.parts:
+        if part.lower() in SENSITIVE_SEGMENTS:
+            return True
+
+    return False
+
+
+def _is_within_allowed_roots(resolved: Path) -> bool:
+    """Return True if resolved falls under at least one allowed root."""
+    for root in CONSULT_FILE_ROOTS:
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+# ── Skill name validation ─────────────────────────────────────────────────
+# A safe skill name is a single path component: no path separators, no `..`,
+# no leading dot or absolute prefix, printable ASCII only.
+_SAFE_SKILL_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _is_safe_skill_name(sk: str) -> bool:
+    """Return True only if *sk* is a safe single-component skill name.
+
+    Rejects anything containing ``/``, ``\\``, ``..``, leading dots,
+    or characters outside ``[a-zA-Z0-9_-]``.
+    """
+    return bool(_SAFE_SKILL_RE.match(sk))
+
+
 # ── Global state ─────────────────────────────────────────────────────────
 
 store = _get_store(DATA_DIR / "memories.db")
@@ -199,6 +366,16 @@ async def _lifespan(server):
     warning = throttle_safety_warning()
     if warning:
         logger.warning(warning)
+    # Warn operators if MORI_CONSULT_FILE_ROOTS is unset — the cwd default is
+    # permissive and should be narrowed to a dedicated read-only directory in
+    # production.  See _build_consult_roots() for details.
+    if not os.environ.get("MORI_CONSULT_FILE_ROOTS", ""):
+        logger.warning(
+            "MORI_CONSULT_FILE_ROOTS is not set; consult file reads are allowed from "
+            "the process cwd (%s). Set this variable to a dedicated read-only directory "
+            "in production to restrict file-read access.",
+            Path.cwd(),
+        )
     cleanup_task = asyncio.create_task(_throttle_cleanup_loop())
     try:
         yield
@@ -290,18 +467,50 @@ def _read_files(file_paths: list[str]) -> tuple[list[str], list[str]]:
 
     for path_str in file_paths:
         path = Path(path_str)
-        suffix = path.suffix.lower()
+
+        # ── Security: resolve FIRST so all checks operate on the canonical path.
+        # This catches both .. traversal and symlink escapes in one step.
+        try:
+            resolved = path.resolve()
+        except Exception as exc:
+            errors.append(f"Path resolution error for {path_str}: {exc}")
+            continue
+
+        suffix = resolved.suffix.lower()
 
         if suffix in BINARY_EXTENSIONS:
             errors.append(f"Skipped binary file: {path_str}")
             continue
 
-        if not path.exists():
+        if not _is_within_allowed_roots(resolved):
+            errors.append(f"Access denied (outside allowed roots): {path_str}")
+            continue
+
+        if _is_sensitive_path(resolved):
+            errors.append(f"Access denied (sensitive path): {path_str}")
+            continue
+
+        if not resolved.exists():
             errors.append(f"File not found: {path_str}")
             continue
 
+        if not resolved.is_file():
+            errors.append(f"Not a file: {path_str}")
+            continue
+
         try:
-            content = path.read_text(encoding="utf-8", errors="replace")
+            # O_NOFOLLOW: if a symlink is swapped in after resolve() the open
+            # fails with OSError (ELOOP on Linux, ENOTSUP on macOS) instead of
+            # silently following a new destination. This is defence in depth —
+            # the allowlist check above already catches symlinks resolved at
+            # call time, but a race between resolve() and open() is closed here.
+            try:
+                fd = os.open(str(resolved), os.O_RDONLY | os.O_NOFOLLOW)
+            except OSError as e:
+                errors.append(f"Access denied (symlink race or O_NOFOLLOW): {path_str}: {e}")
+                continue
+            with os.fdopen(fd, encoding="utf-8", errors="replace") as fh:
+                content = fh.read()
             if len(content) > MAX_FILE_SIZE:
                 content = content[:MAX_FILE_SIZE] + "\n... (truncated)"
                 label = f"{path_str} (truncated to 50KB)"
@@ -579,17 +788,23 @@ async def brief(
         except Exception as e:
             parts.append(f"**Shared memories:** error loading ({e})")
 
-    # Freshness check on canonical infrastructure memories
-    try:
-        fc = await _a(memory_store.check_freshness(bifrost.consult, limit=20))
-        if fc["checked"] > 0:
-            parts.append(
-                f"**Freshness check:** {fc['fresh']} fresh, {fc['stale']} stale, {fc['no']} invalid ({fc['checked']} checked)"
-            )
-            if fc.get("errors"):
-                parts.append(f"  ({fc['errors']} errors)")
-    except Exception as e:
-        parts.append(f"**Freshness check:** error ({e})")
+    # Freshness check on canonical infrastructure memories.
+    # Controlled by MORI_FRESHNESS_ON_BRIEF (default true).  The check is
+    # bounded by a 24h in-memory cache and a 5-worker concurrency cap, making
+    # it safe for single-operator / low-concurrency deployments.  Set
+    # MORI_FRESHNESS_ON_BRIEF=false to disable and move the check to a
+    # scheduled background task for higher-concurrency environments.
+    if FRESHNESS_ON_BRIEF:
+        try:
+            fc = await _a(memory_store.check_freshness(bifrost.consult, limit=20))
+            if fc["checked"] > 0:
+                parts.append(
+                    f"**Freshness check:** {fc['fresh']} fresh, {fc['stale']} stale, {fc['no']} invalid ({fc['checked']} checked)"
+                )
+                if fc.get("errors"):
+                    parts.append(f"  ({fc['errors']} errors)")
+        except Exception as e:
+            parts.append(f"**Freshness check:** error ({e})")
 
     # Eviction queue warning
     try:
@@ -766,12 +981,25 @@ async def import_standards(standards_dir: str | None = None) -> str:
 
     Each file is tagged with 'standard' and the name of its immediate
     parent directory (e.g. security/baseline.md → tags: ["standard", "security"]).
+
+    Security: the effective standards directory must be contained inside one of
+    the allowed standards roots (MORI_STANDARDS_ROOTS or MORI_STANDARDS_DIR or
+    MORI_CONSULT_FILE_ROOTS).  Passing an external ``standards_dir`` that
+    resolves outside these roots is rejected.  Each rglob'd file is additionally
+    checked against _is_sensitive_path() as defence in depth.
     """
     src = standards_dir or STANDARDS_DIR
     if not src:
         return "No standards directory configured (set MORI_STANDARDS_DIR)."
 
-    src_path = Path(src)
+    src_path = Path(src).resolve()
+    if not _is_within_standards_roots(src_path):
+        logger.warning("import_standards: rejected standards_dir outside allowed roots: %s", src)
+        return (
+            f"Access denied: standards directory '{src}' is outside the allowed standards roots. "
+            f"Set MORI_STANDARDS_ROOTS or MORI_STANDARDS_DIR to an appropriate path."
+        )
+
     if not src_path.is_dir():
         return f"Standards directory not found: {src}"
 
@@ -779,6 +1007,15 @@ async def import_standards(standards_dir: str | None = None) -> str:
     errors = 0
     for file_path in sorted(src_path.rglob("*.md")):
         if not file_path.is_file():
+            continue
+
+        resolved_file = file_path.resolve()
+
+        # Defence in depth: skip any file that resolves to a sensitive path
+        # (e.g. a symlink inside the standards dir pointing to .ssh/config).
+        if _is_sensitive_path(resolved_file):
+            logger.warning("import_standards: skipping sensitive path: %s", resolved_file)
+            errors += 1
             continue
 
         # Derive kebab name from relative path
@@ -920,6 +1157,30 @@ def _list_skills() -> list[str]:
     return sorted(p.name for p in skills_dir.iterdir() if p.is_dir() and (p / "SKILL.md").exists())
 
 
+def _safe_skill_path(sk: str) -> Path | None:
+    """Return the resolved SKILL.md path for *sk*, or None if the name is unsafe.
+
+    Validates that:
+      1. ``sk`` is a single safe path component (no ``/``, ``\\``, ``..``, etc.).
+      2. The resolved path is contained within SKILLS_DIR (prevents any escape
+         that might still occur if SKILLS_DIR itself is a symlink).
+    Returns None (caller must skip / return "not found") if either check fails.
+    """
+    if not _is_safe_skill_name(sk):
+        logger.warning("Skill name rejected (unsafe characters or traversal): %r", sk)
+        return None
+    if not SKILLS_DIR:
+        return None
+    skills_root = Path(SKILLS_DIR).resolve()
+    candidate = (skills_root / sk / "SKILL.md").resolve()
+    try:
+        candidate.relative_to(skills_root)
+    except ValueError:
+        logger.warning("Skill path escaped SKILLS_DIR (after resolve): %r → %s", sk, candidate)
+        return None
+    return candidate
+
+
 def _update_all(device: str) -> str:
     """Generate a single shell command to deploy ALL skill packages to a device."""
     skills = _list_skills()
@@ -934,8 +1195,8 @@ def _update_all(device: str) -> str:
 
     if cfg["family"] == "linux":
         for sk in skills:
-            skill_path = Path(SKILLS_DIR) / sk / "SKILL.md"
-            if not skill_path.exists():
+            skill_path = _safe_skill_path(sk)
+            if skill_path is None or not skill_path.exists():
                 continue
             content = skill_path.read_text(encoding="utf-8")
             tmp = f"/tmp/_{sk}_skill.md"
@@ -952,8 +1213,8 @@ def _update_all(device: str) -> str:
 
     # Windows — PowerShell
     for sk in skills:
-        skill_path = Path(SKILLS_DIR) / sk / "SKILL.md"
-        if not skill_path.exists():
+        skill_path = _safe_skill_path(sk)
+        if skill_path is None or not skill_path.exists():
             continue
         content = skill_path.read_text(encoding="utf-8")
         temp = f"$env:TEMP\\_{sk}_skill.md"
@@ -1013,7 +1274,13 @@ async def update(device: str, content: str = "", skill: str = "") -> str:
             return _update_all(device)
         if not SKILLS_DIR:
             return "Server skills directory not configured (set MORI_SKILLS_DIR)."
-        skill_path = Path(SKILLS_DIR) / skill / "SKILL.md"
+        # Validate skill name before constructing a path — prevents directory
+        # traversal via skill names like "../../etc/passwd" or "../secret".
+        skill_path = _safe_skill_path(skill)
+        if skill_path is None:
+            return (
+                f"Invalid or unsafe skill name '{skill}'. Skill names must match ^[a-zA-Z0-9_-]+$."
+            )
         if not skill_path.exists():
             available = _list_skills()
             return f"Package '{skill}' not found. Available: {', '.join(available)}"

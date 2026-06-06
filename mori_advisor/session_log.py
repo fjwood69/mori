@@ -205,9 +205,16 @@ class SessionLog:
             params.append(client)
 
         query += " ORDER BY id DESC"
-        if limit:
+        if limit is None:
+            # Explicit unlimited — no LIMIT clause added.
+            pass
+        elif limit > 0:
             query += " LIMIT ?"
             params.append(limit)
+        else:
+            # limit == 0 → caller wants an empty result (e.g. a pure count
+            # was intended; returning rows would be wasteful).
+            return []
 
         conn = self._get_conn()
         try:
@@ -326,6 +333,27 @@ class SessionLog:
         conn = self._get_conn()
         try:
             cur = conn.execute("SELECT COUNT(*) FROM session_events")
+            return cur.fetchone()[0]
+        except sqlite3.Error:
+            return 0
+        finally:
+            conn.close()
+
+    def count_events_since(self, since_event_id: int) -> int:
+        """Count events with id > since_event_id without fetching rows.
+
+        O(1) memory regardless of table size — use this instead of
+        ``len(read_events(since_event_id=..., limit=None))`` to avoid
+        loading all rows into memory just to get a count.
+        """
+        import sqlite3
+
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM session_events WHERE id > ?",
+                (since_event_id,),
+            )
             return cur.fetchone()[0]
         except sqlite3.Error:
             return 0

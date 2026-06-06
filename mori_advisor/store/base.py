@@ -240,6 +240,14 @@ class BaseStore(ABC):
     def count_events(self) -> int: ...
 
     @abstractmethod
+    def count_events_since(self, since_event_id: int) -> int:
+        """Count events with id > since_event_id using SELECT COUNT(*).
+
+        O(1) memory — never fetches rows.  Use instead of
+        ``len(read_events(..., limit=None))`` to avoid full-table loads.
+        """
+
+    @abstractmethod
     def prune_events(self, before_event_id: int, _conn=None) -> int: ...
 
     @abstractmethod

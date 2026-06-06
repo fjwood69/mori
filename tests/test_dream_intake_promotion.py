@@ -44,6 +44,7 @@ def _make_mock_store(*, with_pool: bool = False):
         "get_dream_state",
         "read_events",
         "count_events",
+        "count_events_since",
         "list_sessions",
         "set_dream_state",
         "prune_events",
@@ -58,6 +59,7 @@ def _make_mock_store(*, with_pool: bool = False):
     store.get_dream_state = AsyncMock(return_value="0")
     store.read_events = AsyncMock(return_value=[])
     store.count_events = AsyncMock(return_value=0)
+    store.count_events_since = AsyncMock(return_value=0)
     store.list_sessions = AsyncMock(return_value=[])
     store.set_dream_state = AsyncMock(return_value=None)
     store.prune_events = AsyncMock(return_value=0)
