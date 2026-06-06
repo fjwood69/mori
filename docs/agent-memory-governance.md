@@ -27,6 +27,11 @@ into mori's canon.
 
 ## Architecture — asymmetric read / write / promote
 
+> **Backend: Postgres-only.** This pipeline requires concurrent writers + the async
+> store and is **unavailable on a SQLite mori** (the solo/dev base mode). SQLite is the
+> zero-config default; Postgres is mandatory for team/multi-agent/production use. See the
+> README "Backend requirement" note. We do not build this capability for both backends.
+
 ```
   AGENT (hermes)                STAGE 1: INTAKE (new, separate, scalable)        mori (Stage 2 + canon)
   ┌───────────┐  write          ┌─────────────────────────────────────┐         ┌──────────────────┐

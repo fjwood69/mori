@@ -189,6 +189,15 @@ each turn.
 Memories live in the store — SQLite (`memories.db`) for solo/sync deployments,
 Postgres for team/async — with three tiers:
 
+> **Backend requirement — SQLite is the base mode, Postgres is mandatory for anything
+> meaningful.** SQLite is the zero-config default for a single user on one machine. For
+> a team, multiple machines/agents, or any concurrent-writer workload, **Postgres is
+> mandatory** — SQLite's file-level locking serialises writes and cannot sustain it.
+> Some capabilities are **Postgres-only by design** (e.g. the autonomous-agent intake /
+> governance pipeline): they require concurrent writers and the async store, and are
+> simply unavailable on a SQLite backend. We do not engineer every capability for both
+> backends — choose Postgres for production/team use.
+
 | Tier | Scope | Lifecycle |
 |------|-------|-----------|
 | **Ephemeral** | Session summaries | Auto-expire unless explicitly saved |
