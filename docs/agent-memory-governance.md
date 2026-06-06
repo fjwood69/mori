@@ -4,6 +4,25 @@
 > session). Not yet built. Reviewed by Fred (architect/dreamer) in conversation; this
 > file is the spec to build from, not a chat reconstruction.
 
+## Status (v2.2.11)
+
+The pipeline (Stream A through B3) is **SHIPPED to `main`** but **DORMANT by default**.
+The intake service is not deployed and `MORI_INTAKE_PROMOTION_ENABLED` is off.
+The three security/perf criticals (AUTH-001, PERF-003, PERF-004) are **active** in this
+release.
+
+**Pre-enable gate — the following must be completed before enabling unattended promotion:**
+1. Structured-output verdict schema in the B2 assessor (removes free-text parsing).
+2. Private-IP SSRF guard on `MORI_INTAKE_URL` at startup (server-side complement to the
+   provider-side no-redirect opener already shipped).
+3. Human-review gate / trust curve (Slice-3) — agent memories must not self-promote to
+   canonical without a trust threshold or human approval.
+4. Dream-concurrency guard OPS-002 — B3 promotion and the standard dream run must not
+   race on the same canon write connection.
+5. End-to-end pipeline test (A → B1 → B2 → B3 → canon) in CI.
+
+See ROADMAP.md for the full pre-enable tracking table.
+
 ## Problem
 
 mori is a **governed** memory store built for human / Claude-Code-instance contributions,

@@ -53,6 +53,33 @@ Updated with each release.
 - Backup script updated — `pg_dump` path for Postgres backend, shell retention removed
 - Streaming replication documented in `docs/reference/team-configuration.md`
 
+### v2.2.11 — agent-memory governance pipeline (dormant) + 3 security/perf criticals + plugin v0.3.x
+
+- **AUTH-001 (ACTIVE):** arbitrary file read via `consult_advisor` `files` param closed —
+  `resolve()` + `MORI_CONSULT_FILE_ROOTS` allowlist + basename/suffix/segment blocklist +
+  `O_NOFOLLOW` (TOCTOU guard); same guard extended to skill-loader and standards-import.
+  Startup `WARNING` if `MORI_CONSULT_FILE_ROOTS` unset.
+- **PERF-004 (ACTIVE):** `read_events(limit=0)` full-table fetch replaced with
+  `count_events_since(id > N)` on all backends; `limit` semantics normalised (None →
+  unlimited, 0 → empty, n → LIMIT n).
+- **PERF-003 (ACTIVE):** `check_freshness` bounded-concurrent (semaphore 5) + batched
+  single-transaction updates + 24h cache with lock + in-flight sentinel; new
+  `MORI_FRESHNESS_ON_BRIEF` flag to disable brief-time freshness check.
+- **Governance pipeline (SHIPPED, DORMANT):** new `mori_intake/` service — separate Postgres,
+  `POST /intake/submissions`, eligibility gate (default-deny namespaces + proposition
+  classifier + GOV-001 deny + format regex), per-key rate limit, B1 intra-pile dedup worker,
+  B2 fast-model vs-canon assessor (fail-CLOSED — `NEEDS_REVIEW` blocks auto-promotion; only
+  model-confirmed `UNRELATED` proceeds), B3 dream-trigger with `FOR UPDATE SKIP LOCKED` lease
+  + idempotent promotion + `memory_intake_lineage` + GOV-002 promotion-time eligibility and
+  body-integrity re-check. B3 is **additive + feature-flagged** (`MORI_INTAKE_PROMOTION_ENABLED`,
+  default off). Postgres-only. `Dockerfile` ships `mori_intake/`.
+- **hermes-mori-provider v0.3.0:** write path now targets `POST /intake/submissions` (not mori
+  `/api/memories`); fail-CLOSED on missing `MORI_INTAKE_URL`; SSRF no-redirect opener;
+  content_hash NFKC-unified with intake.
+- **Plugin v0.1.1 – v0.3.3:** Cursor/Antigravity hooks, health sentinel, env-var config
+  (drops `userConfig`), skills-only architecture, bare-secret configs. *(See CHANGELOG for
+  per-version detail.)*
+
 ### v2.2.5 – v2.2.8 — Write-API hardening (#23, complete)
 The governed write surface is now **role-scoped · audited · reversible · replay-safe · rate-limited**.
 - **v2.2.5** (#23 A/B): persistent `write_audit` trail + `GET /api/audit` (dreamer); soft-delete (`deleted_at`, partial unique index, restore-on-collision, `?hard=true` purge); tombstone-filtered reads + FTS, dual-backend (migrations 8 + 9).
@@ -74,6 +101,30 @@ The governed write surface is now **role-scoped · audited · reversible · repl
 
 ### v2.2.1
 - **Cursor & Antigravity hook layers** — per-client Node hooks over a shared `lib/` (canonical-event normalizer, fail-open, conversation-keyed throttle); installed via the documented standalone hooks configs; client events normalized to Mori's schema before POST. **Multi-client tidy-upper** (`scripts/legacy/tidy-up.mjs`) — dry-run-default cleanup of bespoke installs across all three clients, exact-signature matching with backups. Plugin v0.1.1.
+
+---
+
+## Governance pipeline — pre-enable gate (v2.2.11 shipped dormant)
+
+The following items gate unattended promotion being enabled in production.
+None of these block the security/perf criticals (which are already active).
+
+| Priority | Item |
+|----------|------|
+| P0 | **Structured-output verdicts (B2)** — replace free-text verdict parsing in the fast-model assessor with a structured-output schema; eliminates parse ambiguity and the `NEEDS_REVIEW` fallback for malformed model responses |
+| P0 | **Private-IP SSRF guard on `MORI_INTAKE_URL`** — validate at startup that the intake URL does not resolve to a private/loopback address (complement to the provider-side no-redirect opener already shipped) |
+| P0 | **Dream-concurrency guard OPS-002** — the B3 promotion worker and the standard dream run must not race on the same canon write connection; requires the dream lease to extend across the canon-write window |
+| P1 | **Human-review gate / trust curve (Slice-3)** — working→canonical promotion for agent memories requires human approval or cross-source corroboration; agent memories must not self-promote to canon without a trust threshold |
+| P1 | **End-to-end pipeline test** — A → B1 → B2 → B3 → canon round-trip in CI (Postgres-gated); currently no automated test exercises the full path |
+| P1 | **Embedding similarity dedup (Slice-3)** — replace/supplement the `search_json` vs-canon step in B2 with a pgvector HNSW nearest-neighbour query to catch semantically similar but differently-worded duplicates (known false-negative gap documented in `docs/agent-memory-governance.md`) |
+
+### Known open bugs
+
+- **PG soft-delete / restore** — a pre-existing bug in `PostgresStore.restore()` where a
+  name-collision rename can re-use a deleted row's id under certain asyncpg transaction
+  orderings. Does not affect SQLite. Tracked as a follow-up; does not block governance
+  pipeline activation but should be fixed before any restore-heavy workflow relies on
+  Postgres.
 
 ---
 
@@ -226,4 +277,4 @@ never appear in the public core. See `COMMERCIAL.md` for licensing terms.
 
 ---
 
-*Last updated: v2.2.10*
+*Last updated: v2.2.11*

@@ -55,6 +55,185 @@
   took the silent default won't re-prompt on update** — clear the plugin cache and
   reinstall, or set `pluginConfigs."mori@mori".options.server_url` manually.
 
+## v2.2.11 — agent-memory governance pipeline (dormant) + 3 security/perf criticals + plugin v0.3.x
+
+> **Security/perf criticals are ACTIVE in this release.** The governance pipeline is SHIPPED to
+> `main` but DORMANT by default — the intake service is not deployed and
+> `MORI_INTAKE_PROMOTION_ENABLED` is off. See the *Governance pipeline* section below.
+
+### Security / performance criticals (active)
+
+**AUTH-001 — arbitrary file read via `consult_advisor` `files` parameter (CRITICAL):**
+- The `files` param performed no path validation — a malicious or errant caller could read
+  any file the server process could access by supplying an absolute path or `../` traversal.
+- Fix: all supplied paths are now resolved to absolute form (`Path.resolve()`) and checked
+  against an **allowlist** (`MORI_CONSULT_FILE_ROOTS`, defaults to `cwd`). Resolved paths
+  outside every root are rejected outright. A startup `WARNING` fires if
+  `MORI_CONSULT_FILE_ROOTS` is unset (default-cwd is permissive for solo deployments but
+  should be locked down in team/production).
+- Additional layers:
+  - Sensitive **basename / suffix / path-segment blocklist** (e.g. `.env`, `*.key`,
+    `secrets`, `credentials`, `shadow`, `passwd`) rejects obvious high-value targets even if
+    the resolved path is inside a root.
+  - `O_NOFOLLOW` flag on the open call — defeats **TOCTOU symlink-swap attacks** where a
+    symlink is swapped between `resolve()` and `open()`.
+- **Same guard extended** to the skill-loader (`sk` name regex + `SKILLS_DIR` containment
+  check) and the standards-import path (`MORI_STANDARDS_ROOTS` containment check), closing
+  equivalent traversal surfaces in both.
+
+**PERF-004 — `read_events(limit=0)` fetched the whole table:**
+- `limit=0` was silently treated as "no limit" and issued an unguarded `SELECT *` against
+  `session_events`, which could be millions of rows.
+- Fix: **`limit` semantics normalised** — `None` → unlimited (explicit intent), `0` → empty
+  list (empty-result shorthand), `n > 0` → `LIMIT n`. Callers that relied on the old `0 =
+  unlimited` behaviour are updated.
+- `dream.get_status` previously used `read_events(limit=0)` to discover whether there were
+  any unprocessed events — replaced with a new **`count_events_since(id > N)`** method
+  (added to `SQLiteStore`, `PostgresStore`, and `BaseStore`) that issues a single `COUNT(*)`
+  instead of fetching rows. Eliminates the full-table fetch on every `dream_status` poll.
+
+**PERF-003 — `check_freshness` thundering herd on every `brief()` call:**
+- The previous implementation could make up to **20 sequential, blocking LLM calls** during
+  each `brief()` — one per memory in the freshness backlog. On a cold or large store this
+  made `/brief` unusably slow and consumed significant LLM budget.
+- Fix: a three-part overhaul:
+  1. **Bounded concurrency** — freshness LLM calls now run concurrently via a semaphore (cap
+     5 simultaneous calls) rather than sequentially.
+  2. **Batched single-transaction updates** — all freshness verdicts from a given pass are
+     written in a single DB transaction instead of one write per call.
+  3. **24-hour per-store cache** — a lock + in-flight sentinel prevents concurrent `brief()`
+     calls (e.g. on session start + post-compact re-ground) from triggering parallel freshness
+     sweeps (no thundering herd). Results are cached for 24h; the cache is invalidated on
+     dream run and on explicit `--force-refresh`.
+- New **`MORI_FRESHNESS_ON_BRIEF`** env flag (default `true`) — set to `false` to disable
+  the brief-time freshness check entirely for high-frequency `/brief` usage patterns.
+
+### Agent-memory governance pipeline (NEW — shipped, opt-in, dormant by default)
+
+A new `mori_intake/` service introduces a **physically-separate, Postgres-only intake path**
+for autonomous-agent writes. Agents NEVER write into mori's canon table directly;
+**promotion is the only door into canon**.
+
+#### Stream A — intake front door
+
+New `mori_intake/` FastAPI service (separate process, separate Postgres, `MORI_INTAKE_PORT`):
+- `POST /intake/submissions` — validates + inserts into `intake_submissions` (immutable raw
+  firehose). HTTP handler does nothing but validate and persist; embeddings and dedup are
+  entirely async. Returns `202 Accepted` immediately.
+- **Eligibility gate** — default-deny: only allow-listed namespace prefixes (`learned-*`,
+  `fact-*`; `user` restricted to `preference-*`/`accessibility-*`) are eligible. A
+  proposition classifier rejects chatter, scratch notes, and non-claim content.
+  `GOV-001` substring deny list blocks explicitly disqualified content patterns.
+- **Format regex** — basic structural validation of candidate body before acceptance.
+- **Per-key rate limit** (`MORI_INTAKE_RATE_LIMIT_PER_MIN`, default 20 req/min per API
+  key) — enforced at the HTTP layer before the eligibility gate.
+- **Pool config**: `MORI_INTAKE_POOL_MIN` / `MORI_INTAKE_POOL_MAX`.
+- `Dockerfile` updated — `mori_intake/` is now shipped in the image.
+- New env vars: `MORI_INTAKE_DATABASE_URL`, `MORI_INTAKE_PORT`.
+
+#### Stream B1 — intra-pile dedup worker
+
+Async background worker drains `intake_submissions`, deduplicates within the intake pile:
+- **Exact `content_hash` dedup** (NFKC-normalised, matching mori canon's hash) — coalesces
+  repeated submissions into one candidate and bumps a reinforcement counter.
+- Emits deduplicated candidates to `intake_candidates` with status `pending`.
+- No canon access at this stage — fully local to the intake store.
+
+#### Stream B2 — fast-model vs-canon assessor
+
+Real assessor using the **fast model VK** (not the dream model) to evaluate surviving
+candidates against mori canon:
+- Fetches candidate body, queries `search_json` on the canon store, presents both to the
+  fast model with RELATED / SUPERSEDES / UNRELATED / NEEDS_REVIEW verdict schema.
+- **Fail-CLOSED** — `NEEDS_REVIEW` verdict (including any model error or ambiguous response)
+  does NOT auto-promote; the candidate stays in `pending` for human review. Only a
+  model-confirmed `UNRELATED` verdict advances to the promotion queue.
+- RELATED / SUPERSEDES → reinforces the existing canon memory, drops the candidate.
+
+#### Stream B3 — dream-trigger promotion (feature-flagged, additive)
+
+Dream integration that polls `promotion_queue` and promotes `UNRELATED` candidates into mori
+canon via the **single canon writer**:
+- **`FOR UPDATE SKIP LOCKED`** lease on the promotion queue — safe for concurrent workers,
+  no double-promotion. `MORI_INTAKE_LEASE_SECONDS` configures the lease window.
+- **Idempotent promotion** — checks `memory_intake_lineage` before insert; a previously
+  promoted candidate is a no-op.
+- **`memory_intake_lineage` table** — cross-system provenance row linking canon name →
+  intake candidate_id → submission_ids[] → trust snapshot. Lives in mori canon (intake must
+  not hold canon write creds).
+- **GOV-002 promotion-time re-check** — eligibility is re-evaluated at promotion time (not
+  just at submission), defeating deferred eligibility bypass. Body-integrity check
+  (`content_hash` comparison between candidate and intake record) guards against
+  candidate-body tampering between assessment and promotion.
+- **Additive and feature-flagged** (`MORI_INTAKE_PROMOTION_ENABLED`, default `false`) — when
+  the flag is off, candidates accumulate in the promotion queue but nothing is written to
+  canon. The dream pipeline's existing behaviour is completely unchanged whether or not the
+  flag is set.
+
+#### hermes-mori-provider v0.3.0
+
+The provider's write path now targets the governed intake service instead of mori's core
+`/api/memories` (which would bypass all governance):
+- Writes go to `POST /intake/submissions` using eligible-namespace `stable_key` prefixes.
+- **Fail-CLOSED** — if `MORI_INTAKE_URL` is unset, writes are queued with an `ERROR` log;
+  there is no ungoverned fallback to the old write path.
+- **SSRF guard** — a no-redirect opener prevents the provider from being pointed at
+  private-IP resources via a MORI_INTAKE_URL override.
+- Session binding to API key (not reused across keys).
+- `content_hash` computation uses NFKC normalisation unified with the intake service —
+  eliminates false hash mismatches in the LWM hash-compare vs canon path.
+- Lives under `integrations/hermes-memory-provider/`.
+
+#### Pre-enable hardening (13 Inspector findings + GOV-002 strengthening)
+
+A dedicated hardening pass before this PR was merged closed 13 findings from a structured
+security/correctness review:
+- GOV-002 re-check now validates **body integrity** (content_hash) as well as eligibility at
+  promotion time — tampered or mutated candidate bodies are detected and blocked.
+- Additional input-validation tightening, error-path coverage, and async-correctness fixes
+  throughout A→B3.
+
+#### Activation note
+
+**The governance pipeline ships DORMANT.** To enable unattended promotion:
+1. Deploy the `mori_intake/` service with its own Postgres (`MORI_INTAKE_DATABASE_URL`).
+2. Point `hermes-mori-provider` at it (`MORI_INTAKE_URL`).
+3. Set `MORI_INTAKE_PROMOTION_ENABLED=true` on the mori-advisor instance.
+
+The following work is gated before enabling unattended promotion in production:
+- Structured-output verdict schema (removes free-text parsing from B2).
+- Private-IP SSRF guard on intake URL validation (complement to the provider-side guard).
+- Human-review gate / trust curve (Slice-3) — working→canonical promotion still requires
+  human approval or cross-source corroboration; agent memories do not self-promote to canon.
+- Dream-concurrency guard OPS-002 — the dream lease and the B3 promotion worker must not
+  race on the same canon write connection.
+- End-to-end pipeline test (A → B1 → B2 → B3 → canon round-trip).
+
+### Plugin releases (v0.1.1 – v0.3.3)
+
+The following plugin releases shipped alongside the governance work (full detail in the
+plugin-specific headings earlier in this changelog):
+
+| Version | Summary |
+|---------|---------|
+| v0.1.1 | Cursor & Antigravity hook layers + multi-client `tidy-up.mjs` |
+| v0.1.2 | Health sentinel + honest onboarding copy |
+| v0.1.3 | TD `/review` concertina cards; `nats_sub` replay fix; `displayName` drop |
+| v0.2.0 | Config via env vars (`MORI_SERVER_URL`/`MORI_API_KEY`) — drops `userConfig` |
+| v0.3.0 | Skills + hooks only — drops bundled MCP that collided with user's own connection |
+| v0.3.1 | Cursor / Antigravity bare-secret configs |
+| v0.3.2 | `SessionStart` hook silent when `MORI_SERVER_URL` unset |
+| v0.3.3 | README consistent with v0.3 skills-only architecture |
+
+### hermes-mori-provider (v0.1.1 – v0.2.0)
+
+| Version | Summary |
+|---------|---------|
+| v0.1.1 | Read `MORI_SERVER_URL` + hyphen names (not dots) |
+| v0.2.0 | Rebuild write path on real `on_memory_write` contract + two-tier LWM |
+
+*(v0.3.0 covered above under the governance pipeline section.)*
+
 ## v2.2.10 — msg_thread Postgres fix + CI Node-24 bumps (#18)
 
 **fix(postgres): `msg_thread` raises on Postgres — `'datetime' object is not subscriptable`:**
