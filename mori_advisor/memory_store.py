@@ -16,10 +16,40 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# ── Freshness cache ───────────────────────────────────────────────────────
+# Per-memory in-memory cache keyed by memory name.
+# Value: (status: str, checked_at: float) where checked_at is time.monotonic().
+# 24-hour TTL — skips the LLM call when the cached entry is recent enough.
+_FRESHNESS_CACHE_TTL = 86_400  # 24 hours in seconds
+_freshness_cache: dict[str, tuple[str, float]] = {}
+
+# Lock that guards ALL reads and writes of _freshness_cache.
+#
+# Pattern used in check_freshness():
+#   1. Under lock: read cache.  If fresh hit → use it, release lock, continue.
+#   2. If miss → mark the memory as "in-flight" (sentinel value) and release lock.
+#   3. Call LLM (outside the lock — the expensive part).
+#   4. Under lock: store real result, overwriting the sentinel.
+#
+# A second thread that hits the same "in-flight" sentinel skips the LLM call and
+# does not double-compute. This prevents thundering-herd duplicate LLM calls at
+# the cost of one thread getting a slightly stale "unknown" count — acceptable for
+# the freshness-check use case.
+#
+# Both the SQLite (ThreadPoolExecutor) and Postgres (asyncio run_in_executor)
+# backends import this module, so the lock is shared across both call paths.
+_freshness_cache_lock = threading.Lock()
+
+# Sentinel value stored during in-flight LLM calls so sibling threads can detect
+# that a check is already running and skip their own call.
+_IN_FLIGHT_SENTINEL = "__in_flight__"
 
 
 def _fts_query(raw: str | None) -> str:
@@ -2111,7 +2141,22 @@ class MemoryStore:
         Uses the provided llm_consult(system, user) callable (e.g.
         BifrostClient.consult) to validate each candidate.
 
+        Improvements over the original sequential implementation:
+        - **24h in-memory cache**: skips the LLM call when a cached result is
+          less than 24 hours old — eliminates redundant API calls on repeated
+          brief() invocations within the same process lifetime.
+        - **Bounded concurrency**: up to 5 LLM calls run in parallel via a
+          ThreadPoolExecutor(max_workers=5) so that the total latency is
+          ceil(N/5) × single-call-latency instead of N × single-call-latency.
+        - **Single batched UPDATE**: all status changes are applied in one
+          connection/transaction, not one connection per memory.
+
         Returns {"checked": int, "fresh": int, "stale": int, "no": int, "errors": int}.
+
+        NOTE: Moving this call off the brief() hot path into a background task
+        is the next recommended improvement (tracked as follow-up) — the gains
+        above are significant but brief() still blocks until the semaphore-bound
+        LLM calls finish.
         """
         import sqlite3
 
@@ -2142,8 +2187,37 @@ class MemoryStore:
 
         results = {"checked": 0, "fresh": 0, "stale": 0, "no": 0, "errors": 0}
 
+        # Separate cached hits (no LLM needed) from memories that need checking.
+        # Use _freshness_cache_lock for all cache reads and writes to prevent
+        # concurrent misses on the same memory firing duplicate LLM calls
+        # (thundering-herd problem when brief() is called concurrently).
+        now = time.monotonic()
+        mems_to_check: list[dict] = []
         for row in rows:
             m = self._row_to_dict(row)
+            with _freshness_cache_lock:
+                cached = _freshness_cache.get(m["name"])
+                if cached is not None:
+                    cached_status, cached_at = cached
+                    # In-flight sentinel: another thread is already running the
+                    # LLM call for this memory — skip to avoid duplication.
+                    if cached_status == _IN_FLIGHT_SENTINEL:
+                        continue  # do not count; will be counted by the owning thread
+                    if (now - cached_at) < _FRESHNESS_CACHE_TTL:
+                        # Cache hit — count it but don't call the LLM.
+                        results["checked"] += 1
+                        results[cached_status] += 1
+                        continue
+                # Cache miss (or expired): mark as in-flight so sibling threads
+                # skip this memory, then add it to the LLM work list.
+                _freshness_cache[m["name"]] = (_IN_FLIGHT_SENTINEL, now)
+            mems_to_check.append(m)
+
+        if not mems_to_check:
+            return results
+
+        def _check_one(m: dict) -> tuple[str, str | None]:
+            """Run one LLM freshness check.  Returns (name, normalized_status|None)."""
             try:
                 prompt = FRESHNESS_CHECK_PROMPT.format(
                     title=m["title"],
@@ -2163,27 +2237,47 @@ class MemoryStore:
                     normalized = "no"
                 elif status == "STALE":
                     normalized = "stale"
+                return m["name"], normalized
+            except Exception as exc:
+                logger.warning("Freshness check failed for '%s': %s", m["name"], exc)
+                return m["name"], None
 
-                write_conn = self._get_conn()
-                try:
+        # Run LLM calls concurrently — bounded at 5 workers.
+        updates: list[tuple[str, str]] = []  # (name, normalized_status)
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = {pool.submit(_check_one, m): m for m in mems_to_check}
+            for future in as_completed(futures):
+                name, normalized = future.result()
+                if normalized is None:
+                    results["errors"] += 1
+                    # Clear the in-flight sentinel on error so future calls retry.
+                    with _freshness_cache_lock:
+                        if _freshness_cache.get(name, (None,))[0] == _IN_FLIGHT_SENTINEL:
+                            del _freshness_cache[name]
+                else:
+                    updates.append((name, normalized))
+                    results["checked"] += 1
+                    results[normalized] += 1
+                    # Store real result — replaces the in-flight sentinel.
+                    with _freshness_cache_lock:
+                        _freshness_cache[name] = (normalized, time.monotonic())
+
+        # Apply all status changes in a single connection/transaction.
+        if updates:
+            write_conn = self._get_conn()
+            try:
+                for name, normalized in updates:
                     write_conn.execute(
-                        "UPDATE memories SET freshness_status = ?, freshness_checked_at = datetime('now') WHERE name = ?",
-                        (normalized, m["name"]),
+                        "UPDATE memories SET freshness_status = ?, "
+                        "freshness_checked_at = datetime('now') WHERE name = ?",
+                        (normalized, name),
                     )
-                    write_conn.commit()
-                finally:
-                    write_conn.close()
-
-                results["checked"] += 1
-                if normalized == "fresh":
-                    results["fresh"] += 1
-                elif normalized == "stale":
-                    results["stale"] += 1
-                elif normalized == "no":
-                    results["no"] += 1
-            except Exception as e:
-                logger.warning("Freshness check failed for '%s': %s", m["name"], e)
+                write_conn.commit()
+            except sqlite3.Error as e:
+                logger.warning("Freshness batch update failed: %s", e)
                 results["errors"] += 1
+            finally:
+                write_conn.close()
 
         return results
 

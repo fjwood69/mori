@@ -101,8 +101,7 @@ class DreamPipeline:
         last_id_str = await _a(self.session_log.get_dream_state("last_dreamed_event_id", "0"))
         last_at = await _a(self.session_log.get_dream_state("last_dreamed_at", "never"))
         last_id = int(last_id_str) if last_id_str and last_id_str != "never" else 0
-        events_list = await _a(self.session_log.read_events(since_event_id=last_id, limit=0))
-        undreamed = len(events_list)
+        undreamed = await _a(self.session_log.count_events_since(last_id))
 
         now = datetime.now(timezone.utc)
         hour = now.hour

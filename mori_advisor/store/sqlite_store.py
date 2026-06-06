@@ -332,6 +332,9 @@ class SQLiteStore(BaseStore):
     def count_events(self) -> int:
         return self._log.count_events()
 
+    def count_events_since(self, since_event_id: int) -> int:
+        return self._log.count_events_since(since_event_id)
+
     def prune_events(self, before_event_id: int, _conn=None) -> int:
         return self._log.prune_events(before_event_id, _conn=_conn)
 

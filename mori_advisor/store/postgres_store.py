@@ -16,12 +16,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mori_advisor.memory_store import FRESHNESS_CHECK_PROMPT, VALID_TIERS
+from mori_advisor.memory_store import (
+    _FRESHNESS_CACHE_TTL,
+    _IN_FLIGHT_SENTINEL,
+    FRESHNESS_CHECK_PROMPT,
+    VALID_TIERS,
+    _freshness_cache,
+    _freshness_cache_lock,
+)
 
 from .base import BaseStore
 
@@ -1331,6 +1339,22 @@ class PostgresStore(BaseStore):
     # ── Freshness and eviction ─────────────────────────────────────────────
 
     async def check_freshness(self, llm_consult, limit: int = 20) -> dict:
+        """Run freshness validation on canonical memories tagged with
+        infrastructure/dependency/tooling/config tags.
+
+        Improvements over the original sequential implementation:
+        - **24h in-memory cache**: shared with the SQLite path via
+          ``memory_store._freshness_cache`` — skips the LLM call when a
+          cached result is less than 24 hours old.
+        - **Bounded concurrency**: up to 5 concurrent LLM calls via
+          ``asyncio.gather`` + ``asyncio.Semaphore(5)``.  All calls happen
+          outside the pool connection so the pool is not held during LLM I/O.
+        - **Single batched UPDATE**: all status changes are applied in one
+          acquired connection, not one ``pool.acquire()`` per memory.
+
+        NOTE: Moving this call off the brief() hot path into a background task
+        is the next recommended improvement (tracked as follow-up).
+        """
         self._ensure_pool()
         cand_tag_patterns = ["infrastructure", "dependency", "tooling", "config"]
 
@@ -1351,50 +1375,108 @@ class PostgresStore(BaseStore):
                 cand_tag_patterns,
                 limit,
             )
-        # Fetch all rows, release connection before LLM calls
-        mems = []
+        # Decode rows; connection released before any LLM calls.
+        all_mems = []
         for row in rows:
             r = dict(row)
             raw = r.get("tags")
             r["tags"] = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
-            mems.append(r)
+            all_mems.append(r)
 
         results = {"checked": 0, "fresh": 0, "stale": 0, "no": 0, "errors": 0}
 
-        for m in mems:
-            try:
-                prompt = FRESHNESS_CHECK_PROMPT.format(
-                    title=m["title"],
-                    tags=", ".join(m["tags"]),
-                    body=(m["body"] or "")[:2000],
-                )
-                response = llm_consult(
-                    system=prompt,
-                    user=m["name"],
-                    vk="fast",
-                    max_tokens=10,
-                    temperature=0.0,
-                )
-                status = (response or "").strip().upper()
-                normalized = "fresh"
-                if status == "NO":
-                    normalized = "no"
-                elif status == "STALE":
-                    normalized = "stale"
+        # Separate cache hits from memories that need an LLM call.
+        # Use _freshness_cache_lock for all cache reads and writes to prevent
+        # concurrent misses on the same memory firing duplicate LLM calls
+        # (thundering-herd). The lock is shared with the SQLite path.
+        now = time.monotonic()
+        mems_to_check: list[dict] = []
+        for m in all_mems:
+            with _freshness_cache_lock:
+                cached = _freshness_cache.get(m["name"])
+                if cached is not None:
+                    cached_status, cached_at = cached
+                    # In-flight sentinel: another coroutine already owns this check.
+                    if cached_status == _IN_FLIGHT_SENTINEL:
+                        continue  # skip; owning coroutine will count it
+                    if (now - cached_at) < _FRESHNESS_CACHE_TTL:
+                        results["checked"] += 1
+                        results[cached_status] += 1
+                        continue
+                # Cache miss (or expired): mark in-flight before releasing lock.
+                _freshness_cache[m["name"]] = (_IN_FLIGHT_SENTINEL, now)
+            mems_to_check.append(m)
 
-                async with self.pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE memories SET freshness_status = $1, freshness_checked_at = $2 WHERE name = $3",
-                        normalized,
-                        datetime.now(timezone.utc),
-                        m["name"],
+        if not mems_to_check:
+            return results
+
+        # Bounded concurrency — at most 5 LLM calls in flight at once.
+        sem = asyncio.Semaphore(5)
+
+        async def _check_one(m: dict) -> tuple[str, str | None]:
+            async with sem:
+                try:
+                    prompt = FRESHNESS_CHECK_PROMPT.format(
+                        title=m["title"],
+                        tags=", ".join(m["tags"]),
+                        body=(m["body"] or "")[:2000],
                     )
+                    # llm_consult is synchronous (BifrostClient.consult).
+                    # Run it in the default thread-pool executor so we don't
+                    # block the event loop.
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: llm_consult(
+                            system=prompt,
+                            user=m["name"],
+                            vk="fast",
+                            max_tokens=10,
+                            temperature=0.0,
+                        ),
+                    )
+                    status = (response or "").strip().upper()
+                    normalized = "fresh"
+                    if status == "NO":
+                        normalized = "no"
+                    elif status == "STALE":
+                        normalized = "stale"
+                    return m["name"], normalized
+                except Exception as exc:
+                    logger.warning("Freshness check failed for '%s': %s", m["name"], exc)
+                    return m["name"], None
 
+        check_results = await asyncio.gather(*[_check_one(m) for m in mems_to_check])
+
+        updates: list[tuple[str, str]] = []
+        checked_at = datetime.now(timezone.utc)
+        for name, normalized in check_results:
+            if normalized is None:
+                results["errors"] += 1
+                # Clear the in-flight sentinel on error so future calls retry.
+                with _freshness_cache_lock:
+                    if _freshness_cache.get(name, (None,))[0] == _IN_FLIGHT_SENTINEL:
+                        del _freshness_cache[name]
+            else:
+                updates.append((name, normalized))
                 results["checked"] += 1
                 results[normalized] += 1
-            except Exception as e:
-                logger.warning("Freshness check failed for '%s': %s", m["name"], e)
-                results["errors"] += 1
+                # Store real result — replaces the in-flight sentinel.
+                with _freshness_cache_lock:
+                    _freshness_cache[name] = (normalized, time.monotonic())
+
+        # Apply all status changes in a single connection — one pool acquire.
+        if updates:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    for name, normalized in updates:
+                        await conn.execute(
+                            "UPDATE memories SET freshness_status = $1, "
+                            "freshness_checked_at = $2 WHERE name = $3",
+                            normalized,
+                            checked_at,
+                            name,
+                        )
 
         return results
 
@@ -1515,9 +1597,15 @@ class PostgresStore(BaseStore):
             params.append(client)
             i += 1
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        lim_clause = f"LIMIT ${i}" if limit else ""
-        if limit:
+        if limit is None:
+            # Explicit unlimited — no LIMIT clause.
+            lim_clause = ""
+        elif limit > 0:
+            lim_clause = f"LIMIT ${i}"
             params.append(limit)
+        else:
+            # limit == 0 → empty result without hitting the database.
+            return []
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 f"SELECT * FROM session_events {where} ORDER BY id ASC {lim_clause}", *params
@@ -1569,6 +1657,15 @@ class PostgresStore(BaseStore):
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             return await conn.fetchval("SELECT COUNT(*) FROM session_events")
+
+    async def count_events_since(self, since_event_id: int) -> int:
+        """Count events with id > since_event_id — O(1) memory, no row fetch."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM session_events WHERE id > $1",
+                since_event_id,
+            )
 
     async def prune_events(self, before_event_id: int, _conn=None) -> int:
         self._ensure_pool()
