@@ -154,6 +154,14 @@ class GovernedWriteOutbox:
         Consecutive transport failures that trip the circuit breaker.
     breaker_cooldown:
         Seconds the drainer waits while the breaker is open before probing.
+    terminal_max_age:
+        Age (seconds) after which terminal rows (``done`` / ``failed``) are
+        purged from the outbox so the SQLite file does not grow without bound
+        over months of operation (default 7 days).  Pending rows are never
+        purged here — they are bounded by ``max_pending`` backpressure.  Set to
+        0 to disable terminal-row purging.
+    terminal_purge_interval:
+        Minimum seconds between terminal-row purge passes (default 1h).
     _sleep:
         Sleep callable; override in tests for instant, deterministic runs.
     """
@@ -171,6 +179,8 @@ class GovernedWriteOutbox:
         max_backoff: float = 60.0,
         breaker_threshold: int = 5,
         breaker_cooldown: float = 30.0,
+        terminal_max_age: float = 604800.0,
+        terminal_purge_interval: float = 3600.0,
         autostart_drain: bool = True,
         _sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -184,6 +194,9 @@ class GovernedWriteOutbox:
         self._max_backoff = max_backoff
         self._breaker_threshold = breaker_threshold
         self._breaker_cooldown = breaker_cooldown
+        self._terminal_max_age = terminal_max_age
+        self._terminal_purge_interval = terminal_purge_interval
+        self._last_terminal_purge = 0.0
         self._sleep = _sleep
 
         self._lock = threading.Lock()
@@ -203,6 +216,7 @@ class GovernedWriteOutbox:
             "proposals_sent": 0,
             "proposals_failed": 0,
             "breaker_trips": 0,
+            "terminal_purged": 0,
         }
 
         self._db: sqlite3.Connection = self._open_db()
@@ -559,6 +573,36 @@ class GovernedWriteOutbox:
     def _reset_breaker(self) -> None:
         self._consecutive_failures = 0
 
+    def _maybe_purge_terminal(self) -> None:
+        """Periodically delete aged terminal (done/failed) rows.
+
+        Bounds the SQLite file over long uptimes.  Rate-limited to one pass per
+        ``_terminal_purge_interval``.  Pending rows are untouched (they are
+        bounded separately by ``max_pending`` backpressure).  No-op when
+        ``_terminal_max_age <= 0``.
+        """
+        if self._terminal_max_age <= 0:
+            return
+        now = time.monotonic()
+        if now - self._last_terminal_purge < self._terminal_purge_interval:
+            return
+        self._last_terminal_purge = now
+        cutoff = _now() - self._terminal_max_age
+        with self._lock:
+            cur = self._db.execute(
+                "DELETE FROM outbox WHERE status IN (?, ?) AND updated_at < ?",
+                (_DONE, _FAILED, cutoff),
+            )
+            self._db.commit()
+            purged = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        if purged:
+            self.metrics["terminal_purged"] += purged
+            logger.info(
+                "outbox: purged %d aged terminal row(s) (older than %.0fs)",
+                purged,
+                self._terminal_max_age,
+            )
+
     def resume_drain(self) -> None:
         """Release the drain gate (test seam; no-op if already draining)."""
         self._drain_gate.set()
@@ -581,6 +625,9 @@ class GovernedWriteOutbox:
 
             if self._stop_event.is_set():
                 break
+
+            # Housekeeping: bound the SQLite file by reaping aged terminal rows.
+            self._maybe_purge_terminal()
 
             while not self._stop_event.is_set():
                 with self._lock:

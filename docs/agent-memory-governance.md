@@ -4,12 +4,17 @@
 > session). Not yet built. Reviewed by Fred (architect/dreamer) in conversation; this
 > file is the spec to build from, not a chat reconstruction.
 
-## Status (v2.2.11)
+## Status (v2.2.12)
 
-The pipeline (Stream A through B3) is **SHIPPED to `main`** but **DORMANT by default**.
-The intake service is not deployed and `MORI_INTAKE_PROMOTION_ENABLED` is off.
-The three security/perf criticals (AUTH-001, PERF-003, PERF-004) are **active** in this
-release.
+The pipeline (Stream A through B3) is **SHIPPED to `main`**. As of v2.2.12, **Stage 1
+(write-only intake) is ENABLED in production**: the intake service runs on GCE and Hermes
+mirror-writes land as `pending` intake candidates. **Promotion to canon remains OFF** — the
+running service starts only the dedup/TTL worker and never invokes the canon writer;
+`MORI_INTAKE_PROMOTION_ENABLED` is off and promotion is reachable solely via the manual
+`python -m mori_intake.cli` trigger (operator-run, Stage 2). See the **Stage-1 enablement
+runbook** at the end of this file.
+
+The three security/perf criticals (AUTH-001, PERF-003, PERF-004) are active.
 
 **Pre-enable gate — the following must be completed before enabling unattended promotion:**
 1. Structured-output verdict schema in the B2 assessor (removes free-text parsing).
@@ -255,3 +260,69 @@ without a `type` filter will receive a mix of human-authored and agent-promoted
 memories.  Callers that require only human-authored memories should add
 `WHERE type != 'agent-intake'` (or equivalent filter on the store's search API)
 as a temporary guard.  This is a known, accepted gap for the MVV slice.
+
+---
+
+## Stage-1 enablement runbook (v2.2.12, single-operator GCE)
+
+Stage 1 = **write-only intake**. Hermes mirror-writes → intake service → `pending`
+candidates (eligibility-gated + deduped). **Nothing promotes.** This was enabled after a
+deep `/consult` (architecture focus) that hardened the plan; the decisions are baked into
+`deploy/gcp/provision-intake.sh` and `quadlet/mori-intake.container`.
+
+### Topology
+- **Intake service**: GCE VM (`ca-gcp-mori-advisor`, Tailscale `100.90.219.111`), rootless
+  Quadlet `mori-intake.service`, port **8971**, image `ghcr.io/fjwood69/mori:latest`.
+- **Postgres**: shared `mori-pg` container. Separate `intake` database owned by a
+  least-privilege `intake_app` role; `CONNECT ON DATABASE mori` revoked from `PUBLIC` so
+  `intake_app` is **kernel-blocked** from canon (`mori` is a superuser and is unaffected).
+- **Hermes**: NUC container `hermes`; provider v0.3.0 with
+  `MORI_INTAKE_URL=http://100.90.219.111:8971` + the `intake-hermes` write key. Fails closed
+  (queues, never writes canon) if the URL is unset/unreachable.
+
+### Provision (first time, or after a fresh data disk)
+```bash
+# As the mori user on the VM. Idempotent; verifies the boundary before starting.
+ssh mori@100.90.219.111 'bash -s' < deploy/gcp/provision-intake.sh
+```
+It creates the role + `intake` DB, writes `/data/mori-intake/.env` (secrets), installs the
+quadlet, starts the unit, and asserts `intake_app` is REFUSED on `mori` but accepted on
+`intake`. Secrets + DB persist on `/data`; `startup.sh.tpl` re-starts the unit on every boot.
+
+### Verify
+```bash
+ssh mori@100.90.219.111 'curl -s localhost:8971/ready'           # {"status":"ok",...}
+ssh mori@100.90.219.111 'curl -s -H "X-Api-Key: <write-key>" \
+    "localhost:8971/intake/candidates?status=pending&limit=20"'  # operator view
+```
+
+### Validate the loop (no canon write)
+1. Note the canon memory count: `mori_advisor` `SELECT COUNT(*) FROM memories`.
+2. Have Hermes write one durable learning (fires `on_memory_write` → outbox → intake).
+3. Confirm it appears under `GET /intake/candidates?status=pending` and that the canon
+   count is **unchanged**.
+
+### Rollback
+- **Soft**: unset `MORI_INTAKE_URL` on hermes + restart → provider fails closed into its
+  bounded outbox (no data loss; rows drain when re-pointed).
+- **Hard**: `systemctl --user stop mori-intake` on the VM. Pending candidates persist in the
+  `intake` DB; canon is untouched throughout (Stage 1 never writes canon).
+
+### Canon-read SLO (shared-Postgres guard)
+Intake is high-churn (submissions/dedup/purge) and shares `mori-pg` with low-churn,
+high-value canon. The guard rails:
+- Intake pool capped (`MORI_INTAKE_POOL_MAX=4`); container capped
+  (`MemoryMax=256M`, `CPUQuota=50%`) so intake can never OOM-kill or starve canon.
+- **SLO**: canon read (`mori-advisor` `/api/memories?limit=20`) p99 **< 250 ms**. If
+  violated, first lower `MORI_INTAKE_POOL_MAX`/raise the worker interval; escalate to a
+  dedicated Postgres instance/tablespace only if the SLO stays breached. Enable
+  `pg_stat_statements` to attribute load.
+
+### Known Stage-1 residuals (tracked for Stage 2)
+- **Tailscale ACL** `tag:intake ← tag:hermes` not yet wired (single-operator tailnet). Until
+  then network reachability of `:8971` is any tailnet peer + the write key. Blast radius is
+  bounded — a peer could inject *junk pending candidates* (never canon; eligibility-gated,
+  deduped, TTL-purged). **Wire before Stage 2.**
+- Stage-2 blockers remain: structured-output assessor verdicts; Hermes retrieval must
+  exclude the WORKING/agent-intake tier by default (reflexive contamination); Bifrost
+  circuit-breaker; atomic assessment state machine. See mori #16.

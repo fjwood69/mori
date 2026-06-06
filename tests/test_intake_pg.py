@@ -309,6 +309,158 @@ async def test_post_ineligible_rejected(pool):
 
 
 @pytest.mark.asyncio
+async def test_purge_reaps_stale_pending_and_no_resurrection(pool):
+    """P3: a pending candidate idle beyond the TTL is reaped; its submission is
+    tombstoned (not deleted) and the drain worker does NOT resurrect it."""
+    content = "Stale pending learnings must be reaped after the TTL window elapses."
+    sid = await _insert_submission(pool, content=content)
+    await worker.drain_once(pool)
+
+    h = content_hash(content)
+    cand = await pool.fetchrow("SELECT id FROM intake_candidates WHERE content_hash = $1", h)
+    assert cand is not None
+
+    # Backdate the candidate's last activity well past the TTL.
+    await pool.execute(
+        "UPDATE intake_candidates SET updated_at = NOW() - INTERVAL '200 hours' WHERE id = $1",
+        cand["id"],
+    )
+
+    reaped = await worker.purge_stale_pending(pool, 168.0)
+    assert reaped == 1
+
+    # Candidate gone; corroboration cascade-deleted.
+    assert (
+        await pool.fetchval("SELECT COUNT(*) FROM intake_candidates WHERE id = $1", cand["id"]) == 0
+    )
+
+    # Submission TOMBSTONED, not deleted — audit + idempotency preserved.
+    sub = await pool.fetchrow("SELECT purged_at FROM intake_submissions WHERE id = $1::uuid", sid)
+    assert sub is not None, "submission row must survive (tombstone, not delete)"
+    assert sub["purged_at"] is not None, "submission must be tombstoned"
+
+    # No resurrection: a fresh drain must NOT re-create the candidate.
+    await worker.drain_once(pool)
+    assert (
+        await pool.fetchval("SELECT COUNT(*) FROM intake_candidates WHERE content_hash = $1", h)
+        == 0
+    )
+
+    await _clean(pool, sid)
+
+
+@pytest.mark.asyncio
+async def test_purge_protects_recently_reinforced(pool):
+    """P3: staleness is measured from updated_at — a candidate created long ago but
+    reinforced recently is NOT reaped."""
+    content = "Recently reinforced candidates remain active and survive the purge."
+    sid = await _insert_submission(pool, content=content)
+    await worker.drain_once(pool)
+
+    h = content_hash(content)
+    cand = await pool.fetchrow("SELECT id FROM intake_candidates WHERE content_hash = $1", h)
+    # created_at ancient, updated_at fresh (reinforced moments ago).
+    await pool.execute(
+        "UPDATE intake_candidates SET created_at = NOW() - INTERVAL '500 hours', "
+        "updated_at = NOW() WHERE id = $1",
+        cand["id"],
+    )
+
+    reaped = await worker.purge_stale_pending(pool, 168.0)
+    assert reaped == 0
+    assert (
+        await pool.fetchval("SELECT COUNT(*) FROM intake_candidates WHERE id = $1", cand["id"]) == 1
+    )
+
+    await _clean(pool, sid)
+    await pool.execute("DELETE FROM intake_candidates WHERE id = $1", cand["id"])
+
+
+@pytest.mark.asyncio
+async def test_purge_disabled_when_ttl_non_positive(pool):
+    """P3: ttl_hours <= 0 disables the purge entirely (returns 0, reaps nothing)."""
+    content = "Disabling the TTL must leave even ancient pending candidates untouched."
+    sid = await _insert_submission(pool, content=content)
+    await worker.drain_once(pool)
+    h = content_hash(content)
+    cand = await pool.fetchrow("SELECT id FROM intake_candidates WHERE content_hash = $1", h)
+    await pool.execute(
+        "UPDATE intake_candidates SET updated_at = NOW() - INTERVAL '9000 hours' WHERE id = $1",
+        cand["id"],
+    )
+
+    assert await worker.purge_stale_pending(pool, 0) == 0
+    assert await worker.purge_stale_pending(pool, -5) == 0
+    assert (
+        await pool.fetchval("SELECT COUNT(*) FROM intake_candidates WHERE id = $1", cand["id"]) == 1
+    )
+
+    await _clean(pool, sid)
+    await pool.execute("DELETE FROM intake_candidates WHERE id = $1", cand["id"])
+
+
+@pytest.mark.asyncio
+async def test_purge_leaves_terminal_candidates(pool):
+    """P3: only `pending` candidates are reaped — promoted/rejected are untouched audit rows."""
+    content = "Promoted and rejected candidates are terminal and must never be TTL-reaped."
+    sid = await _insert_submission(pool, content=content)
+    await worker.drain_once(pool)
+    h = content_hash(content)
+    cand = await pool.fetchrow("SELECT id FROM intake_candidates WHERE content_hash = $1", h)
+    await pool.execute(
+        "UPDATE intake_candidates SET status = 'rejected', "
+        "updated_at = NOW() - INTERVAL '9000 hours' WHERE id = $1",
+        cand["id"],
+    )
+
+    reaped = await worker.purge_stale_pending(pool, 168.0)
+    assert reaped == 0
+    assert (
+        await pool.fetchval("SELECT status FROM intake_candidates WHERE id = $1", cand["id"])
+        == "rejected"
+    )
+
+    await _clean(pool, sid)
+    await pool.execute("DELETE FROM intake_candidates WHERE id = $1", cand["id"])
+
+
+@pytest.mark.asyncio
+async def test_oversized_content_rejected(pool):
+    """Hardening: content beyond MORI_INTAKE_MAX_CONTENT_BYTES → 422, no submission row."""
+    import httpx
+
+    from mori_advisor.auth import init_auth
+    from mori_intake.app import app
+
+    init_auth()
+
+    # Default cap is 65536 bytes; exceed it.
+    big = "x" * 70000
+    payload = {
+        "session_id": f"big-{uuid.uuid4()}",
+        "agent_id": "test-agent",
+        "target": "memory",
+        "action": "add",
+        "stable_key": f"learned-big-{uuid.uuid4()}",
+        "content": big,
+    }
+
+    import mori_intake.app as _appmod
+
+    _appmod.db._pool = pool
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/intake/submissions", json=payload)
+
+    assert resp.status_code == 422
+    assert "exceeds" in resp.json()["reason"]
+    count = await pool.fetchval(
+        "SELECT COUNT(*) FROM intake_submissions WHERE stable_key = $1", payload["stable_key"]
+    )
+    assert count == 0
+
+
+@pytest.mark.asyncio
 async def test_candidates_endpoint_returns_pending(pool):
     """After draining, GET /intake/candidates returns the pending candidate.
 

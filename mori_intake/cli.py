@@ -95,7 +95,12 @@ def _build_real_assess_fn(mori_store):
     return make_canon_assessor(reader, client)
 
 
-async def _run(assess_only: bool, drain_only: bool, real_assessor: bool) -> None:
+async def _run(
+    assess_only: bool,
+    drain_only: bool,
+    real_assessor: bool,
+    purge_pending_hours: float | None,
+) -> None:
     import asyncpg
 
     from mori_intake.config import check_data_boundary
@@ -114,6 +119,19 @@ async def _run(assess_only: bool, drain_only: bool, real_assessor: bool) -> None
 
     try:
         await apply_intake(pool)
+
+        # Manual TTL purge (P3) — operator-triggered reap of stale pending
+        # candidates.  Runs and returns without touching assess/drain.
+        if purge_pending_hours is not None:
+            from mori_intake.worker import purge_stale_pending
+
+            reaped = await purge_stale_pending(pool, purge_pending_hours)
+            logger.info(
+                "cli: purge_stale_pending(%.0fh) reaped %d candidate(s)",
+                purge_pending_hours,
+                reaped,
+            )
+            return
 
         mori_store = _build_mori_store()
         # Bootstrap mori store if needed (SQLite: runs migrations synchronously).
@@ -170,13 +188,28 @@ def main() -> None:
             "checks candidates against mori canon via the fast model."
         ),
     )
+    parser.add_argument(
+        "--purge-pending-hours",
+        type=float,
+        default=None,
+        metavar="N",
+        help=(
+            "Operator TTL purge: tombstone-and-reap pending candidates idle "
+            "(no reinforcement) longer than N hours, then exit.  Mutually "
+            "exclusive with assess/drain — runs the purge only.  Use a small N "
+            "to clear backlog before Stage 2; the worker also purges "
+            "automatically at MORI_INTAKE_PENDING_TTL_HOURS."
+        ),
+    )
     args = parser.parse_args()
 
     if not os.environ.get("MORI_INTAKE_DATABASE_URL"):
         logger.critical("MORI_INTAKE_DATABASE_URL is not set — cannot run.")
         sys.exit(1)
 
-    asyncio.run(_run(args.assess_only, args.drain_only, args.real_assessor))
+    asyncio.run(
+        _run(args.assess_only, args.drain_only, args.real_assessor, args.purge_pending_hours)
+    )
 
 
 if __name__ == "__main__":

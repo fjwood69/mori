@@ -166,6 +166,25 @@ MIGRATIONS: tuple[_Migration, ...] = (
             "ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0"
         ),
     ),
+    # Migration 9 — pending-candidate TTL support (P3).
+    # ``purged_at`` tombstones a submission whose stale pending candidate has been
+    # reaped by the TTL purge.  The drain worker excludes tombstoned submissions
+    # (``WHERE s.purged_at IS NULL``) so a purged candidate can NEVER be resurrected
+    # from its originating submission.  We tombstone rather than DELETE so the audit
+    # trail of "what the agent proposed" survives the candidate's expiry, and the
+    # idempotency guard (UNIQUE(session_id, stable_key)) is preserved.
+    # Additive + nullable: existing rows keep purged_at=NULL (= live).
+    # The partial index keeps the live-submission drain scan cheap as tombstones grow.
+    _Migration(
+        id=9,
+        name="intake_submissions_purged_at",
+        sql=(
+            "ALTER TABLE intake_submissions "
+            "ADD COLUMN IF NOT EXISTS purged_at TIMESTAMPTZ; "
+            "CREATE INDEX IF NOT EXISTS idx_intake_submissions_live "
+            "ON intake_submissions (received_at) WHERE purged_at IS NULL"
+        ),
+    ),
 )
 
 

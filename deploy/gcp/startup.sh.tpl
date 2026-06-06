@@ -196,6 +196,9 @@ UNIT_INGESTION
 cat > /home/mori/.config/containers/systemd/mori-msg.container <<'UNIT_MSG'
 ${quadlet_msg}
 UNIT_MSG
+cat > /home/mori/.config/containers/systemd/mori-intake.container <<'UNIT_INTAKE'
+${quadlet_intake}
+UNIT_INTAKE
 cat > /home/mori/.config/systemd/user/dream.service <<'UNIT_DREAMSVC'
 ${dream_service}
 UNIT_DREAMSVC
@@ -212,6 +215,19 @@ su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR $DBUS systemctl --user daemon-reload"
 su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR $DBUS systemctl --user start mori-advisor mori-ingestion mori-msg"
 su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR $DBUS systemctl --user enable --now dream.timer"
 echo "Mori app units started (Quadlet); dream timer enabled."
+
+# ── mori-intake (Stage-1 governed agent-memory intake) ───────────────────────
+# The intake DB, intake_app role and /data/mori-intake/.env all live on the
+# persistent /data disk, so a reboot/rebuild keeps them. Start the unit only when
+# it has been provisioned (env present). A FRESH data disk has no intake .env —
+# run deploy/gcp/provision-intake.sh once as the mori user to create the DB +
+# least-privilege role + secrets, then this block starts it on every boot after.
+if [ -s "/data/mori-intake/.env" ]; then
+  su - mori -c "XDG_RUNTIME_DIR=$RUNTIME_DIR $DBUS systemctl --user start mori-intake"
+  echo "mori-intake unit started (provisioned)."
+else
+  echo "mori-intake NOT started — /data/mori-intake/.env absent; run provision-intake.sh."
+fi
 
 # Remove any legacy dream crontab line (superseded by dream.timer)
 (crontab -l 2>/dev/null | grep -v 'dream_job') | crontab - 2>/dev/null || true

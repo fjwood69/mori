@@ -219,6 +219,7 @@ locals {
   quadlet_advisor   = file("${path.module}/quadlet/mori-advisor.container")
   quadlet_ingestion = file("${path.module}/quadlet/mori-ingestion.container")
   quadlet_msg       = file("${path.module}/quadlet/mori-msg.container")
+  quadlet_intake    = file("${path.module}/quadlet/mori-intake.container")
   dream_service     = file("${path.module}/quadlet/dream.service")
   dream_timer       = file("${path.module}/quadlet/dream.timer")
 
@@ -234,6 +235,7 @@ locals {
     quadlet_advisor    = local.quadlet_advisor
     quadlet_ingestion  = local.quadlet_ingestion
     quadlet_msg        = local.quadlet_msg
+    quadlet_intake     = local.quadlet_intake
     dream_service      = local.dream_service
     dream_timer        = local.dream_timer
   })
