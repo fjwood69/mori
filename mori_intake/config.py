@@ -12,6 +12,11 @@ MORI_INTAKE_PORT
 
 MORI_INTAKE_WORKER_INTERVAL
     Drain-loop poll interval in seconds (default 2).
+
+MORI_INTAKE_RATE_LIMIT_PER_MIN
+    Maximum POST /intake/submissions requests per minute per API-key name
+    (default 120).  Set to 0 to disable.  Applies to writes only — GET paths
+    are never rate-limited.
 """
 
 from __future__ import annotations
