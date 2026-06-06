@@ -1,3 +1,25 @@
+# ── Package metadata (required for `pip install .` from the Homebrew formula) ──
+# Runtime deps are declared in requirements.txt (the canonical list).
+# The formula installs deps first via `pip install -r requirements.txt`,
+# then installs the package itself via `pip install --no-deps .`.
+# Keeping deps here empty avoids duplicating the version pins.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mori-advisor"
+version = "2.2.12"
+description = "Shared memory layer for AI coding agents — self-hosted"
+requires-python = ">=3.12"
+license = {text = "AGPL-3.0-only"}
+
+[tool.setuptools.packages.find]
+include = ["mori_advisor*"]
+
+# ── Dev tooling ────────────────────────────────────────────────────────────────
+
 [tool.ruff]
 line-length = 100
 target-version = "py313"
