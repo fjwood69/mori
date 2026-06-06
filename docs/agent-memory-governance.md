@@ -49,19 +49,27 @@ into mori's canon.
   read-your-writes.
 - **Promote:** Stage 1 triage → Stage 2 dream → *that* is the only writer into mori canon.
 
-### Stage 1 — Intake & Triage (new service)
-Fast, horizontally scalable, **separate from `mori-dream`**, its own store/schema.
-Absorbs burst volume so it never back-pressures the agent *or* the dream.
-- fast **similarity / dedup** vs existing canon+working+pending (near-neighbour → bump a
-  reinforcement counter instead of creating a new proposal);
+### Stage 1 — Intake & Triage (new service) — *all dedup, cheap model only*
+Fast, horizontally scalable, **separate from `mori-dream`**, its own store/schema. Absorbs
+burst volume so it never back-pressures the agent *or* the dream. **Owns dedup end-to-end so
+the expensive dream never pays to deduplicate:**
+- **Step 1 — dedup the agent pile (intra-intake):** exact `content_hash` now, vector
+  near-neighbour later, against intake's *own* pending candidates → coalesce repeats into one
+  candidate + bump a reinforcement counter. Fully local; **no canon access**.
+- **Step 2 — dedup the survivors vs canon (FAST model, NOT the dream):** what's left is
+  checked against mori canon with the **cheap fast model** + canon embeddings — mori exposes a
+  *stateless* assess capability (the model is a shared service; the data stays separate).
+  Already-known → reinforce canon / drop the candidate; genuinely novel → forward to Stage 2.
+  Spending dream money to do this would be waste — the fast model does it.
 - **eligibility** gate (namespace prefixes + a cheap proposition classifier — reject
-  chatter/scratch);
-- **buffer/debounce/rate-limit**; emits vetted **proposals**.
+  chatter/scratch), **buffer/debounce/rate-limit**; emits only **novel, vetted** proposals.
 
-### Stage 2 — Dream (existing, deliberate, unchanged cadence)
-Consumes already-filtered/deduped proposals. Final distillation + assessment + **promotion**
-(contradiction vs canon, supersession, trust curve). Stays batch because Stage 1 absorbed
-the volume.
+### Stage 2 — Dream (existing, deliberate) — *distil only, no dedup*
+Consumes only the **genuinely-novel** survivors of Stage 1 (dedup already done, cheaply). Does
+the expensive work it is actually for: final **distillation** + **promotion** into canon
+(supersession, trust curve) via the single canon writer. **Dream spend now scales with
+*novelty*, not agent volume** — a burst of repeated agent claims costs the fast model, not the
+dream.
 
 They **share a capability (FAST model + embeddings) but not a workload** — different SLAs,
 different scaling → different services. The interface between them is just the proposal
