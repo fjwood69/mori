@@ -182,3 +182,52 @@ dream→promotion_queue→a lightweight mori poll-and-insert (or dream inserts d
 refactor to single-writer before multi-agent). Nightly delete of old submissions + vacuum.
 
 Full DDL sketch is in the consult log (2026-06-06).
+
+## PostgreSQL dedup precision (Slice-3)
+
+On the PostgreSQL backend the Step-2 vs-canon assessor (``assessor.py`` /
+``canon_writer.py``) queries the mori canon store via ``search_json``, which
+uses ``websearch_to_tsquery('english', …)`` — an AND over every lexeme in the
+query.  Because the full candidate body is passed as the query, all terms must
+be present in a canon document for that document to surface as a neighbour.
+
+This means the text-search dedup is **near-exact-only by design**: a canon
+memory that paraphrases the candidate body with different vocabulary will not
+be returned, and the candidate will proceed to promotion as if it were novel.
+The assessor will therefore generate false negatives (missed duplicates) for
+semantically similar but differently-worded content.
+
+**Current behaviour is acceptable for the MVV slice and is flag-gated** —
+the feature is only active when ``MORI_INTAKE_PROMOTION_ENABLED=true``.
+However, precision must be monitored in production because undetected
+paraphrase duplicates inflate canon volume and degrade recall quality over
+time.
+
+**The real fix is embedding similarity (Slice-3):** replace or supplement the
+``search_json`` vs-canon step with a vector-nearest-neighbour query (pgvector
+HNSW index on canon embeddings) to catch semantic duplicates regardless of
+surface wording.  Until Slice-3 ships, do **not** remove the flag gate or rely
+on the assessor to catch anything other than near-exact canon matches.
+
+## Known trust-boundary gap (Slice-3)
+
+Promoted memories land with `tier='working'` and `type='agent-intake'` in mori canon.
+Any consumer that trusts the `working` tier **implicitly trusts agent-intake memories**
+until the Slice-3 trust-curve filters are in place.
+
+**The trust-curve MUST key off `type` and lineage, NOT tier alone.**  Specifically:
+
+- `type='agent-intake'` identifies promoted agent memories at the row level; this
+  survives any tier promotion (e.g. working → canonical).
+- The `memory_intake_lineage` table carries the full provenance chain
+  (candidate id, submission ids, trust snapshot) so filters can inspect the
+  reinforcement count, corroborating agent ids, and promotion timestamp.
+- Slice-3 will add trust-curve filters that gate on `type='agent-intake'` and/or
+  the presence of a `memory_intake_lineage` row before treating a memory as
+  equivalent to a human-authored one.
+
+**Until Slice-3 ships:** any code that searches or reads `tier='working'` memories
+without a `type` filter will receive a mix of human-authored and agent-promoted
+memories.  Callers that require only human-authored memories should add
+`WHERE type != 'agent-intake'` (or equivalent filter on the store's search API)
+as a temporary guard.  This is a known, accepted gap for the MVV slice.

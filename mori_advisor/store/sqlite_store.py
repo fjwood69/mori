@@ -667,6 +667,21 @@ class SQLiteStore(BaseStore):
             "promoted_at": row["promoted_at"],
         }
 
+    def canon_reader(self):
+        """Raise unconditionally — agent-intake promotion is Postgres-only.
+
+        SQLite is the UAT / dev backend.  The canon-reader feature requires
+        async Postgres methods (``search_json``, ``get_memory``); there is no
+        synchronous equivalent suitable for the assessor hot-path.  Do not
+        implement a SQLite path — on a SQLite canon store the feature is simply
+        UNAVAILABLE by design.
+        """
+        raise NotImplementedError(
+            "agent-intake promotion requires a Postgres canon store. "
+            "SQLiteStore does not support canon_reader() — the feature is "
+            "UNAVAILABLE on the SQLite backend."
+        )
+
     def get_requirements(
         self, project: str = "", status: str = "", tag: str = "", limit: int = 50
     ) -> list:

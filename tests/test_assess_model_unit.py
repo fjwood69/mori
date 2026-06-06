@@ -20,12 +20,25 @@ Covers
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
 
 from mori_intake.assess_model import CanonReader, make_canon_assessor
 from mori_intake.assessor import AssessmentResult
+
+
+def _run(assess, body: str, content_hash: str) -> AssessmentResult:
+    """Run the (now async) assess function synchronously in tests.
+
+    ``make_canon_assessor`` returns a coroutine function (async) because the
+    Postgres-native ``CanonReader`` callables are async.  Unit tests use sync
+    mock callables, but the returned ``assess`` is still a coroutine — so we
+    wrap in ``asyncio.run`` here rather than changing every call site.
+    """
+    return asyncio.run(assess(body, content_hash))
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -79,7 +92,7 @@ class TestMakeCanonAssessor:
         client = _make_client(["SUPERSEDES"])
 
         assess = make_canon_assessor(reader, client)
-        result = assess("Some new learning body.", "deadbeef" * 8)
+        result = _run(assess, "Some new learning body.", "deadbeef" * 8)
 
         assert isinstance(result, AssessmentResult)
         assert result.verdict == "SUPERSEDES"
@@ -95,7 +108,7 @@ class TestMakeCanonAssessor:
         client = _make_client(["RELATED"])
 
         assess = make_canon_assessor(reader, client)
-        result = assess("Another body.", "0" * 64)
+        result = _run(assess, "Another body.", "0" * 64)
 
         assert result.verdict == "RELATED"
         assert result.matched_canon_name == "canon-beta"
@@ -113,7 +126,7 @@ class TestMakeCanonAssessor:
         client = _make_client(["UNRELATED", "UNRELATED"])
 
         assess = make_canon_assessor(reader, client)
-        result = assess("Truly novel claim.", "a" * 64)
+        result = _run(assess, "Truly novel claim.", "a" * 64)
 
         assert result.verdict == "UNRELATED"
         assert result.matched_canon_name is None
@@ -127,7 +140,7 @@ class TestMakeCanonAssessor:
         client = _make_client([])
 
         assess = make_canon_assessor(reader, client)
-        result = assess("Body doesn't matter.", "b" * 64)
+        result = _run(assess, "Body doesn't matter.", "b" * 64)
 
         assert result.verdict == "UNRELATED"
         assert result.matched_canon_name is None
@@ -143,7 +156,7 @@ class TestMakeCanonAssessor:
         client = _make_client(["I think they are somewhat related but different."])
 
         assess = make_canon_assessor(reader, client)
-        result = assess("Body text.", "c" * 64)
+        result = _run(assess, "Body text.", "c" * 64)
 
         assert result.verdict == "UNRELATED"
 
@@ -153,7 +166,7 @@ class TestMakeCanonAssessor:
         client = _make_client([""])
 
         assess = make_canon_assessor(reader, client)
-        result = assess("Body text.", "d" * 64)
+        result = _run(assess, "Body text.", "d" * 64)
 
         assert result.verdict == "UNRELATED"
 
@@ -164,7 +177,7 @@ class TestMakeCanonAssessor:
         client.consult = MagicMock(return_value=None)
 
         assess = make_canon_assessor(reader, client)
-        result = assess("Body text.", "e" * 64)
+        result = _run(assess, "Body text.", "e" * 64)
 
         assert result.verdict == "UNRELATED"
 
@@ -177,7 +190,7 @@ class TestMakeCanonAssessor:
         client.consult = MagicMock(side_effect=RuntimeError("Bifrost timeout"))
 
         assess = make_canon_assessor(reader, client)
-        result = assess("Body text.", "f" * 64)
+        result = _run(assess, "Body text.", "f" * 64)
 
         assert result.verdict == "UNRELATED"
         assert result.matched_canon_name is None
@@ -193,7 +206,7 @@ class TestMakeCanonAssessor:
         client = _make_client([])
 
         assess = make_canon_assessor(reader, client)
-        result = assess("Body.", "g" * 64)
+        result = _run(assess, "Body.", "g" * 64)
 
         assert result.verdict == "UNRELATED"
         client.consult.assert_not_called()
@@ -218,7 +231,7 @@ class TestMakeCanonAssessor:
         client = _make_client(["SUPERSEDES", "RELATED", "UNRELATED"])
 
         assess = make_canon_assessor(reader, client)
-        result = assess("Body.", "h" * 64)
+        result = _run(assess, "Body.", "h" * 64)
 
         assert result.verdict == "SUPERSEDES"
         assert result.matched_canon_name == "canon-first"
@@ -234,7 +247,7 @@ class TestMakeCanonAssessor:
         client = _make_client(["UNRELATED", "RELATED"])
 
         assess = make_canon_assessor(reader, client)
-        result = assess("Body.", "i" * 64)
+        result = _run(assess, "Body.", "i" * 64)
 
         assert result.verdict == "RELATED"
         assert result.matched_canon_name == "canon-b"
@@ -253,7 +266,7 @@ class TestMakeCanonAssessor:
         client = _make_client([])
 
         assess = make_canon_assessor(reader, client)
-        result = assess("Body.", "j" * 64)
+        result = _run(assess, "Body.", "j" * 64)
 
         # No canonical rows → UNRELATED without model call.
         assert result.verdict == "UNRELATED"
@@ -275,7 +288,7 @@ class TestMakeCanonAssessor:
         client = _make_client(["UNRELATED", "UNRELATED"])
 
         assess = make_canon_assessor(reader, client, top_k=2)
-        result = assess("Body.", "k" * 64)
+        result = _run(assess, "Body.", "k" * 64)
 
         assert result.verdict == "UNRELATED"
         assert client.consult.call_count == 2
@@ -291,8 +304,8 @@ class TestMakeCanonAssessor:
         client = _make_client(["UNRELATED", "UNRELATED"])
 
         assess = make_canon_assessor(reader, client)
-        r1 = assess("Body.", "aaaa" * 16)
-        r2 = assess("Body.", "bbbb" * 16)
+        r1 = _run(assess, "Body.", "aaaa" * 16)
+        r2 = _run(assess, "Body.", "bbbb" * 16)
 
         # Same verdict regardless of hash — hash is not part of the prompt.
         assert r1.verdict == r2.verdict == "UNRELATED"
@@ -308,7 +321,7 @@ class TestMakeCanonAssessor:
         client = _make_client(["UNRELATED", "UNRELATED"])
 
         assess = make_canon_assessor(reader, client)
-        assess("Candidate body.", "m" * 64)
+        _run(assess, "Candidate body.", "m" * 64)
 
         # fetch_body must have been called for each neighbour that was assessed.
         reader.fetch_body.assert_any_call("n-alpha")
@@ -342,7 +355,7 @@ class TestMakeCanonAssessor:
         client.consult = MagicMock(side_effect=_capture_consult)
 
         assess = make_canon_assessor(reader, client)
-        assess("Candidate body.", "n" * 64)
+        _run(assess, "Candidate body.", "n" * 64)
 
         assert len(captured_prompts) == 1
         assert full_body_text in captured_prompts[0], "Full body text should appear in the prompt"
@@ -369,7 +382,7 @@ class TestMakeCanonAssessor:
         client.consult = MagicMock(side_effect=_capture_consult)
 
         assess = make_canon_assessor(reader, client)
-        assess("Candidate body.", "o" * 64)
+        _run(assess, "Candidate body.", "o" * 64)
 
         assert len(captured_prompts) == 1
         assert fallback_body in captured_prompts[0], (
@@ -409,24 +422,41 @@ class TestMakeCanonAssessor:
     reason="Live Bifrost smoke test — set MORI_B2_LIVE_TEST=1 to run manually.",
 )
 def test_live_bifrost_smoke(tmp_path):
-    """Smoke-test the real assessor against a live Bifrost + SQLite store.
+    """Smoke-test the real assessor against a live Bifrost + Postgres canon.
 
     NOT part of the automated suite.  Set ``MORI_B2_LIVE_TEST=1`` to run.
-    The store is an empty SQLiteStore → expected verdict is UNRELATED.
+    Requires ``MORI_CANON_TEST_DATABASE_URL`` (Postgres) because
+    ``canon_reader()`` is Postgres-only by design.  If only a SQLiteStore is
+    available the test is skipped with a clear message.
     """
+    import asyncio
+    import os
+
+    canon_dsn = os.environ.get("MORI_CANON_TEST_DATABASE_URL", "")
+    if not canon_dsn:
+        pytest.skip(
+            "MORI_CANON_TEST_DATABASE_URL not set — live smoke test requires Postgres canon"
+        )
+
     from mori_advisor.bifrost_client import BifrostClient
-    from mori_advisor.store.migrations import MIGRATIONS, apply_sqlite
-    from mori_advisor.store.sqlite_store import SQLiteStore
+    from mori_advisor.store.postgres_store import PostgresStore
     from mori_intake.assess_model import make_canon_reader_from_store
 
-    db_path = tmp_path / "memories.db"
-    store = SQLiteStore(db_path)
-    apply_sqlite(db_path, tuple(m for m in MIGRATIONS if m.target == "memories"))
+    async def _run_smoke():
+        from mori_advisor.store.migrations import MIGRATIONS, apply_postgres
 
-    client = BifrostClient()
-    reader = make_canon_reader_from_store(store)
-    assess = make_canon_assessor(reader, client)
-    result = assess("The sky appears blue due to Rayleigh scattering.", "live" * 16)
+        store = PostgresStore(canon_dsn)
+        await apply_postgres(store, MIGRATIONS)
+        try:
+            client = BifrostClient()
+            reader = make_canon_reader_from_store(store)
+            assess = make_canon_assessor(reader, client)
+            # assess is a coroutine — await it.
+            result = await assess("The sky appears blue due to Rayleigh scattering.", "live" * 16)
+            return result
+        finally:
+            await store.pool.close()
 
+    result = asyncio.run(_run_smoke())
     assert result.verdict in ("SUPERSEDES", "RELATED", "UNRELATED")
     assert result.matched_canon_name is None or isinstance(result.matched_canon_name, str)

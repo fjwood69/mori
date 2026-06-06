@@ -74,46 +74,38 @@ class CanonReader:
         ``(query: str, limit: int) -> list[dict]`` — returns lightweight
         dicts with at least ``name`` and ``tier`` keys (same shape as
         ``search_json``).  No side-effects; no retrieval-count bump.
+        On the Postgres backend this is an **async** callable (a coroutine);
+        callers must ``await`` it.
     fetch_body:
         ``(name: str) -> str`` — returns the full body text of a single
         memory, or an empty string when the memory is not found.  No
         side-effects; no retrieval-count bump.
+        On the Postgres backend this is an **async** callable (a coroutine);
+        callers must ``await`` it.
     """
 
-    search: Callable[[str, int], list[dict]]
-    fetch_body: Callable[[str], str]
+    search: Callable  # (query: str, limit: int) -> list[dict] | Awaitable[list[dict]]
+    fetch_body: Callable  # (name: str) -> str | Awaitable[str]
 
 
 def make_canon_reader_from_store(store) -> CanonReader:
     """Build a :class:`CanonReader` from a mori store instance.
 
-    Extracts only the two read-only operations required by the assessor.
-    Works with both ``SQLiteStore`` (delegates to ``MemoryStore``) and
-    ``PostgresStore`` (synchronous wrapper around the async pool not
-    available here — Postgres callers should build the reader manually with
-    appropriate sync wrappers).
+    Delegates to ``store.canon_reader()``.  On a ``PostgresStore`` this
+    returns **async** callables; the returned ``assess`` function from
+    :func:`make_canon_assessor` is therefore also **async** — which is
+    correct: the assessor call-site in ``assessor.py`` already handles
+    awaitables transparently via ``inspect.isawaitable``.
 
-    For the SQLite path this is the idiomatic construction site; the
-    ``cli.py`` wiring calls this helper so no store reference leaks into
-    the assessor closure.
+    On a ``SQLiteStore`` ``store.canon_reader()`` raises
+    ``NotImplementedError`` immediately — agent-intake promotion is a
+    Postgres-only feature by design.
+
+    The previous implementation accessed ``store._mem`` directly (a private
+    attribute coupling).  This version uses only the public ``canon_reader()``
+    interface on ``BaseStore``.
     """
-
-    def _search(query: str, limit: int) -> list[dict]:
-        # SQLiteStore delegates to MemoryStore.search_json (synchronous).
-        # PostgresStore.search_json is async — the Postgres wiring must
-        # supply its own sync-wrapped callable; this helper is SQLite-only.
-        return store._mem.search_json(query=query, limit=limit)  # type: ignore[attr-defined]
-
-    def _fetch_body(name: str) -> str:
-        # BaseStore.read() returns a formatted markdown string; we want raw
-        # body.  Use MemoryStore.get_memory() which returns a dict with a
-        # 'body' key and does NOT bump retrieval_count.
-        mem = store._mem.get_memory(name)  # type: ignore[attr-defined]
-        if mem is None:
-            return ""
-        return mem.get("body") or ""
-
-    return CanonReader(search=_search, fetch_body=_fetch_body)
+    return store.canon_reader()
 
 
 def make_canon_assessor(
@@ -121,15 +113,30 @@ def make_canon_assessor(
     llm_client: "BifrostClient",
     *,
     top_k: int = 5,
-) -> Callable[[str, str], AssessmentResult]:
-    """Return a synchronous ``assess(body, content_hash) -> AssessmentResult`` callable.
+) -> Callable:
+    """Return an **async** ``assess(body, content_hash) -> AssessmentResult`` callable.
+
+    The returned callable is a coroutine function because the ``reader``
+    callables provided by ``PostgresStore.canon_reader()`` are themselves
+    async (``search_json`` and ``get_memory`` are coroutines on the Postgres
+    backend).
+
+    The assessor call-site in ``assessor.py::_assess_one`` already handles
+    awaitables transparently::
+
+        _raw = assess(body, content_hash_hex)
+        result = await _raw if inspect.isawaitable(_raw) else _raw
+
+    So promoting ``assess`` to async is backward-compatible — the call-site
+    awaits it correctly whether it is a coroutine or a plain callable.
 
     Parameters
     ----------
     reader:
         A :class:`CanonReader` holding two read-only callables over mori
         canon.  The assessor has NO write path — ``reader`` exposes only
-        ``search`` and ``fetch_body``.
+        ``search`` and ``fetch_body``.  On the Postgres backend both
+        callables are async; this function awaits them.
     llm_client:
         A :class:`~mori_advisor.bifrost_client.BifrostClient` instance.  The
         ``"fast"`` VK (DeepSeek V4 Flash / equivalent cheap model) is used,
@@ -138,38 +145,41 @@ def make_canon_assessor(
         Number of canon neighbours to retrieve and check.  Default 5.
     """
 
-    def _search_canon(body: str) -> list[dict]:
+    async def _search_canon(body: str) -> list[dict]:
         """Retrieve top-k canonical memories most relevant to *body*.
 
-        Filters by ``tier == 'canonical'`` post-retrieval (MVV store may
-        return working-tier rows).  Fetches ``top_k * 2`` so the canonical
-        filter has headroom even when the store returns a mix of tiers.
+        Awaits the reader's search callable (async on Postgres, sync on any
+        stub).  Filters by ``tier == 'canonical'`` post-retrieval.  Fetches
+        ``top_k * 2`` so the canonical filter has headroom.
         """
+        import inspect as _inspect
+
         try:
-            raw = reader.search(body, top_k * 2)
+            _raw = reader.search(body, top_k * 2)
+            raw: list[dict] = await _raw if _inspect.isawaitable(_raw) else _raw
             # Filter to canonical tier only.
             return [m for m in raw if m.get("tier") == "canonical"][:top_k]
         except Exception as exc:
             logger.warning("assess_model: canon search failed: %s", exc)
             return []
 
-    def _classify(body: str, neighbour: dict) -> str:
+    async def _classify(body: str, neighbour: dict) -> str:
         """Ask the fast model to classify *body* vs *neighbour*.
 
-        Fetches the neighbour's FULL BODY via ``reader.fetch_body`` so the
-        prompt receives complete content — not the truncated ``description``
-        field that ``search`` returns.  Falls back to the description from
-        the search result only if fetch_body returns empty (e.g. memory not
-        found on a race between search and fetch).
+        Awaits the reader's fetch_body callable (async on Postgres, sync on
+        any stub).  Falls back to the search-result dict fields when
+        fetch_body returns empty.
 
         Reuses ``CONTRADICTION_SCAN_PROMPT`` verbatim from
-        ``mori_advisor.utils`` — the same prompt the dream pipeline's
-        contradiction scan uses.  Returns the raw verdict word (upper-case),
+        ``mori_advisor.utils``.  Returns the raw verdict word (upper-case),
         or ``"UNRELATED"`` on any error / unrecognised token.
         """
+        import inspect as _inspect
+
         name = neighbour.get("name", "")
         try:
-            full_body = reader.fetch_body(name)
+            _raw_body = reader.fetch_body(name)
+            full_body: str = await _raw_body if _inspect.isawaitable(_raw_body) else _raw_body
         except Exception as exc:
             logger.warning("assess_model: fetch_body failed for %s: %s", name, exc)
             full_body = ""
@@ -206,8 +216,11 @@ def make_canon_assessor(
             )
             return "UNRELATED"
 
-    def assess(body: str, content_hash: str) -> AssessmentResult:  # noqa: ARG001
+    async def assess(body: str, content_hash: str) -> AssessmentResult:  # noqa: ARG001
         """Compare *body* against top-k canon neighbours; return the verdict.
+
+        This is an async coroutine because the underlying ``reader`` callables
+        (``search`` and ``fetch_body``) are async on the Postgres backend.
 
         Steps
         -----
@@ -217,13 +230,13 @@ def make_canon_assessor(
         3. Return the first SUPERSEDES or RELATED match found.
         4. If all neighbours are UNRELATED (or there are none), return UNRELATED.
         """
-        neighbours = _search_canon(body)
+        neighbours = await _search_canon(body)
         if not neighbours:
             logger.debug("assess_model: no canon neighbours found — UNRELATED")
             return AssessmentResult(verdict="UNRELATED", matched_canon_name=None, score=0.0)
 
         for neighbour in neighbours:
-            verdict = _classify(body, neighbour)
+            verdict = await _classify(body, neighbour)
             name = neighbour.get("name")
             logger.debug(
                 "assess_model: candidate vs %s → %s",

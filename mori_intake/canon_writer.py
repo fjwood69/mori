@@ -57,6 +57,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -75,7 +76,12 @@ _BATCH_SIZE = 20
 
 # Seconds after which a ``processing`` row is considered a stale lease and
 # eligible for re-claim by any drain worker.
-_LEASE_SECONDS = 300  # 5 minutes
+#
+# MVV runs a SINGLE drainer — the lease window must exceed worst-case
+# assess + canon-write latency (the hard latency ceiling for one pass).
+# Multi-worker worker-id + heartbeat locking is Slice-3; at that point
+# the lease duration should be re-evaluated against observed p99 latencies.
+_LEASE_SECONDS: int = int(os.environ.get("MORI_INTAKE_LEASE_SECONDS", "300"))
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

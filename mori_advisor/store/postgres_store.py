@@ -1943,6 +1943,34 @@ class PostgresStore(BaseStore):
             "promoted_at": promoted,
         }
 
+    def canon_reader(self):
+        """Return a ``(search, fetch_body)`` pair of read-only **async** callables.
+
+        Both callables are coroutines that must be ``await``-ed by the caller.
+        They delegate to the existing async pool methods and do NOT bump
+        ``retrieval_count`` — pure read access.
+
+        Returns
+        -------
+        search : ``async (query: str, limit: int) -> list[dict]``
+            Delegates to ``self.search_json(query=query, limit=limit)``.
+            Returns a list of dicts with at least ``name`` and ``tier`` keys.
+        fetch_body : ``async (name: str) -> str``
+            Returns the full ``body`` text of a single memory, or ``""`` when
+            not found.  Delegates to ``self.get_memory(name)`` which does NOT
+            bump ``retrieval_count``.
+        """
+        from mori_intake.assess_model import CanonReader
+
+        async def _search(query: str, limit: int) -> list[dict]:
+            return await self.search_json(query=query, limit=limit)
+
+        async def _fetch_body(name: str) -> str:
+            mem = await self.get_memory(name)
+            return (mem or {}).get("body") or ""
+
+        return CanonReader(search=_search, fetch_body=_fetch_body)
+
     async def get_requirements(
         self, project: str = "", status: str = "", tag: str = "", limit: int = 50
     ) -> list:

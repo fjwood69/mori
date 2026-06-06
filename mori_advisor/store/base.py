@@ -353,3 +353,34 @@ class BaseStore(ABC):
           ``canon_name``, ``intake_candidate_id``, ``intake_submission_ids``,
           ``trust_snapshot``, ``promoted_at``.
         """
+
+    # ── Agent-intake canon reader ──────────────────────────────────────────
+
+    def canon_reader(self):
+        """Return a ``(search, fetch_body)`` pair of read-only async callables.
+
+        The returned callables are **async** on ``PostgresStore`` and raise
+        ``NotImplementedError`` on ``SQLiteStore`` — the agent-intake promotion
+        feature requires a Postgres canon store.
+
+        ``search(query: str, limit: int) -> list[dict]``
+            FTS-ranked search over canon memories.  No retrieval_count bump.
+        ``fetch_body(name: str) -> str``
+            Return the full body text of a single memory, or ``""`` if not
+            found.  No retrieval_count bump.
+
+        Both callables are *read-only* — the assessor has no write path to
+        canon through this interface.
+
+        Implementation notes
+        --------------------
+        * ``PostgresStore`` returns **async** callables (``search_json`` and
+          ``get_memory`` are coroutines on the Postgres backend).
+        * ``SQLiteStore`` raises ``NotImplementedError`` unconditionally — the
+          feature is Postgres-only by design (SQLite is for UAT / dev).
+        * Callers must ``await`` the returned callables when on Postgres.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement canon_reader(). "
+            "Agent-intake promotion requires a Postgres canon store."
+        )
