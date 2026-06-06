@@ -277,4 +277,4 @@ never appear in the public core. See `COMMERCIAL.md` for licensing terms.
 
 ---
 
-*Last updated: v2.2.11*
+*Last updated: v2.2.12*

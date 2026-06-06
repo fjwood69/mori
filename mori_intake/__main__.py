@@ -9,7 +9,7 @@ import logging
 
 import uvicorn
 
-from mori_intake.config import INTAKE_PORT
+from mori_intake.config import INTAKE_HOST, INTAKE_PORT
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,7 +19,7 @@ logging.basicConfig(
 if __name__ == "__main__":
     uvicorn.run(
         "mori_intake.app:app",
-        host="0.0.0.0",
+        host=INTAKE_HOST,
         port=INTAKE_PORT,
         log_level="info",
     )

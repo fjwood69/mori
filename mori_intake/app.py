@@ -27,7 +27,13 @@ import mori_intake.worker as worker
 from mori_advisor.auth import check_key, init_auth
 from mori_advisor.policy import ROLE_LEVELS, role_for
 from mori_intake import migrations
-from mori_intake.config import WORKER_INTERVAL, check_data_boundary
+from mori_intake.config import (
+    MAX_CONTENT_BYTES,
+    PENDING_TTL_HOURS,
+    PURGE_INTERVAL_SEC,
+    WORKER_INTERVAL,
+    check_data_boundary,
+)
 from mori_intake.eligibility import evaluate as eligibility_evaluate
 from mori_intake.ratelimit import get_limiter
 
@@ -89,10 +95,25 @@ async def lifespan(app: FastAPI):
     # Run schema migrations (idempotent, advisory-locked).
     await migrations.apply(pool)
 
-    # Start the drain worker.
-    _worker_task = asyncio.create_task(worker.run_loop(pool, WORKER_INTERVAL))
+    # Start the drain worker (dedup + P3 TTL purge).  This is the ONLY background
+    # task the running service starts — it never invokes the canon writer, so the
+    # live service is structurally incapable of promoting to canon.  Promotion
+    # (B1/B2) is reachable only via the manual `python -m mori_intake.cli` trigger.
+    _worker_task = asyncio.create_task(
+        worker.run_loop(
+            pool,
+            WORKER_INTERVAL,
+            ttl_hours=PENDING_TTL_HOURS,
+            purge_interval=PURGE_INTERVAL_SEC,
+        )
+    )
 
-    logger.info("mori-intake ready")
+    logger.info(
+        "mori-intake ready — WRITE-ONLY intake mode (no promotion path in the "
+        "running service); pending TTL=%.0fh, max_content=%dB",
+        PENDING_TTL_HOURS,
+        MAX_CONTENT_BYTES,
+    )
     yield
 
     # Shutdown — cancel the drain worker and close the pool.
@@ -187,6 +208,17 @@ async def post_submission(
         raise HTTPException(status_code=400, detail="stable_key is required")
     if body.action in ("add", "replace") and not body.content:
         raise HTTPException(status_code=400, detail="content is required for add/replace")
+
+    # Payload guard: reject oversized content before any eligibility/DB work so a
+    # single large blob cannot tie up the worker or bloat the candidates table.
+    if MAX_CONTENT_BYTES > 0 and len(body.content.encode("utf-8")) > MAX_CONTENT_BYTES:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "rejected",
+                "reason": f"content exceeds {MAX_CONTENT_BYTES} bytes",
+            },
+        )
 
     # Eligibility gate.
     decision = eligibility_evaluate(

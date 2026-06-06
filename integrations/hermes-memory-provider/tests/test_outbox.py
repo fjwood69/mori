@@ -583,3 +583,91 @@ class TestRestart:
         assert drained
         assert ic2.call_count >= 1
         assert ic2.calls[0]["provenance"]["mori_name"] == "hermes-memory-restart"
+
+
+# ── P1: terminal-row age purge ────────────────────────────────────────────────
+
+
+def _insert_raw(outbox, *, name: str, status: str, ts: float) -> None:
+    """Insert a raw outbox row with explicit status + timestamps (test helper)."""
+    with outbox._lock:
+        outbox._db.execute(
+            "INSERT INTO outbox (name, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (name, status, ts, ts),
+        )
+        outbox._db.commit()
+
+
+def test_terminal_purge_reaps_aged_done_and_failed(tmp_db):
+    """Aged done/failed rows are purged; recent terminal + any pending survive."""
+    from hermes_mori_provider.outbox import _now
+
+    ob = _make_outbox(FakeReadClient(), tmp_db, autostart_drain=False)
+    try:
+        now = _now()
+        old = now - 700_000  # > 7 days
+        _insert_raw(ob, name="aged-done", status="done", ts=old)
+        _insert_raw(ob, name="aged-failed", status="failed", ts=old)
+        _insert_raw(ob, name="recent-done", status="done", ts=now)
+        _insert_raw(ob, name="pending-old", status="pending", ts=old)
+
+        ob._terminal_max_age = 604_800.0  # 7 days
+        ob._terminal_purge_interval = 0.0  # no rate-limit for the test
+        ob._last_terminal_purge = 0.0
+        ob._maybe_purge_terminal()
+
+        with ob._lock:
+            names = {r[0] for r in ob._db.execute("SELECT name FROM outbox").fetchall()}
+        assert "aged-done" not in names
+        assert "aged-failed" not in names
+        assert "recent-done" in names  # within max_age — kept
+        assert "pending-old" in names  # pending is NEVER terminal-purged
+        assert ob.metrics["terminal_purged"] == 2
+    finally:
+        ob.shutdown()
+
+
+def test_terminal_purge_disabled_when_max_age_zero(tmp_db):
+    """terminal_max_age <= 0 disables the purge (nothing removed)."""
+    from hermes_mori_provider.outbox import _now
+
+    ob = _make_outbox(FakeReadClient(), tmp_db, autostart_drain=False)
+    try:
+        old = _now() - 9_000_000
+        _insert_raw(ob, name="ancient-done", status="done", ts=old)
+        ob._terminal_max_age = 0.0
+        ob._terminal_purge_interval = 0.0
+        ob._last_terminal_purge = 0.0
+        ob._maybe_purge_terminal()
+        with ob._lock:
+            cnt = ob._db.execute(
+                "SELECT COUNT(*) FROM outbox WHERE name = 'ancient-done'"
+            ).fetchone()[0]
+        assert cnt == 1
+        assert ob.metrics["terminal_purged"] == 0
+    finally:
+        ob.shutdown()
+
+
+def test_terminal_purge_rate_limited(tmp_db):
+    """A second call within the purge interval is a no-op (rate-limited)."""
+    from hermes_mori_provider.outbox import _now
+
+    ob = _make_outbox(FakeReadClient(), tmp_db, autostart_drain=False)
+    try:
+        old = _now() - 700_000
+        _insert_raw(ob, name="d1", status="done", ts=old)
+        ob._terminal_max_age = 604_800.0
+        ob._terminal_purge_interval = 10_000.0  # large — blocks a 2nd pass
+        ob._last_terminal_purge = 0.0
+        ob._maybe_purge_terminal()  # runs (last_purge was 0)
+        assert ob.metrics["terminal_purged"] == 1
+
+        _insert_raw(ob, name="d2", status="done", ts=old)
+        ob._maybe_purge_terminal()  # within interval — must NOT run
+        with ob._lock:
+            names = {r[0] for r in ob._db.execute("SELECT name FROM outbox").fetchall()}
+        assert "d2" in names  # not purged — rate-limited
+        assert ob.metrics["terminal_purged"] == 1
+    finally:
+        ob.shutdown()

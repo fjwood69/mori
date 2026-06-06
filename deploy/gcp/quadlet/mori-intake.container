@@ -1,0 +1,43 @@
+# Quadlet unit for the mori-intake service (rootless, user `mori`).
+# Installed to ~mori/.config/containers/systemd/ — the podman-user-generator
+# turns this into mori-intake.service. This file is the single source of truth
+# for how mori-intake runs; the startup script and CD both only `systemctl`.
+#
+# Stage 1 — WRITE-ONLY intake: the running service ingests agent proposals into
+# the intake-dedicated Postgres (`intake` DB) as `pending` candidates and dedups
+# them. It NEVER promotes to canon — promotion (B1/B2) is reachable only via the
+# manual `python -m mori_intake.cli` trigger, not this long-running unit.
+[Unit]
+Description=Mori intake — governed agent-memory front door (port 8971, write-only)
+
+[Container]
+ContainerName=mori-intake
+Image=ghcr.io/fjwood69/mori:latest
+Network=host
+User=0
+# Env file is read host-side by systemd (secrets: intake DSN + write-role key).
+# It points at the SEPARATE `intake` database and a least-privilege role that
+# cannot CONNECT to the `mori` canon DB — the data boundary is enforced in the
+# Postgres kernel, not just by the app's check_data_boundary() guard.
+EnvironmentFile=/data/mori-intake/.env
+Exec=python -m mori_intake
+
+[Service]
+Restart=always
+RestartSec=5
+# Never give up: default StartLimitBurst would leave the unit dead after 5
+# failures in 10s — fatal while waiting for a slow Postgres.
+StartLimitIntervalSec=0
+# Resource caps (consult): on the 2GB e2-small the intake service shares the VM
+# with canon. Cap it so a load/leak spike can never OOM-kill Postgres or starve
+# mori-advisor. Honoured by the rootless user-manager cgroup when delegated;
+# ignored (not fatal) otherwise.
+MemoryHigh=224M
+MemoryMax=256M
+CPUQuota=50%
+# Readiness gate: wait for Postgres (5432) before starting. bash /dev/tcp avoids
+# any nc/pg_isready host dependency.
+ExecStartPre=/bin/bash -c 'until (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; do sleep 2; done'
+
+[Install]
+WantedBy=default.target

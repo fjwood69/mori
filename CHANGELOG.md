@@ -55,6 +55,43 @@
   took the silent default won't re-prompt on update** — clear the plugin cache and
   reinstall, or set `pluginConfigs."mori@mori".options.server_url` manually.
 
+## v2.2.12 — agent-memory governance Stage-1 enablement (write-only intake, hardened)
+
+> **Stage 1 of the governance pipeline (mori #16): write-only intake.** The intake service
+> is now deployable as a GCE Quadlet unit and Hermes mirror-writes land as `pending`
+> intake candidates. **Nothing promotes to canon** — the running service starts only the
+> dedup/TTL worker and never invokes the canon writer (promotion is reachable solely via the
+> manual `python -m mori_intake.cli` trigger). `MORI_INTAKE_PROMOTION_ENABLED` stays off.
+
+**Stage-1 preconditions closed (pre-enable hardening, post-`/consult`):**
+
+- **P3 — pending-candidate TTL (tombstone).** New `MORI_INTAKE_PENDING_TTL_HOURS` (default
+  168; prod runs 720). The drain worker periodically reaps pending candidates idle (by
+  `updated_at`) beyond the TTL. To prevent the drain from resurrecting a reaped candidate
+  from its originating submission, the purge **tombstones** those submissions
+  (`intake_submissions.purged_at`, migration 9) rather than deleting them — preserving the
+  agent-write audit trail and the `UNIQUE(session_id, stable_key)` idempotency guard. The
+  drain query excludes tombstoned rows. Cardinality-safe (a submission corroborating any
+  non-stale candidate is left live) and race-safe (`FOR UPDATE SKIP LOCKED`). Manual
+  operator purge: `python -m mori_intake.cli --purge-pending-hours N`.
+- **P1 — provider outbox bound.** The hermes-mori-provider outbox now age-purges terminal
+  (`done`/`failed`) rows beyond `terminal_max_age` (default 7d) so the local SQLite file
+  cannot grow over long uptimes. Pending rows remain bounded by the existing 100-row
+  backpressure cap.
+- **DB-level data boundary.** The intake service runs as a least-privilege `intake_app`
+  Postgres role with **`CONNECT` on `mori` revoked** — kernel-enforced separation from
+  canon, beyond the app's `check_data_boundary()` guard. The intake env carries **no**
+  canon DSN. (`deploy/gcp/provision-intake.sh` provisions the role + `intake` DB + verifies
+  the boundary.)
+- **Resource caps.** `mori-intake.container` sets `MemoryHigh=224M` / `MemoryMax=256M` /
+  `CPUQuota=50%` so intake can never OOM-kill or starve canon on the shared 2GB VM; pool
+  capped (`MORI_INTAKE_POOL_MAX=4`).
+- **Payload guard.** `MORI_INTAKE_MAX_CONTENT_BYTES` (default 64KiB) rejects oversized
+  submissions (422) before any DB work. Bind address configurable via `MORI_INTAKE_HOST`.
+
+**Deploy:** `deploy/gcp/quadlet/mori-intake.container` + `provision-intake.sh`; `startup.sh.tpl`
+installs the unit on boot and starts it once provisioned (intake DB/role/env persist on `/data`).
+
 ## v2.2.11 — agent-memory governance pipeline (dormant) + 3 security/perf criticals + plugin v0.3.x
 
 > **Security/perf criticals are ACTIVE in this release.** The governance pipeline is SHIPPED to
