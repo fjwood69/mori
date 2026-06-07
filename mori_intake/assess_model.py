@@ -12,18 +12,21 @@ The returned function:
 2. Fetches each neighbour's FULL BODY via ``fetch_body(name)`` (read-only
    body callable) so the contradiction-scan prompt receives the complete text,
    not merely the one-line description that ``search_json`` returns.
-3. Compares the candidate body against each neighbour using the same prompt
-   that ``run_contradiction_scan`` in ``mori_advisor/utils.py`` uses — verbatim
-   reuse of ``CONTRADICTION_SCAN_PROMPT`` and the ``"fast"`` VK.
+3. Compares the candidate body against each neighbour using
+   ``CONTRADICTION_SCAN_PROMPT`` (plus a structured-output directive) on the
+   ``"fast"`` VK, requesting a strict ``json_schema`` verdict object which is
+   then validated by Pydantic (``_VerdictModel``).
 4. Returns the first SUPERSEDES or RELATED match found (highest-ranked by the
    store), or UNRELATED when no match is found / the store is empty.
 
-Safe defaults
--------------
-* Empty store or no canon neighbours → UNRELATED, score 0.0.
-* Model returns anything other than SUPERSEDES / RELATED / UNRELATED →
-  UNRELATED (no crash).
-* Any exception during retrieval or model call → UNRELATED + logged.
+Safe defaults (fail-closed)
+---------------------------
+* Empty store or no canon neighbours → UNRELATED, score 0.0 (genuinely novel).
+* Malformed / unparseable / schema-invalid model output → NEEDS_REVIEW.
+* Any exception during retrieval or model call → NEEDS_REVIEW + logged.
+
+Only a model-confirmed UNRELATED across all neighbours yields UNRELATED; every
+uncertain or error path fails closed to NEEDS_REVIEW (blocks promotion).
 
 Data boundary
 -------------
@@ -40,9 +43,12 @@ so tests can pass mocks; real Bifrost is only called in production.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Literal
+
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 if TYPE_CHECKING:
     from mori_advisor.bifrost_client import BifrostClient
@@ -55,6 +61,82 @@ logger = logging.getLogger(__name__)
 # Verdicts the model may return — these are the ONLY terminal verdicts
 # accepted from the model.  Anything else collapses to NEEDS_REVIEW.
 _VALID_VERDICTS = frozenset({"SUPERSEDES", "RELATED", "UNRELATED"})
+
+
+# ── Structured-output verdict contract ────────────────────────────────────────
+# The fast model is asked for a constrained JSON object instead of free text.
+# `_VerdictModel` is the SINGLE SOURCE OF TRUTH for the verdict contract: even
+# when the gateway honours the json_schema below (constraining tokens at the
+# sampler), we still validate the payload with Pydantic (`extra='forbid'`) so the
+# assessor degrades safely to NEEDS_REVIEW if a future provider ignores the
+# schema and returns arbitrary JSON.
+
+
+class _VerdictModel(BaseModel):
+    """Validated structured verdict from the fast model. No extra keys allowed."""
+
+    model_config = ConfigDict(extra="forbid")
+    verdict: Literal["SUPERSEDES", "RELATED", "UNRELATED"]
+
+
+# OpenAI-style strict json_schema response_format (verified honoured by the fast
+# VK provider). The provider constrains output to exactly {"verdict": <enum>}.
+_VERDICT_RESPONSE_FORMAT: dict = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "canon_verdict",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "verdict": {"type": "string", "enum": ["SUPERSEDES", "RELATED", "UNRELATED"]}
+            },
+            "required": ["verdict"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+# Appended to CONTRADICTION_SCAN_PROMPT for the assessor only (NOT the shared
+# dream-pipeline prompt). Explicitly OVERRIDES the prompt's "answer with one
+# word" instruction so the prompt and the json_schema are not in conflict — the
+# model is told to emit the JSON object, using the verdict definitions above.
+_STRUCTURED_DIRECTIVE = (
+    "\n\nOUTPUT FORMAT — this overrides the 'exactly one word' instruction above: "
+    'respond with ONLY a JSON object {"verdict": "<V>"} where <V> is exactly one of '
+    "SUPERSEDES, RELATED, or UNRELATED, using the definitions above. Output nothing else."
+)
+
+
+def _parse_verdict(raw: str, neighbour_name: str) -> str:
+    """Parse + validate a structured verdict; fail closed to NEEDS_REVIEW.
+
+    Logs the specific failure taxonomy (JSON-decode vs schema-validation) so a
+    spike in malformed model output is distinguishable from genuine semantic
+    uncertainty.  Never falls back to free-text munging — that would reintroduce
+    the brittleness this structured path removes.
+    """
+    text = (raw or "").strip()
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning(
+            "assess_model: verdict JSON-decode failed for %s (raw=%r) — NEEDS_REVIEW",
+            neighbour_name,
+            text[:160],
+        )
+        return "NEEDS_REVIEW"
+    try:
+        return _VerdictModel.model_validate(data).verdict
+    except ValidationError as exc:
+        logger.warning(
+            "assess_model: verdict schema-validation failed for %s (data=%r) — NEEDS_REVIEW: %s",
+            neighbour_name,
+            data,
+            exc,
+        )
+        return "NEEDS_REVIEW"
+
 
 # Confidence score assigned to a SUPERSEDES/RELATED match.  The fast model
 # returns one word — there is no numeric probability.  A fixed high score is
@@ -175,9 +257,10 @@ def make_canon_assessor(
         any stub).  Falls back to the search-result dict fields when
         fetch_body returns empty.
 
-        Reuses ``CONTRADICTION_SCAN_PROMPT`` verbatim from
-        ``mori_advisor.utils``.  Returns the raw verdict word (upper-case),
-        or ``"UNRELATED"`` on any error / unrecognised token.
+        Uses ``CONTRADICTION_SCAN_PROMPT`` (plus a structured-output directive)
+        from ``mori_advisor.utils`` and requests a strict json_schema verdict,
+        validated by :class:`_VerdictModel`.  Returns the validated verdict word,
+        or ``"NEEDS_REVIEW"`` on any error / malformed response (fail-closed).
         """
         import inspect as _inspect
 
@@ -193,34 +276,27 @@ def make_canon_assessor(
         # in the search result dict (description or body field if present).
         existing_body = full_body or neighbour.get("body") or neighbour.get("description") or ""
 
-        prompt = CONTRADICTION_SCAN_PROMPT.format(
-            new_title="Candidate memory",
-            new_body=body[:2000],
-            existing_title=neighbour.get("title", ""),
-            existing_body=existing_body[:2000],
+        prompt = (
+            CONTRADICTION_SCAN_PROMPT.format(
+                new_title="Candidate memory",
+                new_body=body[:2000],
+                existing_title=neighbour.get("title", ""),
+                existing_body=existing_body[:2000],
+            )
+            + _STRUCTURED_DIRECTIVE
         )
         try:
             response = llm_client.consult(
                 system=prompt,
                 user=f"new: (candidate)\nexisting: {name}",
                 vk="fast",
-                max_tokens=16,
+                max_tokens=32,
                 temperature=0.0,
+                response_format=_VERDICT_RESPONSE_FORMAT,
             )
-            word = (response or "").strip().upper()
-            if word in _VALID_VERDICTS:
-                return word
-            # Model may return a sentence; take the first word and retry.
-            first = word.split()[0] if word else ""
-            if first in _VALID_VERDICTS:
-                return first
-            # Unrecognised / empty response → NEEDS_REVIEW (fail closed).
-            logger.warning(
-                "assess_model: unrecognised model output %r for neighbour %s — NEEDS_REVIEW",
-                word,
-                name,
-            )
-            return "NEEDS_REVIEW"
+            # Structured parse + Pydantic validation; any deviation → NEEDS_REVIEW
+            # (no free-text fallback — that is the brittleness we are removing).
+            return _parse_verdict(response, name)
         except Exception as exc:
             logger.warning(
                 "assess_model: model call failed for neighbour %s — NEEDS_REVIEW: %s",

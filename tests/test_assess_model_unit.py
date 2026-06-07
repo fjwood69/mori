@@ -21,6 +21,7 @@ Covers
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -65,10 +66,22 @@ def _make_reader(
     return CanonReader(search=search_fn, fetch_body=fetch_body_fn)
 
 
+def _v(word: str) -> str:
+    """Wrap a verdict word as the structured JSON the model now returns."""
+    return json.dumps({"verdict": word})
+
+
 def _make_client(responses: list[str]) -> MagicMock:
-    """Return a client mock whose consult() yields successive *responses*."""
+    """Return a client mock whose consult() yields successive *responses*.
+
+    The B2 assessor now requests structured output, so a recognised verdict word
+    is wrapped as the ``{"verdict": "<W>"}`` JSON the model returns. Non-verdict
+    responses (prose, empty string) pass through RAW so the fail-closed parse
+    paths are still exercised.
+    """
+    wrapped = [_v(r) if r in {"SUPERSEDES", "RELATED", "UNRELATED"} else r for r in responses]
     client = MagicMock()
-    client.consult = MagicMock(side_effect=responses)
+    client.consult = MagicMock(side_effect=wrapped)
     return client
 
 
@@ -368,7 +381,7 @@ class TestMakeCanonAssessor:
 
         def _capture_consult(**kwargs):
             captured_prompts.append(kwargs.get("system", ""))
-            return "UNRELATED"
+            return _v("UNRELATED")
 
         client = MagicMock()
         client.consult = MagicMock(side_effect=_capture_consult)
@@ -395,7 +408,7 @@ class TestMakeCanonAssessor:
 
         def _capture_consult(**kwargs):
             captured_prompts.append(kwargs.get("system", ""))
-            return "UNRELATED"
+            return _v("UNRELATED")
 
         client = MagicMock()
         client.consult = MagicMock(side_effect=_capture_consult)
@@ -431,6 +444,71 @@ class TestMakeCanonAssessor:
 
         with pytest.raises((AttributeError, TypeError)):
             reader.fetch_body = MagicMock()  # type: ignore[misc]
+
+
+def test_consult_requested_with_structured_response_format():
+    """The assessor must request strict json_schema structured output on the fast VK."""
+    from mori_intake.assess_model import _VERDICT_RESPONSE_FORMAT
+
+    reader = _make_reader([_canon_row("canon-rf")], body_map={"canon-rf": "Body."})
+    client = _make_client(["UNRELATED"])
+    assess = make_canon_assessor(reader, client)
+    _run(assess, "Body.", "p" * 64)
+
+    _, kwargs = client.consult.call_args
+    assert kwargs.get("response_format") == _VERDICT_RESPONSE_FORMAT
+    assert kwargs.get("vk") == "fast"
+
+
+class TestParseVerdict:
+    """Direct unit tests for the structured-verdict parser (fail-closed contract)."""
+
+    def test_valid_json_verdicts(self):
+        from mori_intake.assess_model import _parse_verdict
+
+        assert _parse_verdict('{"verdict": "SUPERSEDES"}', "n") == "SUPERSEDES"
+        assert _parse_verdict('{"verdict": "RELATED"}', "n") == "RELATED"
+        assert _parse_verdict('{"verdict": "UNRELATED"}', "n") == "UNRELATED"
+
+    def test_whitespace_wrapped_json_ok(self):
+        from mori_intake.assess_model import _parse_verdict
+
+        assert _parse_verdict('  \n {"verdict": "UNRELATED"} \n', "n") == "UNRELATED"
+
+    def test_unknown_enum_value_fails_closed(self):
+        from mori_intake.assess_model import _parse_verdict
+
+        assert _parse_verdict('{"verdict": "MAYBE"}', "n") == "NEEDS_REVIEW"
+
+    def test_extra_keys_forbidden_fails_closed(self):
+        from mori_intake.assess_model import _parse_verdict
+
+        # extra='forbid' — a model that adds keys is rejected, never trusted.
+        assert _parse_verdict('{"verdict": "UNRELATED", "confidence": 0.9}', "n") == "NEEDS_REVIEW"
+
+    def test_missing_verdict_key_fails_closed(self):
+        from mori_intake.assess_model import _parse_verdict
+
+        assert _parse_verdict('{"foo": "bar"}', "n") == "NEEDS_REVIEW"
+
+    def test_non_json_fails_closed(self):
+        from mori_intake.assess_model import _parse_verdict
+
+        assert _parse_verdict("UNRELATED", "n") == "NEEDS_REVIEW"  # bare word, not JSON
+        assert _parse_verdict("I think they are related.", "n") == "NEEDS_REVIEW"
+
+    def test_empty_and_none_fail_closed(self):
+        from mori_intake.assess_model import _parse_verdict
+
+        assert _parse_verdict("", "n") == "NEEDS_REVIEW"
+        assert _parse_verdict(None, "n") == "NEEDS_REVIEW"  # type: ignore[arg-type]
+
+    def test_json_non_object_fails_closed(self):
+        from mori_intake.assess_model import _parse_verdict
+
+        # Valid JSON but not the expected object → fail closed.
+        assert _parse_verdict('"UNRELATED"', "n") == "NEEDS_REVIEW"
+        assert _parse_verdict('["UNRELATED"]', "n") == "NEEDS_REVIEW"
 
 
 # ── Live-Bifrost smoke test (always skipped in CI) ────────────────────────────

@@ -123,6 +123,7 @@ class BifrostClient:
         vk: Literal["advisor", "dream", "fast"] = "advisor",
         max_tokens: int = 4096,
         temperature: float = 0.3,
+        response_format: dict | None = None,
     ) -> str:
         """Send a consult request.
 
@@ -132,6 +133,10 @@ class BifrostClient:
             vk: Which model profile to use (advisor or dream).
             max_tokens: Max output tokens.
             temperature: Sampling temperature.
+            response_format: Optional OpenAI-style ``response_format`` (e.g. a
+                ``{"type": "json_schema", ...}`` structured-output spec). Passed
+                through to the provider verbatim when set; omitted otherwise.
+                Kept provider-agnostic — callers own the schema.
 
         Returns:
             The model's response text.
@@ -142,16 +147,20 @@ class BifrostClient:
 
         client, model = self._client_for(vk)
 
+        kwargs: dict = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            response = client.chat.completions.create(**kwargs)
             return response.choices[0].message.content or ""
         except Exception as e:
             logger.error("Consult failed (vk=%s, mode=%s): %s", vk, self.mode, e)
