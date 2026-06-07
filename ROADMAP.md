@@ -21,7 +21,7 @@ Updated with each release.
 - Docker Compose homelab deployment — Linux, macOS, Windows
 - Slash commands — `/brief`, `/dream`, `/consult`, `/pensieve`, `/req`, `/nats`, `/update`, `/wrap`
 - Installer scripts — Claude Code, Cursor, Antigravity, Cline (Linux, macOS, Windows)
-- OTel metrics — `/health`, `/ready`, `/metrics`
+- OTel metrics — `/health`, `/metrics`
 
 ### v1.1.0
 - `mori-msg` — inter-agent messaging via NATS JetStream
