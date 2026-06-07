@@ -670,6 +670,65 @@ class SQLiteStore(BaseStore):
             "promoted_at": row["promoted_at"],
         }
 
+    def record_intake_ticket(
+        self,
+        ticket_uuid: str,
+        canon_name: str,
+        candidate_id: str,
+        submission_ids: list[str],
+        trust_snapshot: dict,
+        body_hash: str,
+    ) -> None:
+        """Idempotently insert an ``intake_promotion_tickets`` row (SQLite)."""
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO intake_promotion_tickets
+                    (ticket_uuid, canon_name, candidate_id, submission_ids,
+                     trust_snapshot, body_hash)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticket_uuid,
+                    canon_name,
+                    candidate_id,
+                    json.dumps(submission_ids),
+                    json.dumps(trust_snapshot),
+                    body_hash,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_intake_ticket(self, ticket_uuid: str) -> dict | None:
+        """Return the ``intake_promotion_tickets`` row for *ticket_uuid*, or None."""
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT ticket_uuid, canon_name, candidate_id, submission_ids, "
+                "trust_snapshot, body_hash, created_at "
+                "FROM intake_promotion_tickets WHERE ticket_uuid = ?",
+                (ticket_uuid,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        return {
+            "ticket_uuid": row["ticket_uuid"],
+            "canon_name": row["canon_name"],
+            "candidate_id": row["candidate_id"],
+            "submission_ids": json.loads(row["submission_ids"] or "[]"),
+            "trust_snapshot": json.loads(row["trust_snapshot"] or "{}"),
+            "body_hash": row["body_hash"],
+            "created_at": row["created_at"],
+        }
+
     def canon_reader(self):
         """Raise unconditionally — agent-intake promotion is Postgres-only.
 

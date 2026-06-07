@@ -2040,6 +2040,66 @@ class PostgresStore(BaseStore):
             "promoted_at": promoted,
         }
 
+    async def record_intake_ticket(
+        self,
+        ticket_uuid: str,
+        canon_name: str,
+        candidate_id: str,
+        submission_ids: list[str],
+        trust_snapshot: dict,
+        body_hash: str,
+    ) -> None:
+        """Idempotently insert an ``intake_promotion_tickets`` row (Postgres)."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO intake_promotion_tickets
+                    (ticket_uuid, canon_name, candidate_id, submission_ids,
+                     trust_snapshot, body_hash)
+                VALUES ($1::uuid, $2, $3::uuid, $4::uuid[], $5, $6)
+                ON CONFLICT (ticket_uuid) DO NOTHING
+                """,
+                ticket_uuid,
+                canon_name,
+                candidate_id,
+                submission_ids,
+                json.dumps(trust_snapshot),
+                body_hash,
+            )
+
+    async def get_intake_ticket(self, ticket_uuid: str) -> dict | None:
+        """Return the ``intake_promotion_tickets`` row for *ticket_uuid*, or None."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT ticket_uuid, canon_name, candidate_id, submission_ids, "
+                "trust_snapshot, body_hash, created_at "
+                "FROM intake_promotion_tickets WHERE ticket_uuid = $1::uuid",
+                ticket_uuid,
+            )
+        if row is None:
+            return None
+        trust = row["trust_snapshot"]
+        if isinstance(trust, str):
+            try:
+                trust = json.loads(trust)
+            except (json.JSONDecodeError, TypeError):
+                trust = {}
+        sub_ids = row["submission_ids"]
+        created = row["created_at"]
+        if hasattr(created, "isoformat"):
+            created = created.isoformat()
+        return {
+            "ticket_uuid": str(row["ticket_uuid"]),
+            "canon_name": row["canon_name"],
+            "candidate_id": str(row["candidate_id"]),
+            "submission_ids": [str(s) for s in (sub_ids or [])],
+            "trust_snapshot": trust,
+            "body_hash": row["body_hash"],
+            "created_at": created,
+        }
+
     def canon_reader(self):
         """Return a ``(search, fetch_body)`` pair of read-only **async** callables.
 

@@ -362,6 +362,37 @@ class BaseStore(ABC):
           ``trust_snapshot``, ``promoted_at``.
         """
 
+    # ── Human-review gate: bridge-owned promotion tickets ──────────────────
+
+    @abstractmethod
+    def record_intake_ticket(
+        self,
+        ticket_uuid: str,
+        canon_name: str,
+        candidate_id: str,
+        submission_ids: list[str],
+        trust_snapshot: dict,
+        body_hash: str,
+    ) -> None:
+        """Idempotently insert an ``intake_promotion_tickets`` row.
+
+        Written ONLY by the CLI bridge when it surfaces an assessed intake
+        candidate into the dreamer review queue.  It is the TRUSTED carrier of
+        the intake identifiers + the candidate body-hash across the boundary —
+        ``approve()``/finalize read the ids from here (by the opaque
+        ``ticket_uuid`` stored in the pending_write's provenance), never from
+        the forgeable provenance JSON.  ON CONFLICT (ticket_uuid) DO NOTHING.
+        """
+
+    @abstractmethod
+    def get_intake_ticket(self, ticket_uuid: str) -> dict | None:
+        """Return the ``intake_promotion_tickets`` row for *ticket_uuid*, or None.
+
+        Returns a plain dict with keys: ``ticket_uuid``, ``canon_name``,
+        ``candidate_id``, ``submission_ids``, ``trust_snapshot``, ``body_hash``,
+        ``created_at``.
+        """
+
     # ── Agent-intake canon reader ──────────────────────────────────────────
 
     def canon_reader(self):

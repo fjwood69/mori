@@ -514,6 +514,41 @@ MIGRATIONS: tuple[Migration, ...] = (
             ")"
         ),
     ),
+    # ── Stage G: human-review gate — bridge-owned promotion tickets ─────────
+    Migration(
+        id=11,
+        name="intake_promotion_tickets",
+        target="memories",
+        # Mori-side table written ONLY by the CLI bridge (which holds both DSNs)
+        # when it surfaces an assessed intake candidate into the dreamer review
+        # queue. It is the TRUSTED carrier of the intake identifiers + the
+        # body-hash across the boundary: mori-advisor's approve()/finalize never
+        # trusts the pending_write.provenance JSON (forgeable) — it reads the
+        # ids from here, keyed by the opaque ticket_uuid stored in provenance.
+        # Purely additive.
+        sqlite_sql=(
+            "CREATE TABLE IF NOT EXISTS intake_promotion_tickets ("
+            "  ticket_uuid    TEXT NOT NULL PRIMARY KEY,"
+            "  canon_name     TEXT NOT NULL,"
+            "  candidate_id   TEXT NOT NULL,"
+            "  submission_ids TEXT NOT NULL DEFAULT '[]',"
+            "  trust_snapshot TEXT NOT NULL DEFAULT '{}',"
+            "  body_hash      TEXT NOT NULL,"
+            "  created_at     TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")",
+        ),
+        postgres_sql=(
+            "CREATE TABLE IF NOT EXISTS intake_promotion_tickets ("
+            "  ticket_uuid    UUID         NOT NULL PRIMARY KEY,"
+            "  canon_name     VARCHAR(128) NOT NULL,"
+            "  candidate_id   UUID         NOT NULL,"
+            "  submission_ids UUID[]       NOT NULL DEFAULT '{}',"
+            "  trust_snapshot JSONB        NOT NULL DEFAULT '{}',"
+            "  body_hash      TEXT         NOT NULL,"
+            "  created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()"
+            ")"
+        ),
+    ),
 )
 
 
