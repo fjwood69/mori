@@ -55,6 +55,24 @@
   took the silent default won't re-prompt on update** — clear the plugin cache and
   reinstall, or set `pluginConfigs."mori@mori".options.server_url` manually.
 
+## v2.2.15 — B2 assessor fails closed on unhandled exceptions (hardening)
+
+Fast-follow from a post-ship `/consult` code review of v2.2.14. Closes a latent
+**fail-OPEN crash path** in the assessor: prompt `.format()` ran outside `_classify`'s
+`try`, and `assess()` didn't wrap the `_classify` call — so an unhandled exception
+(e.g. a future template-drift `KeyError`) would crash the coroutine rather than fail
+closed to `NEEDS_REVIEW`.
+
+- `_classify`: the **entire** body (prompt assembly + model call + parse) is now wrapped
+  in one fail-closed `try` → `NEEDS_REVIEW`; defensive `isinstance()` name extraction.
+- `assess()`: belt-and-braces `try/except` around the per-neighbour `_classify` call →
+  `NEEDS_REVIEW`, so no unhandled exception ever escapes the assessor as a fail-open crash.
+- Test: an exception during classification must yield `NEEDS_REVIEW`, never a verdict
+  (especially `UNRELATED`), and must not reach the model. Full suite 628 passed.
+- Dormant (manual `cli --real-assessor` path only). Logged-not-blocking polish from the
+  same review: strip ```` ```json ```` fences before parsing; fork the prompt into a
+  structured variant rather than appending an override directive.
+
 ## v2.2.14 — structured-output verdicts in the B2 governance assessor (P0)
 
 First Stage-2 gate item. Replaces the fast-model assessor's free-text verdict + brittle
