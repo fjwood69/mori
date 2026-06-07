@@ -446,6 +446,35 @@ class TestMakeCanonAssessor:
             reader.fetch_body = MagicMock()  # type: ignore[misc]
 
 
+def test_classify_unexpected_exception_fails_closed():
+    """An unexpected exception during classification → NEEDS_REVIEW, never a verdict.
+
+    Guards the cardinal sin: a malformed/erroring path must not yield a definitive
+    verdict (especially UNRELATED, the only verdict that lets a candidate proceed).
+    Here a neighbour raises during prompt assembly (now inside _classify's
+    fail-closed try) — the model is never even reached.
+    """
+
+    class _Boom(dict):
+        def get(self, key, default=None):
+            if key == "title":
+                raise RuntimeError("unexpected prompt-assembly error")
+            return dict.get(self, key, default)
+
+    reader = CanonReader(
+        search=MagicMock(return_value=[_Boom(name="x", tier="canonical", body="b")]),
+        fetch_body=MagicMock(return_value="full body"),
+    )
+    # Would be UNRELATED if classification reached the model — it must NOT.
+    client = _make_client(["UNRELATED"])
+    assess = make_canon_assessor(reader, client)
+    result = _run(assess, "Candidate body.", "z" * 64)
+
+    assert result.verdict == "NEEDS_REVIEW"
+    assert result.matched_canon_name is None
+    client.consult.assert_not_called()
+
+
 def test_consult_requested_with_structured_response_format():
     """The assessor must request strict json_schema structured output on the fast VK."""
     from mori_intake.assess_model import _VERDICT_RESPONSE_FORMAT

@@ -264,28 +264,35 @@ def make_canon_assessor(
         """
         import inspect as _inspect
 
-        name = neighbour.get("name", "")
+        # Defensive: a non-dict neighbour must not crash here either.
+        name = neighbour.get("name", "") if isinstance(neighbour, dict) else ""
+
+        # The ENTIRE body is wrapped: prompt assembly (a stray `.format` KeyError
+        # on template drift), the model call, and the parse all fail closed to
+        # NEEDS_REVIEW. A governance assessor must never crash the coroutine —
+        # an unhandled exception escaping here would be a fail-OPEN crash, not a
+        # fail-closed verdict.
         try:
-            _raw_body = reader.fetch_body(name)
-            full_body: str = await _raw_body if _inspect.isawaitable(_raw_body) else _raw_body
-        except Exception as exc:
-            logger.warning("assess_model: fetch_body failed for %s: %s", name, exc)
-            full_body = ""
+            try:
+                _raw_body = reader.fetch_body(name)
+                full_body: str = await _raw_body if _inspect.isawaitable(_raw_body) else _raw_body
+            except Exception as exc:
+                logger.warning("assess_model: fetch_body failed for %s: %s", name, exc)
+                full_body = ""
 
-        # Fallback: if fetch_body returned nothing, use whatever came back
-        # in the search result dict (description or body field if present).
-        existing_body = full_body or neighbour.get("body") or neighbour.get("description") or ""
+            # Fallback: if fetch_body returned nothing, use whatever came back
+            # in the search result dict (description or body field if present).
+            existing_body = full_body or neighbour.get("body") or neighbour.get("description") or ""
 
-        prompt = (
-            CONTRADICTION_SCAN_PROMPT.format(
-                new_title="Candidate memory",
-                new_body=body[:2000],
-                existing_title=neighbour.get("title", ""),
-                existing_body=existing_body[:2000],
+            prompt = (
+                CONTRADICTION_SCAN_PROMPT.format(
+                    new_title="Candidate memory",
+                    new_body=body[:2000],
+                    existing_title=neighbour.get("title", ""),
+                    existing_body=existing_body[:2000],
+                )
+                + _STRUCTURED_DIRECTIVE
             )
-            + _STRUCTURED_DIRECTIVE
-        )
-        try:
             response = llm_client.consult(
                 system=prompt,
                 user=f"new: (candidate)\nexisting: {name}",
@@ -299,7 +306,7 @@ def make_canon_assessor(
             return _parse_verdict(response, name)
         except Exception as exc:
             logger.warning(
-                "assess_model: model call failed for neighbour %s — NEEDS_REVIEW: %s",
+                "assess_model: classify failed for neighbour %s — NEEDS_REVIEW: %s",
                 name,
                 exc,
             )
@@ -341,8 +348,19 @@ def make_canon_assessor(
 
         seen_needs_review = False
         for neighbour in neighbours:
-            verdict = await _classify(body, neighbour)
-            name = neighbour.get("name")
+            # Belt-and-braces: `_classify` is already self-contained (fails closed
+            # to NEEDS_REVIEW), but an outer net guarantees no unhandled exception
+            # from a neighbour ever escapes the assessor as a fail-open crash.
+            try:
+                verdict = await _classify(body, neighbour)
+            except Exception as exc:
+                logger.warning(
+                    "assess_model: unhandled exception classifying neighbour — NEEDS_REVIEW: %s",
+                    exc,
+                )
+                seen_needs_review = True
+                continue
+            name = neighbour.get("name") if isinstance(neighbour, dict) else None
             logger.debug(
                 "assess_model: candidate vs %s → %s",
                 name,
