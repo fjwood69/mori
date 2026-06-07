@@ -249,6 +249,49 @@
       50%       { opacity: 0.6; transform: scaleY(1)   translateY(0); }
     }
 
+    /* ── But I already have a CLAUDE.md ── */
+
+    .steps-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+
+    .claudemd-lede {
+      max-width: 680px;
+      margin-bottom: 2.5rem;
+    }
+
+    .claudemd-lede p {
+      font-size: 1.05rem;
+      line-height: 1.8;
+    }
+
+    .callout {
+      display: inline-block;
+      background: var(--surface);
+      border: 1px solid var(--border-green);
+      border-radius: 6px;
+      padding: 0.9rem 1.5rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.9rem;
+      color: var(--green);
+      margin-bottom: 2rem;
+    }
+
+    .claudemd-footer {
+      font-size: 0.9rem;
+    }
+
+    .claudemd-footer a {
+      color: var(--green);
+      text-decoration: none;
+      transition: opacity 0.15s;
+    }
+
+    .claudemd-footer a:hover { opacity: 0.7; }
+
     /* ── How it works ── */
 
     .steps {
@@ -493,7 +536,8 @@
 
       .two-col.rev .fig-wrap { order: 0; }
 
-      .steps {
+      .steps,
+      .steps-2 {
         grid-template-columns: 1fr;
         gap: 1rem;
       }
@@ -549,7 +593,29 @@
     </div>
   </section>
 
-  <!-- ═══ 3. HOW IT WORKS ═══ -->
+  <!-- ═══ 3. BUT I ALREADY HAVE A CLAUDE.MD ═══ -->
+  <section id="claudemd">
+    <div class="container">
+      <h2>But I already have a CLAUDE.md.</h2>
+      <div class="claudemd-lede">
+        <p>You're right to be sceptical of memory systems. You already have a <code>CLAUDE.md</code> (or <code>.cursorrules</code>) that works — keep it. Mori doesn't replace it. It's the layer above it.</p>
+      </div>
+      <div class="steps-2">
+        <div class="step">
+          <h3>CLAUDE.md — the floor</h3>
+          <p>Static facts you hand-edit. Always present, independent of any server. SSH commands, sudo rules, non-negotiable conventions — things that never change.</p>
+        </div>
+        <div class="step">
+          <h3>mori — the layer that compounds</h3>
+          <p>Decisions made, patterns established, lessons learned. Distilled each session, curated by the dream pipeline, surfaced at the start of the next — on any machine, for any agent.</p>
+        </div>
+      </div>
+      <div class="callout">If it never changes → CLAUDE.md.&nbsp;&nbsp;If it compounds → mori.</div>
+      <p class="claudemd-footer">Complementary, not competing — the static floor and the layer that grows above it. <a href="https://github.com/fjwood69/mori/blob/main/docs/concepts/claude-md-vs-mori.md" target="_blank" rel="noopener">Read more →</a></p>
+    </div>
+  </section>
+
+  <!-- ═══ 4. HOW IT WORKS ═══ -->
   <section id="how">
     <div class="container">
       <h2>How it works</h2>
@@ -576,7 +642,7 @@
     </div>
   </section>
 
-  <!-- ═══ 4. NO INSTRUMENTATION ═══ -->
+  <!-- ═══ 5. NO INSTRUMENTATION ═══ -->
   <section id="nocode">
     <div class="container">
       <div class="nocode-inner">
@@ -587,7 +653,7 @@
     </div>
   </section>
 
-  <!-- ═══ 5. WORKS WITH YOUR AGENT ═══ -->
+  <!-- ═══ 6. WORKS WITH YOUR AGENT ═══ -->
   <section id="agents">
     <div class="container">
       <h2>Works with your agent</h2>
@@ -600,7 +666,7 @@
     </div>
   </section>
 
-  <!-- ═══ 6. QUICKSTART ═══ -->
+  <!-- ═══ 7. QUICKSTART ═══ -->
   <section id="quickstart">
     <div class="container">
       <div class="qs-inner">
@@ -624,7 +690,7 @@ docker compose -f deploy/homelab/docker-compose.yml up -d</span>
     </div>
   </section>
 
-  <!-- ═══ 7. FOR TEAMS ═══ -->
+  <!-- ═══ 8. FOR TEAMS ═══ -->
   <section id="teams">
     <div class="container">
       <div class="two-col rev">
@@ -648,7 +714,7 @@ docker compose -f deploy/homelab/docker-compose.yml up -d</span>
     </div>
   </section>
 
-  <!-- ═══ 8. FOOTER ═══ -->
+  <!-- ═══ 9. FOOTER ═══ -->
   <footer>
     <div class="footer-row">
       <span class="footer-brand">森 mori</span>
