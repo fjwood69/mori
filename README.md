@@ -188,6 +188,8 @@ PreCompact  →  POST /api/precompact  →  dream_run() reads since watermark
                                       watermark advanced
 ```
 
+![The compaction boundary — nothing lost at the moment it matters most](https://raw.githubusercontent.com/fjwood69/mori/8f5df1412e69553a4dbf66aaf9f21b84ad50cead/docs/assets/figure-9-compaction-lifecycle.svg)
+
 The `PreCompact` hook triggers an immediate synchronous dream before context
 compression — so nothing is lost at the moment it matters most.
 
