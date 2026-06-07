@@ -71,7 +71,7 @@ Updated with each release.
   - Stream B3: dream-trigger promotion, feature-flagged (`MORI_INTAKE_PROMOTION_ENABLED=false`)
   - Hermes v0.3.0: writes to intake, not canon; fail-closed if `MORI_INTAKE_URL` unset
 - Security hardening: AUTH-001 (file read via path traversal), PERF-003 (freshness thundering herd), PERF-004 (limit=0 full-table fetch)
-- `agent-working-practices.md` — injected at session start via `/ready` and `/brief`
+- `agent-working-practices.md` — injected at session start via `/brief`
 
 ---
 
