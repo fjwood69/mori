@@ -55,6 +55,54 @@
   took the silent default won't re-prompt on update** — clear the plugin cache and
   reinstall, or set `pluginConfigs."mori@mori".options.server_url` manually.
 
+## v2.2.16 — human-review gate for agent-intake promotion (Full two-phase B)
+
+The gap between "candidate assessed UNRELATED" and "in canon" is now an explicit,
+human-gated, two-phase flow. **Default routing for an UNRELATED intake candidate
+is the human-review queue**; the old unattended auto-promotion is opt-in behind
+`MORI_INTAKE_PROMOTION_ENABLED`.
+
+**Phase 1 — surface (`mori_intake/assessor.py`).** On `UNRELATED` (gate, default)
+the assessor writes a mori `pending_write` (`source='agent-intake'`) plus a
+**bridge-owned `intake_promotion_tickets` row** — the trusted carrier of
+candidate_id + submission_ids + trust snapshot + `body_hash`. The pending_write's
+provenance JSON carries **only an opaque `ticket_uuid`**, never the ids the
+finalizer trusts. The candidate is then claimed `under_review`. Mori writes happen
+*before* the claim: a crash re-surfaces with a fresh ticket on the next pass
+(self-healing, no silent loss). Flag-on keeps the legacy `promotion_queue` path.
+
+**Phase 1.5 — vote (store `approve()`).** A Trusted Dreamer approving an
+`agent-intake` pending_write records a **vote** (`status='human_approved'`) — *no*
+canon write. All other sources still apply-on-approve. New `set_pending_status`
+store method (SQLite + Postgres) for the finalizer-only terminal transitions.
+
+**Phase 2 — finalize (`mori_intake/canon_writer.py::finalize_once`).** The bridge —
+the only component holding both DSNs — reads `human_approved` rows, looks up the
+trusted ticket (three forgery guards: provenance carries a ticket_uuid, the ticket
+exists, `ticket.canon_name == pending_write.name`), then **re-runs the GOV-002 gate
+against the live intake candidate** (approved-body integrity, live-candidate body
+integrity pinned to `ticket.body_hash`, eligibility re-check) before writing canon +
+lineage and marking the candidate `promoted`. Idempotency via `intake_promotion_map`
+mirrors `drain_once`. A reconcile sweep marks TD-rejected candidates `rejected`
+(bounded — terminalised to `rejected_reconciled`).
+
+Security posture (post-build `/consult`, deep): an attacker with write access to
+only `pending_writes` cannot inject arbitrary canon content — the finalizer discards
+the pending body and writes the ticket-bound, GOV-002-revalidated live candidate
+body. Defence-in-depth follow-ups (candidate-body immutability trigger under
+`under_review`; finalizer advisory lock — the latter applies equally to the existing
+`drain_once`) are on the roadmap.
+
+Wiring: the intake CLI passes the mori store into `assess_once` and runs
+`finalize_once`; the dream B3 path is explicit `promotion_enabled=True`. Dashboard
+`review.html` gains an `agent-intake` source badge and a quieter empty-state.
+
+Tests: `tests/test_human_review_gate.py` — 9 Postgres integration tests (surface,
+legacy routing, fail-closed without a store, vote-only approve, finalize-promote,
+idempotent re-drive, body-integrity reject, forged-provenance reject, reject
+reconcile). UAT: both backends + the intake service boot cleanly with migration
+id=11 (`intake_promotion_tickets`).
+
 ## v2.2.15 — B2 assessor fails closed on unhandled exceptions (hardening)
 
 Fast-follow from a post-ship `/consult` code review of v2.2.14. Closes a latent

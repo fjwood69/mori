@@ -70,6 +70,7 @@ Updated with each release.
   - Stream B2: fast-model vs-canon assessor, fail-closed (NEEDS_REVIEW stays pending)
   - Stream B3: dream-trigger promotion, feature-flagged (`MORI_INTAKE_PROMOTION_ENABLED=false`)
   - Hermes v0.3.0: writes to intake, not canon; fail-closed if `MORI_INTAKE_URL` unset
+- Human-review gate (Full two-phase B): UNRELATED candidates are surfaced as mori pending_writes + bridge-owned `intake_promotion_tickets`; Trusted-Dreamer approve = a vote (`human_approved`); the bridge finalizer re-runs GOV-002 against the live candidate before writing canon + lineage. Default routing; unattended auto-promotion is opt-in behind the flag. Provenance carries only an opaque ticket_uuid (no trusted ids); three forgery guards + idempotency via `intake_promotion_map`.
 - Security hardening: AUTH-001 (file read via path traversal), PERF-003 (freshness thundering herd), PERF-004 (limit=0 full-table fetch)
 - `agent-working-practices.md` — injected at session start via `/brief`
 
@@ -90,10 +91,15 @@ The differentiator. Stage 1 write-only intake is live. Path: policy + human revi
 ### Policy-as-config seam
 Simple declarative ruleset + tiny evaluator now. OPA/Rego as the enterprise evolution of the same seam — embedded in mori, not a separate engine. The pitch: regulated industries already maintain policy definitions; Mori makes those policies agent-aware without a separate governance committee. Roadmap OPA explicitly; build the seam, not the engine.
 
-### Human-review surfacing
-Intake candidates → dreamer review UI + approve/reject → promote. The gap between "candidate assessed as UNRELATED" and "TD has reviewed and approved" must be explicit and human-gated.
+### Human-review surfacing — ✅ shipped v2.2.16
+Intake candidates → dreamer review UI + approve/reject → promote, now explicit and
+human-gated (Full two-phase B). The default path: the bridge surfaces a pending_write
++ trusted ticket, a TD votes, the finalizer re-runs GOV-002 against the live candidate
+before canon. Unattended auto-promotion remains opt-in behind `MORI_INTAKE_PROMOTION_ENABLED`.
 
 ### Additional governance hardening
+- Candidate-body immutability — Postgres trigger rejecting `UPDATE` of `canonicalized_body`/`content_hash` once a candidate is `under_review` (defence-in-depth; the finalizer's `body_hash` pin already rejects a mutated body, so this hardens earlier in the lifecycle)
+- Finalizer/drainer advisory lock — a Postgres advisory lock around `finalize_once`/`drain_once` so a future multi-worker bridge can't race a double canon write (today a single drainer + `unique(memories.name)` upsert makes this latent)
 - Intake backpressure — 503 when candidate depth > N; prevents unbounded queue growth
 - Tailscale ACL `tag:intake←tag:hermes` before unattended promotion — network-level isolation
 - Flip sequence: operator-CLI promotion first → dream B3 second
@@ -167,4 +173,4 @@ Decided on paper now. Open core stays thin.
 
 ---
 
-*Last updated: v2.2.15 — 2026-06-07*
+*Last updated: v2.2.16 — 2026-06-07*
