@@ -80,7 +80,7 @@ Updated with each release.
 The differentiator. Stage 1 write-only intake is live. Path: policy + human review → flip `MORI_INTAKE_PROMOTION_ENABLED`.
 
 ### P0 gate items (blocking Stage 2)
-- Structured-output assessor verdicts — removes free-text parsing from B2; deterministic verdict schema
+- ✅ **Structured-output assessor verdicts** (shipped v2.2.14) — strict `json_schema` + Pydantic validation replaces free-text parsing in B2; fail-closed to NEEDS_REVIEW on any malformed output
 - Agent retrieval excludes WORKING/agent-intake tier — prevents intake candidates polluting `/brief`
 - Atomic assessment state machine — `ASSESSING` lease prevents concurrent B2 workers racing on the same candidate
 - Bifrost circuit-breaker in assessor — fast model VK failures don't stall the assessment pipeline
@@ -167,4 +167,4 @@ Decided on paper now. Open core stays thin.
 
 ---
 
-*Last updated: v2.2.13 — 2026-06-07*
+*Last updated: v2.2.14 — 2026-06-07*

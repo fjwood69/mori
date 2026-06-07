@@ -55,6 +55,30 @@
   took the silent default won't re-prompt on update** — clear the plugin cache and
   reinstall, or set `pluginConfigs."mori@mori".options.server_url` manually.
 
+## v2.2.14 — structured-output verdicts in the B2 governance assessor (P0)
+
+First Stage-2 gate item. Replaces the fast-model assessor's free-text verdict + brittle
+`.upper()`/first-word parsing with a **strict `json_schema` structured output**, validated
+by Pydantic — removing the fail-open-on-malformed risk in B2.
+
+- **`BifrostClient.consult`** gains a generic, provider-agnostic `response_format`
+  passthrough (omitted when unset; callers own the schema).
+- **`mori_intake/assess_model.py`**: requests `{"verdict": <enum>}` via strict `json_schema`
+  (verified honoured by the fast VK), then `json.loads` + `_VerdictModel`
+  (`Literal`, `extra='forbid'`) as the single source of truth for the verdict contract.
+  ANY decode / schema-validation / missing-field error → **NEEDS_REVIEW** (fail-closed),
+  logging the failure taxonomy (decode vs validation) for telemetry. No free-text fallback.
+- **Prompt/schema alignment**: `CONTRADICTION_SCAN_PROMPT` is reused for task semantics, with
+  an assessor-local directive that explicitly overrides its "answer with one word"
+  instruction so prompt and schema don't conflict. The shared dream-pipeline prompt is
+  untouched.
+- **Dormant**: only the manual `python -m mori_intake.cli --real-assessor` path runs this;
+  the running services don't, and promotion stays flag-off. Safe to ship.
+- Tests: `_parse_verdict` contract (unknown enum, extra keys forbidden, missing field,
+  non-JSON, non-object → NEEDS_REVIEW) + a wiring assertion; existing assessor mocks updated
+  to structured JSON. Full suite 627 passed (4 pre-existing PG soft-delete/restore failures
+  unrelated). Bifrost honouring of `json_object` + strict `json_schema` verified live.
+
 ## v2.2.13 — Homebrew tap support (env-file loader + `deploy/homebrew/`)
 
 Adds a self-hosted **Homebrew install path** for mori, validated end-to-end on Linuxbrew
