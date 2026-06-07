@@ -1,7 +1,9 @@
-![Mori Roadmap](https://raw.githubusercontent.com/fjwood69/mori/07780a6477fd5a2dd0ad693ed3ad237c30a8bda4/docs/assets/roadmap-banner.svg)
+![Mori Roadmap](https://raw.githubusercontent.com/fjwood69/mori/12c16127afff279df6a4b4b9c6ccdd71b6b78f80/docs/assets/roadmap-banner.svg)
 
 This file tracks what has shipped, what is in progress, and what is planned.
 Updated with each release.
+
+**North star:** the reference architecture for agent-memory governance. Thin, opinionated core you run at scale; revenue from making that easier, never from a heavier core. Governance is the thesis; everything else is implementation.
 
 ---
 
@@ -23,258 +25,146 @@ Updated with each release.
 
 ### v1.1.0
 - `mori-msg` — inter-agent messaging via NATS JetStream
-  - Seven-field typed message schema (`task`, `decision`, `question`, `reply`, `ack`, `done`, `broadcast`)
-  - MCP tools: `msg_send`, `msg_recv`, `msg_thread`
-  - `mori-msg` daemon pod — continuous NATS listener, processes messages server-side without a human session
-  - `decision` messages written directly to memory store on receipt
-  - `/brief` surfaces pending messages at session start
-  - `/wrap` broadcasts session summaries to `mori.msg.broadcast`
-  - Headless CC support — opt-in via `MORI_MSG_HEADLESS_ENABLED`
-- Installer allow lists updated for new MCP tools
-- Documentation pass — `/msg` slash command reference, env vars, for-teams guide
+- `mori-msg` daemon pod — sole writer to `msg.db`
+- `/brief` surfaces pending messages at session start
+- `/wrap` broadcasts session summaries to `mori.msg.broadcast`
+- Headless CC support — opt-in via `MORI_MSG_HEADLESS_ENABLED`
 - moriapp.dev landing page — Cloudflare Pages, static, no build step
 
-### v2.0.0
-- Dual-backend store layer — SQLite (solo) or PostgreSQL (team), selected via `MORI_DATABASE_URL`
-  - `BaseStore` ABC, `SQLiteStore` delegation wrapper, `PostgresStore` (asyncpg pool)
-  - `get_store()` factory — zero breaking change for existing SQLite deployments
-  - `mori export` / `mori import` CLI tools — SQLite → Postgres migration, idempotent
-  - pgBouncer in session mode (asyncpg prepared statement compatibility)
-  - Streaming replica on local host — `mori-pg-replica` on port 5435, lag=0
-- WAL-G replacing Litestream — daily pg_dump to GCS, 14-day lifecycle policy
-  - GCS metadata server auth — no credentials in env vars
-  - RPO/RTO explicitly defined and tested
-- `deploy/solo/` — SQLite + Litestream sidecar (replaces `deploy/homelab/`)
-- `deploy/team/` — Postgres + pgBouncer + WAL-G sidecar
+### v2.0.x
+- Dual-backend store layer — SQLite (solo) or PostgreSQL (team), `MORI_DATABASE_URL`
+- `BaseStore` ABC, `SQLiteStore` delegation wrapper, `PostgresStore` (asyncpg pool)
+- `mori export` / `mori import` CLI tools — idempotent SQLite → Postgres migration
+- NUC streaming replica via Tailscale — `mori-pg-replica` on port 5435, lag=0
+- Daily pg_dump to GCS, 14-day lifecycle, GCS metadata server auth
+- `deploy/solo/` (SQLite) and `deploy/team/` (Postgres + pgBouncer + WAL-G)
 
-### v2.0.1
-- `pending_writes` DDL fix — allow NULL `reviewed_by` in Postgres (pre-existing SQLite data quality gap)
-- asyncpg dependency uncommented in `requirements.txt`
-- Backup script updated — `pg_dump` path for Postgres backend, shell retention removed
-- Streaming replication documented in `docs/reference/team-configuration.md`
+### v2.1.x
+- Named API key authentication — `MORI_API_KEYS=name:secret,...`, ASGI middleware, capability scoping (`read < write < dreamer`), `policy.py` with `require_role()`
+- PostCompact + SessionStart re-grounding hooks
+- `/brief --post-compact` — lightweight delta re-grounding after compaction
+- Async Postgres pipeline — ingestion, dream, contradiction scan all native asyncpg
+- Postgres savepoint isolation in dream pipeline
+- Native Prometheus `/metrics` exposition — direct GCO scraping, no OTel bridge
+- Full-text search — FTS5 (SQLite) + tsvector GIN (Postgres)
+- Schema migration runner — versioned, idempotent, dual-backend
+- Assistant reasoning capture — Stop hook captures transcript tail
+- Git commit ingestion — `POST /api/ingest/git`, watermark per repo, post-push hook
+- Deployment contract — `scripts/verify-deployment.py` gates UAT pre-tag and CD post-deploy
+- Systemd Quadlet migration — one orchestrator owns all GCE containers
+- Postgres-first GCP startup script — bind mount, `pg_isready` gate, `MORI_REQUIRE_POSTGRES`, pg_dump cron
+- UAT environment — `start-uat.sh` / `stop-uat.sh`, dual-backend smoke test pre-tag
 
-### v2.2.11 — agent-memory governance pipeline (dormant) + 3 security/perf criticals + plugin v0.3.x
-
-- **AUTH-001 (ACTIVE):** arbitrary file read via `consult_advisor` `files` param closed —
-  `resolve()` + `MORI_CONSULT_FILE_ROOTS` allowlist + basename/suffix/segment blocklist +
-  `O_NOFOLLOW` (TOCTOU guard); same guard extended to skill-loader and standards-import.
-  Startup `WARNING` if `MORI_CONSULT_FILE_ROOTS` unset.
-- **PERF-004 (ACTIVE):** `read_events(limit=0)` full-table fetch replaced with
-  `count_events_since(id > N)` on all backends; `limit` semantics normalised (None →
-  unlimited, 0 → empty, n → LIMIT n).
-- **PERF-003 (ACTIVE):** `check_freshness` bounded-concurrent (semaphore 5) + batched
-  single-transaction updates + 24h cache with lock + in-flight sentinel; new
-  `MORI_FRESHNESS_ON_BRIEF` flag to disable brief-time freshness check.
-- **Governance pipeline (SHIPPED, DORMANT):** new `mori_intake/` service — separate Postgres,
-  `POST /intake/submissions`, eligibility gate (default-deny namespaces + proposition
-  classifier + GOV-001 deny + format regex), per-key rate limit, B1 intra-pile dedup worker,
-  B2 fast-model vs-canon assessor (fail-CLOSED — `NEEDS_REVIEW` blocks auto-promotion; only
-  model-confirmed `UNRELATED` proceeds), B3 dream-trigger with `FOR UPDATE SKIP LOCKED` lease
-  + idempotent promotion + `memory_intake_lineage` + GOV-002 promotion-time eligibility and
-  body-integrity re-check. B3 is **additive + feature-flagged** (`MORI_INTAKE_PROMOTION_ENABLED`,
-  default off). Postgres-only. `Dockerfile` ships `mori_intake/`.
-- **hermes-mori-provider v0.3.0:** write path now targets `POST /intake/submissions` (not mori
-  `/api/memories`); fail-CLOSED on missing `MORI_INTAKE_URL`; SSRF no-redirect opener;
-  content_hash NFKC-unified with intake.
-- **Plugin v0.1.1 – v0.3.3:** Cursor/Antigravity hooks, health sentinel, env-var config
-  (drops `userConfig`), skills-only architecture, bare-secret configs. *(See CHANGELOG for
-  per-version detail.)*
-
-### v2.2.5 – v2.2.8 — Write-API hardening (#23, complete)
-The governed write surface is now **role-scoped · audited · reversible · replay-safe · rate-limited**.
-- **v2.2.5** (#23 A/B): persistent `write_audit` trail + `GET /api/audit` (dreamer); soft-delete (`deleted_at`, partial unique index, restore-on-collision, `?hard=true` purge); tombstone-filtered reads + FTS, dual-backend (migrations 8 + 9).
-- **v2.2.6** (#23 C): `Idempotency-Key` on `POST /api/memories` (replay returns the cached response, write runs once; 422 mismatch; 409 in-progress) on a pluggable throttle foundation (`mori_advisor/throttle/`, in-memory adapters; Postgres adapter deferred to scale-out).
-- **v2.2.7** (#23 D): per-key token-bucket rate limiting in `ApiKeyMiddleware` (`429` + `Retry-After`), opt-in via `MORI_RATE_LIMIT`, `writes`/`all` scope.
-- **v2.2.8**: fixed a `_lifespan` decorator regression that crashed startup in v2.2.6/7; added a startup-boot regression test.
-
-### v2.2.0
-- **Cross-tool plugin distribution** — unified `plugins/mori/` package for Claude Code (complete + marketplace-ready), Cursor, and Antigravity; `SessionStart` re-ground hook replacing PostCompact additionalContext (closes #17); bespoke Claude installer moved to `scripts/legacy/`; see #24
-
-### v2.2.4
-- **Polish + fixes** — TD `/review` concertina cards + category filter; `nats_sub(replay)` reads the stream tail so fresh messages appear (#32); dropped `displayName` from plugin manifests for Claude Code <2.1.143 compatibility + a marketplace description (plugin v0.1.3).
-
-### v2.2.3
-- **Trusted-Dreamer review queue (#15)** — ingestion's canonical/standard candidates route to a pending queue for trusted-dreamer sign-off (working stays direct); a standalone dreamer-gated `review.html` with source/provenance/diff + approve/reject; `GET /api/pending/json`; migration 7 (partial pending index, dual-backend). Closes the governance loop — memory that's *curated*, not just *accumulated*.
-
-### v2.2.2
-- **Onboarding gap closed** — session-start server **health sentinel** (pings only the user's own server, cached, fail-open) injects honest setup guidance (self-hosted Docker + LLM-provider-key path) when the server is unreachable, before the user hits a broken `/brief`; silent when up. Skill-level backstops; value-first plugin-manager description. Default localhost is health-checked, not mis-reported.
-
-### v2.2.1
-- **Cursor & Antigravity hook layers** — per-client Node hooks over a shared `lib/` (canonical-event normalizer, fail-open, conversation-keyed throttle); installed via the documented standalone hooks configs; client events normalized to Mori's schema before POST. **Multi-client tidy-upper** (`scripts/legacy/tidy-up.mjs`) — dry-run-default cleanup of bespoke installs across all three clients, exact-signature matching with backups. Plugin v0.1.1.
+### v2.2.x
+- Plugin system — `plugins/mori/` for Claude Code, Cursor, Antigravity; marketplace-ready (`/plugin marketplace add fjwood69/mori`)
+- One-click deploy — Railway, Render, Fly.io, Cloud Run buttons; free Postgres via Neon/Supabase
+- Homebrew tap — `brew install fjwood69/mori/mori`; `mori-setup.sh` config wizard
+- Web dashboard — memory browser at mori root URL; search, browse, unfurl; read-only REST API
+- Trusted-dreamer review queue — pending proposals → dreamer review UI → approve/reject → canon
+- Persistent audit trail — `write_audit` table, every governed operation logged
+- Soft-delete with tombstone filtering — partial unique index, name reuse, restore
+- Agent-memory governance pipeline (Stage 1 live, promotion dormant):
+  - Physically separate intake service (`:8971`), separate Postgres, least-privilege `intake_app` role
+  - Stream A: eligibility gate, proposition classifier, GOV-001 deny list, per-key rate limit
+  - Stream B1: intra-pile dedup worker, content_hash coalescing
+  - Stream B2: fast-model vs-canon assessor, fail-closed (NEEDS_REVIEW stays pending)
+  - Stream B3: dream-trigger promotion, feature-flagged (`MORI_INTAKE_PROMOTION_ENABLED=false`)
+  - Hermes v0.3.0: writes to intake, not canon; fail-closed if `MORI_INTAKE_URL` unset
+- Security hardening: AUTH-001 (file read via path traversal), PERF-003 (freshness thundering herd), PERF-004 (limit=0 full-table fetch)
+- `agent-working-practices.md` — injected at session start via `/ready` and `/brief`
 
 ---
 
-## Governance pipeline — pre-enable gate (v2.2.11 shipped dormant)
+## Horizon 1 — Finish governance to "promotable"
 
-The following items gate unattended promotion being enabled in production.
-None of these block the security/perf criticals (which are already active).
+The differentiator. Stage 1 write-only intake is live. Path: policy + human review → flip `MORI_INTAKE_PROMOTION_ENABLED`.
 
-| Priority | Item |
-|----------|------|
-| P0 | **Structured-output verdicts (B2)** — replace free-text verdict parsing in the fast-model assessor with a structured-output schema; eliminates parse ambiguity and the `NEEDS_REVIEW` fallback for malformed model responses |
-| P0 | **Private-IP SSRF guard on `MORI_INTAKE_URL`** — validate at startup that the intake URL does not resolve to a private/loopback address (complement to the provider-side no-redirect opener already shipped) |
-| P0 | **Dream-concurrency guard OPS-002** — the B3 promotion worker and the standard dream run must not race on the same canon write connection; requires the dream lease to extend across the canon-write window |
-| P1 | **Human-review gate / trust curve (Slice-3)** — working→canonical promotion for agent memories requires human approval or cross-source corroboration; agent memories must not self-promote to canon without a trust threshold |
-| P1 | **End-to-end pipeline test** — A → B1 → B2 → B3 → canon round-trip in CI (Postgres-gated); currently no automated test exercises the full path |
-| P1 | **Embedding similarity dedup (Slice-3)** — replace/supplement the `search_json` vs-canon step in B2 with a pgvector HNSW nearest-neighbour query to catch semantically similar but differently-worded duplicates (known false-negative gap documented in `docs/agent-memory-governance.md`) |
+### P0 gate items (blocking Stage 2)
+- Structured-output assessor verdicts — removes free-text parsing from B2; deterministic verdict schema
+- Agent retrieval excludes WORKING/agent-intake tier — prevents intake candidates polluting `/brief`
+- Atomic assessment state machine — `ASSESSING` lease prevents concurrent B2 workers racing on the same candidate
+- Bifrost circuit-breaker in assessor — fast model VK failures don't stall the assessment pipeline
+- Dream-concurrency guard OPS-002 — dream lease and B3 promotion worker must not race on the same canon write connection
+- E2E A→B1→B2→B3 test — full pipeline round-trip test before enabling unattended promotion
 
-### Known open bugs
+### Policy-as-config seam
+Simple declarative ruleset + tiny evaluator now. OPA/Rego as the enterprise evolution of the same seam — embedded in mori, not a separate engine. The pitch: regulated industries already maintain policy definitions; Mori makes those policies agent-aware without a separate governance committee. Roadmap OPA explicitly; build the seam, not the engine.
 
-- **PG soft-delete / restore** — a pre-existing bug in `PostgresStore.restore()` where a
-  name-collision rename can re-use a deleted row's id under certain asyncpg transaction
-  orderings. Does not affect SQLite. Tracked as a follow-up; does not block governance
-  pipeline activation but should be fixed before any restore-heavy workflow relies on
-  Postgres.
+### Human-review surfacing
+Intake candidates → dreamer review UI + approve/reject → promote. The gap between "candidate assessed as UNRELATED" and "TD has reviewed and approved" must be explicit and human-gated.
 
----
-
-## v2.0 — In progress
-
-Core hardening. Remaining items before v2.0 is complete. Target: one shared instance, 2–10 devs, zero ops overhead.
-
-- PostgreSQL migration
-  - Column encryption via GCP KMS envelope encryption — no keys in env vars
-  - TLS on all Postgres connections
-- WAL-G — continuous GCS backup, explicit RPO < 5min / RTO < 30min
-- REST API
-  - `GET /api/memories?query=...` — ✅ shipped v2.1.29 (+ `GET /api/memories/{name}`)
-  - `POST /api/memories` — write path, deferred
-  - `GET /api/events` — ✅ shipped v2.1.29
-  - Webhook support — push notifications on significant memory writes
-  - OpenAPI spec
-  - Foundation for dashboard and third-party integrations — ✅ dashboard shipped v2.1.29
-- API rate limiting — per-key limits — ✅ shipped v2.2.7 (#23 D)
-- Headless CC cost guards — per-message spend caps
+### Additional governance hardening
+- Intake backpressure — 503 when candidate depth > N; prevents unbounded queue growth
+- Tailscale ACL `tag:intake←tag:hermes` before unattended promotion — network-level isolation
+- Flip sequence: operator-CLI promotion first → dream B3 second
 
 ---
 
-## v2.1 — In progress
+## Horizon 2 — Sharpen the "earned memory" core
 
-Small team coherence. Requires v2.0 foundation.
-
-**Shipped:**
-- v2.1.0: Named API key authentication — `MORI_API_KEYS=name:secret,...`, ASGI middleware covering all MCP tools and HTTP endpoints, backward compat with `MORI_ADVISOR_API_KEY`
-- v2.1.0: PostCompact re-grounding hook — `~/.claude/mori-post-compact-brief.sh`, opt-out via `MORI_POST_COMPACT_BRIEF=false`
-- v2.1.6: Postgres dream transaction poisoning fix — `INSERT … ON CONFLICT DO UPDATE` upsert; origin array merging, canonical tier and protection flag preservation on update
-- v2.1.8: Async Postgres ingestion pipeline; MCP endpoint now requires API key (removed from `OPEN_PATHS`)
-- v2.1.9: Postgres `brief()` interface fixes — `get_memories_by_project()` and `check_freshness()` corrected for asyncpg
-- v2.1.10: Antigravity installer profile parity (`--target cli/ide/both`); PostCompact hook for Antigravity; robust YAML frontmatter parsing in PowerShell skill installer
-- v2.1.11: Postgres savepoint isolation in dream pipeline; asyncpg datetime fix; `APP_PORT` configurable via env var; smoke-test robustness improvements
-- v2.1.12: Session-based auth bypass for SSE POST/DELETE — fixes 401 on IDE restart for clients that don't propagate custom headers
-- v2.1.13: Native Prometheus `/metrics` exposition — `text/plain; version=0.0.4`, direct scraping without OTel bridge; pluggable store count and filter methods
-- v2.1.14: Windows installer PostToolUse `matcher` field fix; session auth bypass improvement
-- v2.1.15: Postgres-first GCP deployment — persistent-disk bind mount, `pg_isready` gate, `MORI_REQUIRE_POSTGRES`, pg_dump backup cron, Tailscale and SSH host key persistence across VM rebuilds
-- v2.1.16–v2.1.19: Git commit ingestion + consult capture — `POST /api/git/ingest`, `GET /api/git/watermark`, `MORI_CONSULT_CAPTURE`; pinned FastMCP==3.2.0 + Python 3.12 to fix `custom_route` silent failure on Python 3.14
-- v2.1.20–v2.1.23: Deploy unified on rootless `--env-file --replace`; deployment contract gate (`scripts/verify-deployment.py`) shared by UAT + CD
-- v2.1.24: Assistant reasoning capture — Stop hook ships a bounded transcript tail; server extracts the turn's assistant text into `session_events.assistant_text`; dream distills it
-- v2.1.25: GCE app containers (`mori-advisor`/`ingestion`/`msg`) managed by rootless **systemd Quadlet** — one declarative source of truth (units injected verbatim by Terraform), `dream` cron → `dream.timer`, CD switched to `podman pull` + `systemctl --user restart`; `mori-pg` stays imperative. Lays the substrate for horizontal worker scaling (template units)
-- v2.1.26: Reboot-safe GCE deployment — startup reuses the persisted `/data/mori-advisor/.env` on reboot (Secret Manager consulted only on first boot, so a denied/unreachable secret can't take a running instance down); system-assigned mori uid with `pgdata` ownership derived from `/etc/subuid`; `MORI_PG_PASSWORD` now a Terraform-managed secret with a durable `secretAccessor` grant
-- v2.1.27: `/brief --post-compact` delta re-grounding — `brief(post_compact=True, since=…)` surfaces only changed/superseded/evicted memories since the last brief, skipping the full base + standards + freshness scan; `get_memories_changed_since` (SQLite + Postgres, `updated_at` index); session-aware `since` (`.mori-last-brief` marker → session start → `MORI_POST_COMPACT_WINDOW`); Cline + Cursor installer parity; pytest suite + CI
-- v2.1.28: Schema-migration runner + full-text search — one ordered `MIGRATIONS` registry with a `schema_migrations` version table drives both backends (single source of truth; baseline invokes the existing bootstrap); drift fixes bring SQLite/Postgres back into parity; ranked FTS replaces unranked LIKE/ILIKE (SQLite **FTS5** + triggers, Postgres generated **`tsvector`** + GIN); Postgres now exercised in CI via a service container. Vectors deferred (FTS is symmetric across both backends)
-- v2.1.29: Read REST API + standalone web dashboard — `GET /api/memories` (ranked FTS/recency), `GET /api/memories/{name}` (full detail + provenance), `GET /api/events`; `CORSMiddleware` (`MORI_CORS_ORIGINS`) for cross-origin browser access; a dependency-free static `dashboard/` to search, browse, and unfurl memories. Read-only — authenticated by the same `MORI_API_KEYS`. Delete/write + OpenAPI + rate-limiting deferred
-- v2.1.30: mori serves the dashboard at its root URL (`GET /`, bundled into the image; the deployment contract asserts `/` returns 200 so a missing page fails the gate)
-- v2.1.31: dashboard connect modal — API key first, server URL an optional override (placeholder = the live page origin)
-- v2.1.32: fix `/req` (`memory_req`) crashing on Postgres — `PostgresStore.parse_tags` was `async` with no awaits, so the result was an un-awaited coroutine
-- v2.1.33: dual-backend **MCP-tool test suite** — exercises every MCP tool on SQLite *and* Postgres (the gap that let the #12 crash ship); caught + fixed five further Postgres-only crashes (history/diff/rollback/pending/approve/reject column mismatches)
-- v2.1.34: **API key capability scoping** — `read`/`write`/`dreamer` roles (`MORI_API_KEY_ROLES`) + `MORI_TD_MODE` host→api trusted-dreamer switch; a unified `Policy` + `ContextVar` enforces identically on the REST and MCP surfaces (no bypass). Foundation for the governed write API + review queue. Closes #13.
-- v2.1.35: **Governed write REST API** — `POST /api/memories` (propose-not-overwrite, tier-aware), `GET /api/pending`, `GET /api/pending/json`, `POST /api/memories/{name}/approve`, `POST /api/memories/{name}/reject`, `DELETE /api/memories/{name}`; race-safe upsert; `_write_audit` log line; audit trail table deferred to #23. Closes #14.
-- v2.2.7: **Per-key rate limiting** (#23 D) — `ApiKeyMiddleware` token-bucket limit per API key, applied after auth → `429` + `Retry-After`; `MORI_RATE_LIMIT` (e.g. `120/min`, `off` to disable) + `MORI_RATE_LIMIT_SCOPE` (`writes` default targets autonomous writers, `all` covers everything); `OPEN_PATHS` exempt; in-memory store (Postgres adapter deferred). Completes #23 — the write surface is now role-scoped, audited, reversible, replay-safe, and rate-limited.
-- v2.2.6: **Idempotency for `POST /api/memories`** (#23 C) + pluggable throttle foundation (`mori_advisor/throttle/`, in-memory adapters; Postgres adapter deferred to a scale-out issue) — `Idempotency-Key` header makes the write propose-once (replay returns the cached response, runs the write exactly once; same key + different body → 422; in-progress → 409 + `Retry-After`; per-actor scope); self-healing claim (short TTL + steal + token guard); startup safety warning for memory-store-with-multiple-workers. Unit + dual-backend route tests.
-- v2.2.5: **Persistent audit trail + soft-delete** (#23 A+B) — `write_audit` table (Migration 8, dual-backend); `_write_audit()` now async and inserts a row on every governed op (propose/approve/reject/delete); `GET /api/audit` (dreamer, filterable, paginated); soft-delete via `deleted_at` (Migration 9 — SQLite table recreation removes inline `UNIQUE(name)`, Postgres atomic `DROP CONSTRAINT` + partial unique index `WHERE deleted_at IS NULL`); `DELETE /api/memories/{name}` soft by default, `?hard=true` to purge; `POST /api/memories/{name}/restore` (dreamer, renames on collision); tombstone filter centralised as `_ACTIVE`/`deleted_at IS NULL` in every read path; FTS filtered at query time. Dual-backend tests; `verify-deployment.py` probes updated.
-
-**Remaining:**
-
-| Priority | Feature |
-|----------|---------|
-| P0 | **Multi-project `/brief`** — `--project api --project frontend` — small teams wear many hats |
-| P0 | **Demo video** — ships the week v2.1 does. Unblocks Product Hunt and HN Show HN. |
-| P1 | **URL ingestion** — bootstrap context from docs, RFCs, public pages without copy-paste |
-| P1 | **GitHub inbound ingestion** — issues, PR comments, commit history → memory context |
-| P1 | **Path-aware memory surfacing** — memories tagged to file/directory paths surface in `/brief` when working in that context |
-| P1 | **Streaming SSE progress** on ingest |
+- **Generic `scope` metadata** — replaces "path-aware memory surfacing": JSONB scope map + client-side CWD→tags resolver kept out of core; index + inject on `/brief` in-context. Path-agnostic, more general.
+- **Event-log surface** — expose existing `/api/events` cleanly; webhook sidecar later, never outbound HTTP in core
+- **Plugin-registration hooks in core** — the seam future policy packs and connectors slot into
+- **`/reflect` command** — on-demand targeted dream; distil a specific topic now, not on the next cron cycle
+- **URL ingestion** — fetch and ingest remote docs, RFCs, public pages without copy-paste
+- **`curl mori.sh | sh` — explicitly NOT doing this** — Homebrew is the frictionless path
 
 ---
 
-## v2.2 — Workflow fit
+## Horizon 3 — Adoption & positioning
 
-Target: fits into existing small-team workflows. Requires v2.1.
+Near-zero coupling to core. Can ship any time.
 
-| Priority | Feature |
-|----------|---------|
-| P0 | **Slack inbound ingestion** — `/ingest --source #dev-channel` (read-only, no write-back) |
-| P0 | **File upload via dashboard / API** — drag-and-drop PDFs, images |
-| P1 | **Linear / GitHub Issues connector** — inbound only, issues → `/req` |
-| P1 | **`/reflect` command** — on-demand targeted dream |
-| P1 | **Improved installer UX** — one-liner `curl | bash` with interactive provider selection |
-
----
-
-## v3.0 — Enterprise platform
-
-Built for organisations with compliance requirements, multiple teams, and production scale.
-
-- Memory namespacing + COIN identity scoping + row-level security
-- SSO / SAML / SCIM / LDAP
-- Admin dashboard — user management, audit log, governance UI
-- Multi-tenant isolation
-- Distributed dream pipeline
-  - Phase 1 (fast VK): cluster events by semantic proximity, assign non-overlapping slices
-  - Phase 2 (parallel dream): stateless dream pods, each claims a cluster from `dream_jobs` table
-  - Phase 3 (reconcile): `mori-reconcile` pod resolves cross-cluster dependencies
-  - Scale by adding pods — Postgres coordinates via `dream_jobs`
-- Memory poisoning guardrails — Lakera / NeMo on dream pipeline LLM calls
-- Advanced K8s operator — HA, rolling updates, federation
-- Bidirectional project intelligence connectors — JIRA, Azure DevOps, ServiceNow write-back
-- Advanced analytics — usage per namespace, dream efficiency per team
+- **README "Why use mori?" section** — right after the banner; the elevator pitch in the repo
+- **`docs/concepts/claude-md-vs-mori.md`** — the unconditional floor vs compounding layer framing; CLAUDE.md and Mori are complementary, not competing
+- **Demo video** — cheap, high-leverage; unblocks Product Hunt, HN Show HN, enterprise eval cycles. Still not shipped.
+- **Public roadmap page** — `moriapp.dev/roadmap` with feedback form; buried markdown helps nobody
+- **Bifrost interface contract** — OpenAPI + contract test; publish/document as standalone OSS. The real "extraction" — not a code fork, a documented interface
+- **Docker Compose as canonical self-host** — polish; Homebrew as frictionless install
 
 ---
 
-## Experiments / Research
+## Commercial perimeter
 
-- Memory merge strategy across independent stores
-- Bifrost composite routing metric — throughput-weighted VK scoring
-- Bifrost custom provider pricing accuracy
-- `/reflect` as a first-class on-demand dream operation (may promote to v2.2)
+Decided on paper now. Open core stays thin.
 
----
-
-## Open core model
-
-Mori follows an open core model. The core engine is and will remain open-source
-under AGPL-3.0. Enterprise-specific features are developed separately under a
-commercial licence.
-
-**Open (AGPL-3.0) — always:**
+### Open (AGPL-3.0) — always
 - Dream pipeline, event capture, memory distillation
-- NATS messaging and mori-msg inter-agent layer
+- Governance pipeline core (intake, assessor, promotion queue)
+- Simple declarative policy ruleset + evaluator seam
+- Named API key auth + capability scoping
+- Read-only ingestion connectors
 - REST API + OpenAPI spec
-- JWT / API key auth
+- Web dashboard (read + TD review)
 - Docker Compose and GCP Terraform deployment
 - All slash commands and MCP tools
-- Simple web dashboard (v2.1)
-- All inbound ingestion connectors (v2.1/v2.2)
+- Proxy-auth-ready (`X-Forwarded-User`) — enterprise SSO slots in without touching core
 
-**Commercial — enterprise tier:**
-- SSO / SAML / SCIM / LDAP
-- Memory namespacing and COIN identity scoping
-- Advanced compliance logging (SOC2, HIPAA audit trails)
-- Bidirectional project intelligence connectors (JIRA write-back, Azure DevOps, ServiceNow)
-- Multi-tenant isolation
-- Enterprise support SLA
-- Advanced K8s operator
-
-Enterprise features are developed in a private `mori-enterprise` repository and
-never appear in the public core. See `COMMERCIAL.md` for licensing terms.
+### Commercial — enterprise tier
+- **OPA/Rego policy packs** — PII classification, memory poisoning rules, compliance frameworks (FSI, healthcare). The "automate the governance committee" pitch for regulated industries. Embedded in mori, not a separate engine.
+- **Managed hosting** — mori instance in the user's cloud account, managed by Anthropic/mori team
+- **Bidirectional project intelligence connectors** — JIRA write-back, Azure DevOps, ServiceNow (read-only ingestion is open; write-back is commercial)
+- **Advanced compliance logging** — SOC2, HIPAA audit trails with certified output
+- **Distributed dream pipeline** — parallel dream pods, reconcile pod, `dream_jobs` coordination
+- **K8s operator** — HA, rolling updates, federation
+- **SSO / SAML / SCIM / LDAP** — via proxy-auth in open core; full IdP integration is commercial
+- **Memory namespacing + COIN identity scoping + row-level security** — multi-tenant isolation
+- **Memory poisoning guardrails** — Lakera / NeMo on dream pipeline LLM calls
 
 ---
 
-## Not planned
+## Parked (with reasons)
 
-- Mid-session push to active agent sessions — latency model is session-to-session by design
-- Message encryption between agents — all agents share NATS credential by design; revisit when namespacing ships
-- Multi-hop message routing — point-to-point and broadcast only
-- Split-brain / cross-region merge logic in core — advanced self-hosting pattern, not a product feature
+| Item | Reason |
+|------|--------|
+| Helm chart | No demand yet; Docker Compose covers the self-host case |
+| Offline brief cache | Consensus risk — use WAL→intake replay if ever needed |
+| `curl \| sh` installer | Anti-pattern; Homebrew is the frictionless path |
+| Native SAML in core | Proxy-auth (`X-Forwarded-User`) is the right seam; full IdP is commercial |
+| Split-brain / cross-region merge | Advanced self-hosting pattern, not a product feature |
+| Mid-session push to active agents | Session-to-session latency model is by design |
+| Message encryption between agents | All agents share NATS credential by design; revisit with namespacing |
 
 ---
 
-*Last updated: v2.2.13*
+*Last updated: v2.2.13 — 2026-06-07*

@@ -10,6 +10,28 @@ account, no LLM Gateway required — though those all work too.
 
 ---
 
+## Why use mori?
+
+You're right to be sceptical of "memory systems" — most are a vector DB with a
+retrieval prompt bolted on, and you already have a `CLAUDE.md` (or `.cursorrules`)
+that works. Keep it. Mori doesn't replace that file; it's the layer **above** it.
+
+- **`CLAUDE.md` is your unconditional floor** — static facts you hand-edit, always
+  present, that never change: commands, conventions, hard rules.
+- **Mori is the compounding layer** — the decisions, patterns, and institutional
+  knowledge that *accumulate* as you work. A dream pipeline distils each session
+  into curated, tiered, freshness-checked memories, so the next session — on any
+  machine, any agent — starts from what was actually learned, not a cold prompt.
+
+The rule: **if it never changes, it belongs in `CLAUDE.md`; if it compounds, it
+belongs in mori.** Complementary, not competing — the static floor and the layer
+that grows above it. ([the full distinction →](docs/concepts/claude-md-vs-mori.md))
+
+And it's yours: self-hosted (your server, your data), open-source (AGPL-3.0), and
+provider-agnostic. No data leaves your infrastructure.
+
+---
+
 ## Multi-Instance Coherence
 
 ![One Forest, Many Agents](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-5-one-forest.svg)
