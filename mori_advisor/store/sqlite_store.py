@@ -252,6 +252,11 @@ class SQLiteStore(BaseStore):
     def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str:
         return self._mem.reject(write_id, note=note, reviewer=reviewer)
 
+    def set_pending_status(
+        self, write_id: int, status: str, note: str = "", reviewer: str = ""
+    ) -> None:
+        return self._mem.set_pending_status(write_id, status, note=note, reviewer=reviewer)
+
     def protect(self, name: str, domains=None) -> str:
         return self._mem.protect(name, domains=domains)
 

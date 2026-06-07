@@ -143,7 +143,9 @@ class TestVerdictActionMapping:
         def stub(body, h):
             return AssessmentResult(verdict="UNRELATED")
 
-        asyncio.run(_assess_one(pool, row, stub))
+        # Legacy auto path is now opt-in via the flag; the human-review gate is
+        # the default (covered by test_human_review_gate.py).
+        asyncio.run(_assess_one(pool, row, stub, promotion_enabled=True))
 
         calls_str = " ".join(str(c) for c in conn.execute.call_args_list)
         assert "under_review" in calls_str
@@ -200,7 +202,7 @@ class TestVerdictActionMapping:
         def stub(body, h):
             return AssessmentResult(verdict="unrelated")  # lower-case
 
-        asyncio.run(_assess_one(pool, row, stub))
+        asyncio.run(_assess_one(pool, row, stub, promotion_enabled=True))
 
         calls_str = " ".join(str(c) for c in conn.execute.call_args_list)
         assert "under_review" in calls_str

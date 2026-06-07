@@ -1,8 +1,15 @@
 """Manual CLI trigger for the B1/B2 assess→promote pipeline.
 
 Runs one full pass:
-    1. ``assess_once()``  — transitions all pending candidates out of pending.
-    2. ``drain_once()``   — promotes all queued rows to mori canon + lineage.
+    1. ``assess_once()``   — transitions all pending candidates out of pending.
+                             UNRELATED candidates are, by default, **surfaced for
+                             human review** (mori pending_write + intake ticket);
+                             with ``MORI_INTAKE_PROMOTION_ENABLED`` they instead go
+                             to the legacy ``promotion_queue``.
+    2. ``drain_once()``    — promotes queued (auto) rows to mori canon + lineage.
+    3. ``finalize_once()`` — promotes Trusted-Dreamer-approved candidates that
+                             pass the GOV-002 re-check (the human-review gate's
+                             phase 2).
 
 This replaces the dream as the enqueue trigger for B1/B2 (MVV, deterministic,
 no dream integration).  B3 will wire ``DreamPipeline`` to call ``assess_once``
@@ -150,14 +157,25 @@ async def _run(
             else:
                 logger.info("cli: using default stub assessor (B1 — treats all as novel)")
 
-            assessed = await assess_once(pool, assess=assess_fn)
+            # mori_store enables the human-review gate path (default): UNRELATED
+            # candidates are surfaced as mori pending_writes + intake tickets.
+            # assess_once reads MORI_INTAKE_PROMOTION_ENABLED itself to choose the
+            # human-gate (default) vs legacy auto-promotion path.
+            assessed = await assess_once(pool, assess=assess_fn, mori_store=mori_store)
             logger.info("cli: assess_once() processed %d candidate(s)", assessed)
 
         if not assess_only:
-            from mori_intake.canon_writer import drain_once
+            from mori_intake.canon_writer import drain_once, finalize_once
 
+            # Legacy auto-promotion half — only does work when the flag is ON
+            # (assessor enqueued promotion_queue rows); a no-op under the gate.
             promoted = await drain_once(pool, mori_store)
-            logger.info("cli: drain_once() committed %d promotion(s)", promoted)
+            logger.info("cli: drain_once() committed %d auto-promotion(s)", promoted)
+
+            # Human-review finalizer half — promotes TD-approved candidates that
+            # pass the GOV-002 re-check; a no-op when nothing is human_approved.
+            finalized = await finalize_once(pool, mori_store)
+            logger.info("cli: finalize_once() committed %d human-approved promotion(s)", finalized)
 
     finally:
         await pool.close()

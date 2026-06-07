@@ -2002,6 +2002,16 @@ class MemoryStore:
 
         Race-safe: uses BEGIN IMMEDIATE so concurrent approvals cannot both
         apply the same pending write (SQLite write-lock held for full transaction).
+
+        Two-phase agent-intake gate
+        ---------------------------
+        A pending write with ``source='agent-intake'`` is **not** written to
+        canon here.  This store does not hold the intake-side trust evidence,
+        so a TD approval is recorded as a **vote**: the row transitions to
+        ``status='human_approved'`` and the bridge finalizer
+        (``mori_intake.canon_writer.finalize_once``) — which alone can reach the
+        intake DB — re-runs the GOV-002 gate against the trusted ticket before
+        writing canon.  All other sources keep the direct apply-on-approve path.
         """
         import sqlite3
 
@@ -2019,15 +2029,44 @@ class MemoryStore:
                 conn.rollback()
                 return f"Pending write #{write_id} not found or already processed."
 
+            # Read by column name — the extra governance columns (source, …) are
+            # ALTER-appended, so positional indexing past the base schema is brittle.
+            cols = [d[0] for d in cur.description]
+            rowd = dict(zip(cols, row))
+            source = (rowd.get("source") or "").strip()
+
+            if source == "agent-intake":
+                # VOTE ONLY — defer the canon write to the bridge finalizer.
+                conn.execute(
+                    """
+                    UPDATE pending_writes
+                    SET status = 'human_approved', reviewed_at = datetime('now'),
+                        reviewed_by = ?, review_note = ?
+                    WHERE id = ?
+                    """,
+                    (reviewer or "trusted-dreamer", note, write_id),
+                )
+                conn.commit()
+                return (
+                    f"Pending write #{write_id} (agent-intake) approved — queued for the "
+                    "bridge finalizer (GOV-002 re-check, then canon write with lineage)."
+                )
+
             pw = {
-                "memory_name": row[1],
-                "title": row[2],
-                "description": row[3],
-                "type": row[4],
-                "body": row[5],
-                "tags": self._parse_tags(row[6]),
-                "origin_session_ids": self._parse_tags(row[7]) if row[7] else [],
-                "origin_clients": self._parse_tags(row[8]) if row[8] else [],
+                "memory_name": rowd["memory_name"],
+                "title": rowd["title"],
+                "description": rowd["description"],
+                "type": rowd["type"],
+                "body": rowd["body"],
+                "tags": self._parse_tags(rowd["tags"]),
+                "origin_session_ids": (
+                    self._parse_tags(rowd["origin_session_ids"])
+                    if rowd.get("origin_session_ids")
+                    else []
+                ),
+                "origin_clients": (
+                    self._parse_tags(rowd["origin_clients"]) if rowd.get("origin_clients") else []
+                ),
             }
 
             # Apply the write within the same connection / transaction
@@ -2088,6 +2127,29 @@ class MemoryStore:
             return f"Pending write #{write_id} rejected."
         except sqlite3.Error as e:
             return f"Database error: {e}"
+        finally:
+            conn.close()
+
+    def set_pending_status(
+        self, write_id: int, status: str, note: str = "", reviewer: str = ""
+    ) -> None:
+        """Force a pending_write to *status* (any → any). Bridge finalizer use."""
+        import sqlite3
+
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """
+                UPDATE pending_writes
+                SET status = ?, reviewed_at = datetime('now'),
+                    reviewed_by = ?, review_note = ?
+                WHERE id = ?
+                """,
+                (status, reviewer or "bridge-finalizer", note, write_id),
+            )
+            conn.commit()
+        except sqlite3.Error as e:
+            logger.error("set_pending_status(#%s → %s) failed: %s", write_id, status, e)
         finally:
             conn.close()
 

@@ -335,7 +335,13 @@ class DreamPipeline:
                 reader = make_canon_reader_from_store(self.store)
                 assessor_fn = make_canon_assessor(reader, self.client)
 
-                assessed = await assess_once(intake_pool, assess=assessor_fn)
+                # This method only runs when MORI_INTAKE_PROMOTION_ENABLED=true
+                # (guarded above), so this is the legacy auto-promotion path:
+                # enqueue promotion_queue, then drain to canon.  The human-review
+                # gate (flag off) is driven by the intake CLI, not the dream.
+                assessed = await assess_once(
+                    intake_pool, assess=assessor_fn, promotion_enabled=True
+                )
                 committed = await drain_once(intake_pool, self.store)
 
                 logger.info(

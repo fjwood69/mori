@@ -179,6 +179,21 @@ class BaseStore(ABC):
     def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str: ...
 
     @abstractmethod
+    def set_pending_status(
+        self, write_id: int, status: str, note: str = "", reviewer: str = ""
+    ) -> None:
+        """Force a pending_write to *status*, regardless of its current status.
+
+        Unlike :meth:`approve` / :meth:`reject` (which only act on rows still
+        ``pending``), this transitions a row from any status.  It is the bridge
+        finalizer's tool for moving an ``agent-intake`` row out of the
+        intermediate ``human_approved`` vote state to a terminal ``approved``
+        (canon written) or ``rejected`` (GOV-002 re-check failed).  No canon
+        side effects — status bookkeeping only.
+        """
+        ...
+
+    @abstractmethod
     def protect(self, name: str, domains=None) -> str: ...
 
     # ── Freshness and eviction ─────────────────────────────────────────────

@@ -1282,7 +1282,13 @@ class PostgresStore(BaseStore):
 
     async def approve(self, write_id: int, note: str = "", reviewer: str = "") -> str:
         """Approve a pending write. Race-safe: uses SELECT … FOR UPDATE inside a transaction
-        so concurrent approvals cannot both apply the same pending write."""
+        so concurrent approvals cannot both apply the same pending write.
+
+        Two-phase agent-intake gate: a row with ``source='agent-intake'`` is
+        recorded as a **vote** (``status='human_approved'``) rather than written
+        to canon here — the bridge finalizer re-runs GOV-002 against the trusted
+        intake ticket before promoting.  All other sources apply on approve.
+        """
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -1293,6 +1299,22 @@ class PostgresStore(BaseStore):
                 )
                 if not row:
                     return f"Pending write {write_id} not found or already processed."
+
+                if (row.get("source") or "").strip() == "agent-intake":
+                    # VOTE ONLY — defer the canon write to the bridge finalizer.
+                    await conn.execute(
+                        "UPDATE pending_writes SET status='human_approved', "
+                        "review_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
+                        write_id,
+                        note,
+                        reviewer,
+                        _now_utc(),
+                    )
+                    return (
+                        f"Pending write {write_id} (agent-intake) approved — queued for the "
+                        "bridge finalizer (GOV-002 re-check, then canon write with lineage)."
+                    )
+
                 await self.write(
                     name=row["memory_name"],
                     title=row["title"],
@@ -1324,6 +1346,22 @@ class PostgresStore(BaseStore):
                 _now_utc(),
             )
         return f"Pending write {write_id} rejected."
+
+    async def set_pending_status(
+        self, write_id: int, status: str, note: str = "", reviewer: str = ""
+    ) -> None:
+        """Force a pending_write to *status* (any → any). Bridge finalizer use."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE pending_writes SET status=$2, review_note=$3, "
+                "reviewed_by=$4, reviewed_at=$5 WHERE id=$1",
+                write_id,
+                status,
+                note,
+                reviewer or "bridge-finalizer",
+                _now_utc(),
+            )
 
     async def protect(self, name: str, domains=None) -> str:
         self._ensure_pool()

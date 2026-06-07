@@ -172,7 +172,7 @@ async def test_assessor_unrelated_transitions_to_under_review(intake_pool):
     def _unrelated_stub(body, h):
         return AssessmentResult(verdict="UNRELATED")
 
-    processed = await assess_once(intake_pool, assess=_unrelated_stub)
+    processed = await assess_once(intake_pool, assess=_unrelated_stub, promotion_enabled=True)
     assert processed >= 1
 
     candidate = await intake_pool.fetchrow(
@@ -253,7 +253,7 @@ async def test_canon_writer_full_promotion_path_pg(intake_pool, canon_store):
     def _unrelated_stub(body, h):
         return AssessmentResult(verdict="UNRELATED")
 
-    await assess_once(intake_pool, assess=_unrelated_stub)
+    await assess_once(intake_pool, assess=_unrelated_stub, promotion_enabled=True)
 
     # Drain promotion queue → Postgres canon write.
     committed = await drain_once(intake_pool, canon_store)
@@ -318,7 +318,7 @@ async def test_canon_writer_idempotent_redrive_pg(intake_pool, canon_store):
         return AssessmentResult(verdict="UNRELATED")
 
     _, cid = await _seed_pending_candidate(intake_pool, content=content)
-    await assess_once(intake_pool, assess=_unrelated_stub)
+    await assess_once(intake_pool, assess=_unrelated_stub, promotion_enabled=True)
     await drain_once(intake_pool, canon_store)
 
     # Candidate promoted on first drain.
@@ -358,7 +358,7 @@ async def test_idempotency_guard_via_promotion_map_pg(intake_pool, canon_store):
         return AssessmentResult(verdict="UNRELATED")
 
     _, cid = await _seed_pending_candidate(intake_pool, content=content)
-    await assess_once(intake_pool, assess=_unrelated_stub)
+    await assess_once(intake_pool, assess=_unrelated_stub, promotion_enabled=True)
 
     # Manually insert promotion_map row (simulating prior partial run).
     cid_uuid = uuid.UUID(cid)

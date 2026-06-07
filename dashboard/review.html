@@ -251,9 +251,10 @@
             background-color: var(--panel2);
         }
 
-        .badge.source-ingestion { color: var(--warn); border-color: var(--warn); }
-        .badge.source-agent     { color: #7eb8f7;     border-color: #7eb8f7; }
-        .badge.source-api       { color: var(--dim);  border-color: var(--line); }
+        .badge.source-ingestion    { color: var(--warn); border-color: var(--warn); }
+        .badge.source-agent        { color: #7eb8f7;     border-color: #7eb8f7; }
+        .badge.source-agent-intake { color: var(--ok);   border-color: var(--ok); }
+        .badge.source-api          { color: var(--dim);  border-color: var(--line); }
         .badge.tier-canonical   { color: #d07fff;     border-color: #d07fff; }
         .badge.tier-standard    { color: var(--accent); border-color: var(--accent); }
         .badge.tier-working     { color: var(--dim);  border-color: var(--line); }
@@ -915,7 +916,7 @@
             setTimeout(() => {
                 const list = document.getElementById('queueList');
                 if (list.querySelectorAll('.card').length === 0) {
-                    list.innerHTML = '<div class="empty-state">No pending proposals — the forest is current.</div>';
+                    list.innerHTML = '<div class="empty-state">The forest is quiet. Nothing trying to take root just yet.</div>';
                 }
             }, 400);
         } catch (err) {
@@ -952,7 +953,7 @@
 
         if (items.length === 0) {
             const msg = state.allItems.length === 0
-                ? 'No pending proposals — the forest is current.'
+                ? 'The forest is quiet. Nothing trying to take root just yet.'
                 : 'No proposals match the current filter.';
             list.innerHTML = '<div class="empty-state">' + msg + '</div>';
             return;

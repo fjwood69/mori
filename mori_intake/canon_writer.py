@@ -124,6 +124,76 @@ async def drain_once(
     return committed
 
 
+async def finalize_once(
+    intake_pool: "asyncpg.Pool",
+    mori_store: Any,
+    *,
+    batch_size: int = _BATCH_SIZE,
+) -> int:
+    """Bridge finalizer — phase 2 of the human-review gate.
+
+    The assessor surfaces an ``UNRELATED`` candidate as a mori ``pending_write``
+    (source=``agent-intake``) + a bridge-owned ``intake_promotion_tickets`` row.
+    A Trusted Dreamer's *approve* records a **vote** (the pending_write moves to
+    ``status='human_approved'`` — NO canon write).  This finalizer is the only
+    component that holds BOTH the mori store and the intake pool, so it alone can
+    turn that vote into canon:
+
+    1. Read ``human_approved`` agent-intake pending_writes from mori.
+    2. For each, read the trusted ticket (candidate_id + submission_ids + trust +
+       body_hash) — the provenance JSON carries ONLY an opaque ``ticket_uuid``,
+       so a forged provenance can never smuggle ids the finalizer trusts.
+    3. Re-run the GOV-002 gate (approved-body integrity, live-candidate body
+       integrity, eligibility re-check) against the **live** intake candidate.
+    4. On pass → write canon + lineage + mark candidate ``promoted`` +
+       pending_write ``approved``.  On fail → reject both.
+
+    At-least-once + idempotent, never XA/2PC — mirrors ``drain_once``.  Returns
+    the number of pending_writes finalized (promoted or idempotently skipped).
+    """
+    # ── Phase 2a: promote TD-approved candidates ──────────────────────────────
+    approved = await _call_pending_list(
+        mori_store, status="human_approved", proposed_by="intake-assessor"
+    )
+    finalized = 0
+    for pw in approved[:batch_size]:
+        # Defensive: proposed_by already scopes to the assessor, but never act on
+        # a row whose source is not the agent-intake gate.
+        if (pw.get("source") or "") != "agent-intake":
+            continue
+        try:
+            if await _finalize_one(intake_pool, mori_store, pw):
+                finalized += 1
+        except Exception as exc:
+            logger.error(
+                "finalizer: pending_write %s raised, leaving human_approved for retry: %s",
+                pw.get("id"),
+                exc,
+            )
+
+    # ── Phase 2b: reconcile TD-rejected candidates ────────────────────────────
+    # A TD *reject* sets the mori pending_write to 'rejected' directly (mori has
+    # no intake reach).  The candidate is therefore still 'under_review' in
+    # intake.  The bridge — the only component with both DSNs — closes the loop:
+    # mark the candidate 'rejected' and terminalize the pending_write so it is
+    # not re-scanned.
+    rejected = await _call_pending_list(
+        mori_store, status="rejected", proposed_by="intake-assessor"
+    )
+    for pw in rejected[:batch_size]:
+        if (pw.get("source") or "") != "agent-intake":
+            continue
+        try:
+            await _reconcile_rejected_one(intake_pool, mori_store, pw)
+        except Exception as exc:
+            logger.error(
+                "finalizer: reconcile of rejected pending_write %s raised: %s",
+                pw.get("id"),
+                exc,
+            )
+    return finalized
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 
@@ -485,6 +555,356 @@ async def _promote_one(
             ", ".join(agent_ids) or "none",
         )
         return True
+
+
+async def _finalize_one(
+    intake_pool: "asyncpg.Pool",
+    mori_store: Any,
+    pw: dict,
+) -> bool:
+    """Finalize one human-approved agent-intake pending_write.
+
+    Returns True if the row reached canon (freshly or idempotently), False if it
+    was rejected or left for retry.  Does NOT raise — ``finalize_once`` logs and
+    moves on.
+
+    Trust boundary: the only ids this function acts on come from the
+    **bridge-owned** ``intake_promotion_tickets`` row, looked up by the opaque
+    ``ticket_uuid`` carried in the pending_write provenance.  The provenance JSON
+    is never trusted for candidate_id / submission_ids / body_hash — those are
+    read back from the ticket, so a tampered provenance cannot redirect the
+    promotion.
+    """
+    write_id = pw.get("id")
+    canon_name = pw.get("name") or ""
+    body = pw.get("body") or ""
+    provenance = pw.get("provenance")
+
+    # ── Forgery guard 1: provenance must carry a ticket_uuid ───────────────────
+    ticket_uuid = provenance.get("ticket_uuid") if isinstance(provenance, dict) else None
+    if not ticket_uuid:
+        logger.error(
+            "finalizer: pending_write %s has no ticket_uuid in provenance — rejecting",
+            write_id,
+        )
+        await _call_set_pending_status(
+            mori_store, write_id, "rejected", note="finalize: missing ticket_uuid"
+        )
+        return False
+
+    # ── Forgery guard 2: the ticket must exist in the bridge-owned table ───────
+    ticket = await _call_get_ticket(mori_store, ticket_uuid)
+    if ticket is None:
+        logger.error(
+            "finalizer: ticket %s not found for pending_write %s — rejecting",
+            ticket_uuid,
+            write_id,
+        )
+        await _call_set_pending_status(
+            mori_store, write_id, "rejected", note="finalize: ticket not found"
+        )
+        return False
+
+    # ── Forgery guard 3: ticket's canon_name must match the pending_write ──────
+    if ticket["canon_name"] != canon_name:
+        logger.error(
+            "finalizer: ticket %s canon_name %r != pending_write name %r — rejecting",
+            ticket_uuid,
+            ticket["canon_name"],
+            canon_name,
+        )
+        await _call_set_pending_status(
+            mori_store, write_id, "rejected", note="finalize: ticket/name mismatch"
+        )
+        return False
+
+    candidate_id_str: str = str(ticket["candidate_id"])
+    submission_ids = ticket["submission_ids"] or []
+    trust_snapshot = ticket["trust_snapshot"] or {}
+    body_hash: str = ticket["body_hash"]
+
+    from mori_intake.normalize import content_hash as _compute_hash
+
+    # ── GOV-002a: the body the TD approved must hash to the ticket body_hash ───
+    # Catches tampering of the pending_write body between surface and approval.
+    if _compute_hash(body) != body_hash:
+        logger.error(
+            "finalizer: GOV-002 approved-body hash != ticket body_hash for %r — rejecting",
+            canon_name,
+        )
+        await _call_set_pending_status(
+            mori_store, write_id, "rejected", note="finalize: approved-body integrity"
+        )
+        return False
+
+    # intake is always Postgres for this feature — pass real UUIDs.
+    candidate_uuid = uuid.UUID(candidate_id_str)
+    submission_uuids = [uuid.UUID(str(s)) for s in submission_ids]
+
+    # ── Cross to intake: idempotency guard + live GOV-002 re-checks ────────────
+    async with intake_pool.acquire() as conn:
+        existing_map = await conn.fetchrow(
+            "SELECT canon_name FROM intake_promotion_map WHERE candidate_id = $1",
+            candidate_uuid,
+        )
+        if existing_map is not None:
+            logger.info(
+                "finalizer: candidate %s already promoted as %r — marking pending_write "
+                "approved (idempotent re-drive)",
+                candidate_uuid,
+                existing_map["canon_name"],
+            )
+            await _call_set_pending_status(
+                mori_store, write_id, "approved", note="finalize: idempotent (already promoted)"
+            )
+            return True
+
+        candidate = await conn.fetchrow(
+            "SELECT canonicalized_body, content_hash, reinforcement_count "
+            "FROM intake_candidates WHERE id = $1",
+            candidate_uuid,
+        )
+        if candidate is None:
+            logger.error(
+                "finalizer: candidate %s missing in intake — rejecting pending_write %s",
+                candidate_uuid,
+                write_id,
+            )
+            await _call_set_pending_status(
+                mori_store, write_id, "rejected", note="finalize: candidate missing"
+            )
+            return False
+
+        live_body: str = candidate["canonicalized_body"]
+        live_hash: str = candidate["content_hash"]
+        reinforcement_count: int = candidate["reinforcement_count"]
+
+        # ── GOV-002b: live intake body integrity (and ticket↔live agreement) ───
+        if _compute_hash(live_body) != live_hash or live_hash != body_hash:
+            logger.error(
+                "finalizer: GOV-002 live-candidate body-integrity mismatch for %s — rejecting",
+                candidate_uuid,
+            )
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE intake_candidates SET status='rejected', "
+                    "rejection_reason=$1, updated_at=NOW() WHERE id=$2",
+                    "finalize-body-integrity-mismatch",
+                    candidate_uuid,
+                )
+            await _call_set_pending_status(
+                mori_store, write_id, "rejected", note="finalize: live body integrity"
+            )
+            return False
+
+        # ── GOV-002c: eligibility re-check against the originating submission ───
+        _orig = await conn.fetchrow(
+            """
+            SELECT s.target_name, s.stable_key, s.action
+            FROM intake_submissions s
+            JOIN intake_corroborations c ON c.submission_id = s.id
+            WHERE c.candidate_id = $1
+            ORDER BY s.received_at
+            LIMIT 1
+            """,
+            candidate_uuid,
+        )
+        if _orig is not None:
+            _t, _k, _a = _orig["target_name"], _orig["stable_key"], _orig["action"]
+        else:
+            _t, _k, _a = "memory", f"learned-{live_hash[:32]}", "add"
+        _decision = eligibility_evaluate(target=_t, action=_a, stable_key=_k, body=live_body)
+        if not _decision.eligible:
+            logger.error(
+                "finalizer: GOV-002 eligibility re-check FAILED for %s (reason=%r) — rejecting",
+                candidate_uuid,
+                _decision.reason,
+            )
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE intake_candidates SET status='rejected', "
+                    "rejection_reason=$1, updated_at=NOW() WHERE id=$2",
+                    f"finalize-eligibility-recheck:{_decision.reason}",
+                    candidate_uuid,
+                )
+            await _call_set_pending_status(
+                mori_store,
+                write_id,
+                "rejected",
+                note=f"finalize: eligibility {_decision.reason}",
+            )
+            return False
+
+    # ── GOV-002 passed → write canon (idempotent upsert) ──────────────────────
+    agent_ids = (
+        trust_snapshot.get("corroborating_agent_ids", [])
+        if isinstance(trust_snapshot, dict)
+        else []
+    )
+    try:
+        await _call_store_write(
+            mori_store,
+            name=canon_name,
+            title=f"Agent intake: {live_body[:60]}{'...' if len(live_body) > 60 else ''}",
+            body=live_body,
+            type="agent-intake",
+            tier="working",
+            tags=["source:agent-intake"],
+            origin_clients=agent_ids,
+        )
+    except Exception as exc:
+        logger.error(
+            "finalizer: canon write failed for %r: %s — leaving human_approved for retry",
+            canon_name,
+            exc,
+        )
+        return False
+
+    now_utc = datetime.now(timezone.utc)
+
+    try:
+        await _call_record_lineage(
+            mori_store,
+            canon_name=canon_name,
+            intake_candidate_id=candidate_id_str,
+            intake_submission_ids=[str(s) for s in submission_ids],
+            trust_snapshot=trust_snapshot,
+            promoted_at=now_utc,
+        )
+    except Exception as exc:
+        logger.error(
+            "finalizer: lineage write failed for %r: %s — canon written; retry next pass",
+            canon_name,
+            exc,
+        )
+        return False
+
+    # ── Intake side: promotion_map + candidate promoted (atomic) ──────────────
+    try:
+        async with intake_pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO intake_promotion_map
+                        (canon_name, candidate_id, submission_ids, provenance_snapshot, promoted_at)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (canon_name) DO NOTHING
+                    """,
+                    canon_name,
+                    candidate_uuid,
+                    submission_uuids,
+                    json.dumps(trust_snapshot),
+                    now_utc,
+                )
+                await conn.execute(
+                    """
+                    UPDATE intake_candidates
+                    SET status = 'promoted', promoted_canon_name = $1, updated_at = $2
+                    WHERE id = $3
+                    """,
+                    canon_name,
+                    now_utc,
+                    candidate_uuid,
+                )
+    except Exception as exc:
+        logger.error(
+            "finalizer: intake commit failed for %r: %s — canon written; map/candidate "
+            "retried on next pass (idempotency guard skips the re-write)",
+            canon_name,
+            exc,
+        )
+        return False
+
+    # ── Terminal: mark the pending_write approved ─────────────────────────────
+    await _call_set_pending_status(
+        mori_store, write_id, "approved", note="finalize: promoted to canon"
+    )
+    logger.info(
+        "finalizer: pending_write %s → canon %r promoted (candidate %s, reinforcement=%d, agents: %s)",
+        write_id,
+        canon_name,
+        candidate_uuid,
+        reinforcement_count,
+        ", ".join(agent_ids) or "none",
+    )
+    return True
+
+
+async def _reconcile_rejected_one(
+    intake_pool: "asyncpg.Pool",
+    mori_store: Any,
+    pw: dict,
+) -> None:
+    """Reconcile one TD-rejected agent-intake pending_write back into intake.
+
+    Marks the originating candidate ``rejected`` (only if still ``under_review``
+    — idempotent) and terminalizes the pending_write to ``rejected_reconciled``
+    so future finalize passes do not re-scan it.  Trust boundary identical to
+    :func:`_finalize_one`: the candidate id comes only from the bridge-owned
+    ticket, never the provenance JSON.
+    """
+    write_id = pw.get("id")
+    provenance = pw.get("provenance")
+    ticket_uuid = provenance.get("ticket_uuid") if isinstance(provenance, dict) else None
+
+    if not ticket_uuid:
+        await _call_set_pending_status(
+            mori_store, write_id, "rejected_reconciled", note="reconcile: no ticket_uuid"
+        )
+        return
+
+    ticket = await _call_get_ticket(mori_store, ticket_uuid)
+    if ticket is None:
+        await _call_set_pending_status(
+            mori_store, write_id, "rejected_reconciled", note="reconcile: ticket not found"
+        )
+        return
+
+    candidate_uuid = uuid.UUID(str(ticket["candidate_id"]))
+    async with intake_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                UPDATE intake_candidates
+                SET status = 'rejected',
+                    rejection_reason = $1,
+                    updated_at = NOW()
+                WHERE id = $2 AND status = 'under_review'
+                """,
+                "human-review-rejected",
+                candidate_uuid,
+            )
+    await _call_set_pending_status(
+        mori_store, write_id, "rejected_reconciled", note="reconcile: candidate rejected"
+    )
+    logger.info(
+        "finalizer: reconciled rejected pending_write %s → candidate %s rejected",
+        write_id,
+        candidate_uuid,
+    )
+
+
+async def _call_pending_list(mori_store: Any, **kwargs) -> list:
+    """Call mori_store.pending_list_json() regardless of sync/async."""
+    result = mori_store.pending_list_json(**kwargs)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+async def _call_get_ticket(mori_store: Any, ticket_uuid: str):
+    """Call mori_store.get_intake_ticket() regardless of sync/async."""
+    result = mori_store.get_intake_ticket(ticket_uuid)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+async def _call_set_pending_status(mori_store: Any, write_id, status: str, note: str = "") -> None:
+    """Call mori_store.set_pending_status() regardless of sync/async."""
+    result = mori_store.set_pending_status(write_id, status, note=note)
+    if inspect.isawaitable(result):
+        await result
 
 
 async def _call_store_write(mori_store: Any, **kwargs) -> str:
