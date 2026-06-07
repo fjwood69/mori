@@ -1,6 +1,57 @@
 # Mori Slash Commands
 
-Eight slash commands — `/brief`, `/wrap`, `/dream`, `/consult`, `/pensieve`, `/req`, `/nats`, `/update` — that wire Mori's MCP tools into Claude Code's workflow. Each is a thin SKILL.md that delegates to a deterministic MCP tool on the Mori server.
+Slash commands wire Mori's MCP tools into Claude Code's workflow. Each is a thin SKILL.md that delegates to a deterministic MCP tool on the Mori server — no scripts, no fallback logic, central control.
+
+They split into two categories that serve different moments in a session (cross-agent coordination — `/nats`, `/msg`, `/req` — is a separate concern; see [Coordination model](#coordination-model--event--errand--state)).
+
+---
+
+## Two kinds of command
+
+### Context commands — manage the memory lifecycle
+
+These fire at session lifecycle boundaries — start, compaction, close. They keep the shared memory state current, automatically or on demand, so a session starts informed rather than cold.
+
+| Command | When | What it does |
+|---|---|---|
+| `/brief` | Session start (or on demand) | Loads shared memory into the session — decisions made, patterns established, what every other agent has learned. The session starts informed, not cold. |
+| `/brief --post-compact` | After context compaction | Delta re-grounding — surfaces only what changed in the shared store since your last brief. Fast, targeted; the session continues informed rather than half-amnesiac. |
+| `/wrap` | Session close | Captures the session, publishes a summary to NATS, triggers a dream run — so what was learned reaches the shared store before the next session begins. |
+| `/dream` | Any time (or on a schedule) | Triggers the distillation pipeline manually — processes events since the last watermark and writes structured memories. Runs automatically on a cron; use manually after a significant session. |
+
+#### The compaction boundary — where most tools fail silently
+
+![The compaction boundary](../assets/figure-9-compaction-lifecycle.svg)
+
+Context fills → `PreCompact` fires → the dream pipeline runs → session knowledge is distilled → memories written → **context compressed (nothing lost at the moment it matters most)** → `SessionStart` fires → `/brief --post-compact` → delta re-grounding → the session continues informed.
+
+Without this, compaction is a one-way loss — the session re-reads `CLAUDE.md` and restarts cold. With it, the session barely skips a beat.
+
+### Enrichment commands — query and enrich on demand
+
+These fire mid-task, when you need something specific. Intentional and on-demand: they retrieve knowledge, add new knowledge, or provide grounded guidance.
+
+| Command | When | What it does |
+|---|---|---|
+| `/pensieve` | Any time | Search shared memory across all sessions, devices, and agents. "What did we decide about the Postgres sequence reset?" — instant recall regardless of when or where it was learned. |
+| `/consult` | When you need strategic guidance | LLM guidance grounded in your actual project context and team standards — not generic advice. Relevant standards are injected automatically by focus area. |
+| `/ingest` | When bootstrapping or adding external knowledge | Feed PDFs, git history, transcripts, URLs, or code into the store. The same distillation pipeline that powers the dream phase extracts structured memories from any source. |
+| `/reflect` *(planned — Horizon 2)* | When you need targeted distillation now | On-demand dream scoped to a specific topic — "distil everything about the auth migration, right now" — without waiting for the next cron cycle. |
+
+### The mental model
+
+**Context commands keep the forest healthy** — they ensure the shared memory stays current, is loaded at the right moments, and captures what was learned before it's lost. **Enrichment commands let you walk into the forest** and find what you need — or add something new to it.
+
+Used together, they close the full lifecycle:
+
+- **Session start** → `/brief` (load what's known)
+- **Mid-session** → `/pensieve` (find what's needed) → `/consult` (grounded guidance) → `/ingest` (add external knowledge)
+- **Pre-compaction** → `PreCompact` hook → dream (automatic)
+- **Post-compaction** → `/brief --post-compact` (automatic)
+- **Session close** → `/wrap` (capture what was learned)
+- **Overnight** → `/dream` (distil across all sessions)
+
+Every session, on every machine, for every agent — starting informed rather than cold.
 
 ---
 
