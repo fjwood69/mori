@@ -169,7 +169,7 @@ No downtime — both instances serve during the cutover.
 | Endpoint | Purpose | Response |
 |----------|---------|----------|
 | `/health` | Liveness probe | 200 if process is alive |
-| `/ready` | Readiness probe (HTTP endpoint, not the `/ready` slash command) | 200 if DB accessible, 503 otherwise |
+| `/ready` | Readiness probe (HTTP endpoint) | 200 if DB accessible, 503 otherwise |
 | `/metrics` | Prometheus exposition format | Counts for memories, events, pending writes, eviction queue |
 | `/api/events/health` | Legacy event endpoint | Event count |
 

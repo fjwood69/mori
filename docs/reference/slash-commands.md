@@ -36,7 +36,7 @@ Scoped briefs load full memory bodies for the target project rather than truncat
 
 ## `/wrap` — Session Wrap
 
-Session-closing counterpart to your session bootstrap skill (e.g. `/ready`). Summarises the session and publishes to cc-share and NATS so the next session (on any device) starts with context.
+Session-closing counterpart to your session bootstrap skill. Summarises the session and publishes to cc-share and NATS so the next session (on any device) starts with context.
 
 **MCP tools:** cc-share (`POST /cc-share/`), `mori-nats_pub`, `mori-dream_run`
 

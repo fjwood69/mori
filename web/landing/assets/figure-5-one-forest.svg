@@ -1,0 +1,79 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="510" viewBox="0 0 900 510" font-family="'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace">
+
+  <rect width="900" height="510" fill="#e8eae1"></rect>
+  <g stroke="#d6d2c5" stroke-width="1" fill="none">
+  <path d="M12 22 L12 12 L22 12"></path><path d="M878 12 L888 12 L888 22"></path>
+  <path d="M12 488 L12 498 L22 498 M878 498 L888 498 L888 488"></path>
+</g>
+  <text x="40" y="78" font-size="28" font-weight="500" letter-spacing="-0.04em" fill="#112418">One forest.</text>
+  <text x="40" y="106" font-size="28" font-weight="500" letter-spacing="-0.04em" fill="#112418">Many agents.</text>
+  <text x="860" y="60" text-anchor="end" font-size="10" letter-spacing="0.08em" fill="#5a5f5b">SESSIONS ABOVE · MEMORY BELOW</text>
+  <g transform="translate(36 156)">
+      <rect width="168" height="80" fill="rgba(255,255,255,0.55)" stroke="#112418" stroke-width="1.1"></rect>
+      <g transform="translate(14 22)"><rect x="0" y="0" width="12" height="8" rx="1" fill="none" stroke="#112418" stroke-width="1.3"></rect><line x1="-2" y1="10" x2="14" y2="10" stroke="#112418" stroke-width="1.3" stroke-linecap="round"></line></g>
+      <text x="36" y="32" font-size="14" font-weight="500" fill="#112418">MacBook</text>
+      <text x="14" y="58" font-size="11" fill="#5a5f5b">API layer</text>
+      <circle cx="152" cy="14" r="2.6" fill="#c89a3a"></circle>
+      <text x="148" y="18" text-anchor="end" font-size="10" fill="#5a5f5b">active</text>
+    </g>
+    <line x1="120" y1="236" x2="120" y2="250" stroke="#112418" stroke-width="1.6" stroke-linecap="round"></line><g transform="translate(256 156)">
+      <rect width="168" height="80" fill="rgba(255,255,255,0.55)" stroke="#112418" stroke-width="1.1"></rect>
+      <g transform="translate(14 22)"><rect x="0" y="0" width="5" height="5" fill="none" stroke="#112418" stroke-width="1.3"></rect><rect x="6.5" y="0" width="5" height="5" fill="none" stroke="#112418" stroke-width="1.3"></rect><rect x="0" y="6.5" width="5" height="5" fill="none" stroke="#112418" stroke-width="1.3"></rect><rect x="6.5" y="6.5" width="5" height="5" fill="none" stroke="#112418" stroke-width="1.3"></rect></g>
+      <text x="36" y="32" font-size="14" font-weight="500" fill="#112418">Windows</text>
+      <text x="14" y="58" font-size="11" fill="#5a5f5b">Frontend</text>
+      <circle cx="152" cy="14" r="2.6" fill="#c89a3a"></circle>
+      <text x="148" y="18" text-anchor="end" font-size="10" fill="#5a5f5b">active</text>
+    </g>
+    <line x1="340" y1="236" x2="340" y2="250" stroke="#112418" stroke-width="1.6" stroke-linecap="round"></line><g transform="translate(476 156)">
+      <rect width="168" height="80" fill="rgba(255,255,255,0.55)" stroke="#112418" stroke-width="1.1"></rect>
+      <g transform="translate(14 22)"><circle cx="6" cy="6" r="5.5" fill="none" stroke="#112418" stroke-width="1.3"></circle><circle cx="6" cy="6" r="2" fill="#112418"></circle></g>
+      <text x="36" y="32" font-size="14" font-weight="500" fill="#112418">ChromeOS</text>
+      <text x="14" y="58" font-size="11" fill="#5a5f5b">Infrastructure</text>
+      <circle cx="152" cy="14" r="2.6" fill="#c89a3a"></circle>
+      <text x="148" y="18" text-anchor="end" font-size="10" fill="#5a5f5b">active</text>
+    </g>
+    <line x1="560" y1="236" x2="560" y2="250" stroke="#112418" stroke-width="1.6" stroke-linecap="round"></line><g transform="translate(696 156)">
+      <rect width="168" height="80" fill="rgba(255,255,255,0.55)" stroke="#112418" stroke-width="1.1"></rect>
+      <g transform="translate(14 22)"><circle cx="6" cy="6" r="5.5" fill="none" stroke="#112418" stroke-width="1.3"></circle><circle cx="6" cy="2.6" r="0.8" fill="#112418"></circle><circle cx="9.2" cy="7.4" r="0.8" fill="#112418"></circle><circle cx="2.8" cy="7.4" r="0.8" fill="#112418"></circle></g>
+      <text x="36" y="32" font-size="14" font-weight="500" fill="#112418">Linux</text>
+      <text x="14" y="58" font-size="11" fill="#5a5f5b">Testing</text>
+      <circle cx="152" cy="14" r="2.6" fill="#c89a3a"></circle>
+      <text x="148" y="18" text-anchor="end" font-size="10" fill="#5a5f5b">active</text>
+    </g>
+    <line x1="780" y1="236" x2="780" y2="250" stroke="#112418" stroke-width="1.6" stroke-linecap="round"></line>
+  <line x1="40" y1="250" x2="860" y2="250" stroke="#1a1f1c" stroke-width="1" stroke-dasharray="3 4" opacity="0.55"></line>
+  <text x="860" y="242" text-anchor="end" font-size="9" fill="#5a5f5b">— context surface —</text>
+  <g stroke="#1a3a2a" stroke-width="1.2" fill="none" opacity="0.85">
+      <path d="M120 250 C 120 306, 160 314, 160 350"></path>
+      <path d="M120 256 C 134 296, 95 320, 95 350" stroke-width="0.8" opacity="0.7"></path>
+    </g><g stroke="#1a3a2a" stroke-width="1.2" fill="none" opacity="0.85">
+      <path d="M340 250 C 340 306, 380 314, 380 350"></path>
+      <path d="M340 256 C 326 296, 315 320, 315 350" stroke-width="0.8" opacity="0.7"></path>
+    </g><g stroke="#1a3a2a" stroke-width="1.2" fill="none" opacity="0.85">
+      <path d="M560 250 C 560 306, 520 314, 520 350"></path>
+      <path d="M560 256 C 574 296, 585 320, 585 350" stroke-width="0.8" opacity="0.7"></path>
+    </g><g stroke="#1a3a2a" stroke-width="1.2" fill="none" opacity="0.85">
+      <path d="M780 250 C 780 306, 740 314, 740 350"></path>
+      <path d="M780 256 C 766 296, 805 320, 805 350" stroke-width="0.8" opacity="0.7"></path>
+    </g>
+  <rect x="40" y="350" width="820" height="42" fill="#112418"></rect>
+  <rect x="40" y="350" width="820" height="2" fill="#c89a3a" opacity="0.85"></rect>
+  <text x="56" y="369" font-size="11" font-weight="500" letter-spacing="0.16em" fill="#e6c882">SHARED MEMORY STORE</text>
+  <text x="844" y="369" text-anchor="end" font-size="10" fill="rgba(243,240,232,0.55)">~/mori.db · canonical + working + ephemeral</text>
+  <circle cx="100" cy="382" r="2.4" fill="#c89a3a" opacity="0.85"></circle><circle cx="220" cy="382" r="2.4" fill="#c4cdb8" opacity="0.85"></circle><circle cx="360" cy="382" r="2.4" fill="#c4cdb8" opacity="0.85"></circle><circle cx="500" cy="382" r="2.4" fill="#c89a3a" opacity="0.85"></circle><circle cx="620" cy="382" r="2.4" fill="#c4cdb8" opacity="0.85"></circle><circle cx="760" cy="382" r="2.4" fill="#c4cdb8" opacity="0.85"></circle>
+  <polygon points="115,341 125,341 120,349" fill="#112418"></polygon><polygon points="335,341 345,341 340,349" fill="#112418"></polygon><polygon points="555,341 565,341 560,349" fill="#112418"></polygon><polygon points="775,341 785,341 780,349" fill="#112418"></polygon>
+  <g opacity="0.9">
+    <path d="M 340 350 C 328 300, 132 292, 120 254" stroke="#8a6420" stroke-width="1.3" fill="none" stroke-dasharray="3 3"></path>
+    <polygon points="116,257 124,257 120,250" fill="#8a6420"></polygon>
+    <text x="136" y="294" font-size="11" letter-spacing="0.06em" fill="#8a6420">↑ /brief</text>
+  </g>
+  <text x="752" y="304" font-size="11" letter-spacing="0.06em" fill="#1a3a2a">↓ /dream</text>
+  <line x1="40" y1="438" x2="860" y2="438" stroke="#5a5f5b" stroke-width="1" opacity="0.6"></line>
+  <text x="48" y="466" font-size="12" fill="#c89a3a">·</text>
+  <text x="62" y="466" font-size="12" fill="#2a2f2c">each session starts informed</text>
+  <text x="324" y="466" font-size="12" fill="#c89a3a">·</text>
+  <text x="338" y="466" font-size="12" fill="#2a2f2c">decisions flow both ways</text>
+  <text x="572" y="466" font-size="12" fill="#c89a3a">·</text>
+  <text x="586" y="466" font-size="12" fill="#2a2f2c">the forest grows smarter</text>
+</svg>

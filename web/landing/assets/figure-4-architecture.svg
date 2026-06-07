@@ -1,0 +1,85 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="570" viewBox="0 0 900 570" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace">
+
+  <rect width="900" height="570" fill="#e8eae1"></rect>
+  <g stroke="#d6d2c5" stroke-width="1" fill="none">
+  <path d="M12 22 L12 12 L22 12"></path><path d="M878 12 L888 12 L888 22"></path>
+  <path d="M12 548 L12 558 L22 558 M878 558 L888 558 L888 548"></path>
+</g>
+
+  <text x="40" y="72" font-size="28" font-weight="500" letter-spacing="-0.04em" fill="#112418">Architecture.</text>
+  <text x="860" y="56" text-anchor="end" font-size="10" font-weight="400" letter-spacing="0.08em" fill="#5a5f5b">TWO LAYERS · HTTP / MCP</text>
+  <text x="40" y="118" font-size="10" letter-spacing="0.14em" fill="#5a5f5b">AGENT INSTANCES · N DEVICES</text>
+  <g transform="translate(60 130)">
+    <rect width="150" height="74" fill="rgba(255,255,255,0.55)" stroke="#112418" stroke-width="1.1"></rect>
+    <g transform="translate(14 26)" stroke="#112418" stroke-linecap="round" fill="#112418"><rect x="0" y="0" width="12" height="8" rx="1" fill="none" stroke-width="1.3"></rect><line x1="-2" y1="10" x2="14" y2="10" stroke-width="1.3"></line></g>
+    <text x="36" y="35" font-size="14" font-weight="500" fill="#112418">Ubuntu</text>
+    <text x="14" y="60" font-size="11" fill="#5a5f5b">24.04 LTS</text>
+    <text x="138" y="22" text-anchor="end" font-size="12" fill="#c89a3a">●</text>
+  </g><g transform="translate(270 130)">
+    <rect width="150" height="74" fill="rgba(255,255,255,0.55)" stroke="#112418" stroke-width="1.1"></rect>
+    <g transform="translate(14 26)" stroke="#112418" stroke-linecap="round" fill="#112418"><rect x="0" y="0" width="5" height="5" fill="none" stroke-width="1.3"></rect><rect x="6.5" y="0" width="5" height="5" fill="none" stroke-width="1.3"></rect><rect x="0" y="6.5" width="5" height="5" fill="none" stroke-width="1.3"></rect><rect x="6.5" y="6.5" width="5" height="5" fill="none" stroke-width="1.3"></rect></g>
+    <text x="36" y="35" font-size="14" font-weight="500" fill="#112418">Windows</text>
+    <text x="14" y="60" font-size="11" fill="#5a5f5b">WSL2</text>
+    <text x="138" y="22" text-anchor="end" font-size="12" fill="#c89a3a">●</text>
+  </g><g transform="translate(480 130)">
+    <rect width="150" height="74" fill="rgba(255,255,255,0.55)" stroke="#112418" stroke-width="1.1"></rect>
+    <g transform="translate(14 26)" stroke="#112418" stroke-linecap="round" fill="#112418"><circle cx="6" cy="6" r="5.5" fill="none" stroke-width="1.3"></circle><circle cx="6" cy="6" r="2"></circle></g>
+    <text x="36" y="35" font-size="14" font-weight="500" fill="#112418">ChromeOS</text>
+    <text x="14" y="60" font-size="11" fill="#5a5f5b">Crostini</text>
+    <text x="138" y="22" text-anchor="end" font-size="12" fill="#c89a3a">●</text>
+  </g><g transform="translate(690 130)">
+    <rect width="150" height="74" fill="rgba(255,255,255,0.55)" stroke="#112418" stroke-width="1.1"></rect>
+    <g transform="translate(14 26)" stroke="#112418" stroke-linecap="round" fill="#112418"><rect x="0" y="0" width="5" height="5" fill="none" stroke-width="1.3"></rect><rect x="6.5" y="0" width="5" height="5" fill="none" stroke-width="1.3"></rect><rect x="0" y="6.5" width="5" height="5" fill="none" stroke-width="1.3"></rect><rect x="6.5" y="6.5" width="5" height="5" fill="none" stroke-width="1.3"></rect></g>
+    <text x="36" y="35" font-size="14" font-weight="500" fill="#112418">Win 11</text>
+    <text x="14" y="60" font-size="11" fill="#5a5f5b">native</text>
+    <text x="138" y="22" text-anchor="end" font-size="12" fill="#c89a3a">●</text>
+  </g>
+  <g stroke="#112418" stroke-width="1.2" fill="none">
+    <line x1="135" y1="204" x2="135" y2="228"></line><line x1="345" y1="204" x2="345" y2="228"></line><line x1="555" y1="204" x2="555" y2="228"></line><line x1="765" y1="204" x2="765" y2="228"></line>
+    <line x1="135" y1="228" x2="765" y2="228" stroke-width="1.4"></line>
+    <line x1="450" y1="228" x2="450" y2="268"></line>
+    <rect x="396" y="240" width="108" height="22" fill="#e8eae1"></rect>
+    <polygon points="450,274 446,266 454,266" fill="#112418"></polygon>
+  </g>
+  <text x="450" y="256" text-anchor="middle" font-size="11" font-weight="500" letter-spacing="0.14em" fill="#112418">HTTP / MCP</text>
+  <rect x="40" y="280" width="820" height="270" fill="rgba(255,255,255,0.4)" stroke="#112418" stroke-width="1.5"></rect>
+  <rect x="56" y="272" width="120" height="18" fill="#e8eae1"></rect>
+  <text x="62" y="285" font-size="10" font-weight="500" letter-spacing="0.14em" fill="#112418">MORI SERVER</text>
+  <g transform="translate(56 302)">
+    <rect width="240" height="60" fill="#f3f0e8" stroke="#5a5f5b" stroke-width="1"></rect>
+    <text x="12" y="22" font-size="13" font-weight="500" fill="#112418">Memory Store</text>
+    <text x="228" y="22" text-anchor="end" font-size="10" letter-spacing="0.1em" fill="#8a6420">SQLITE</text>
+    <text x="12" y="42" font-size="11" fill="#5a5f5b">versioning · protection · attribution</text>
+  </g><g transform="translate(324 302)">
+    <rect width="240" height="60" fill="#f3f0e8" stroke="#5a5f5b" stroke-width="1"></rect>
+    <text x="12" y="22" font-size="13" font-weight="500" fill="#112418">Dream Pipeline</text>
+
+    <text x="12" y="42" font-size="11" fill="#5a5f5b">events · distil · evict</text>
+  </g><g transform="translate(592 302)">
+    <rect width="240" height="60" fill="#f3f0e8" stroke="#5a5f5b" stroke-width="1"></rect>
+    <text x="12" y="22" font-size="13" font-weight="500" fill="#112418">Consult Advisor</text>
+
+    <text x="12" y="42" font-size="11" fill="#5a5f5b">strategic guidance on demand</text>
+  </g>
+  <g transform="translate(56 374)">
+    <rect width="240" height="60" fill="#f3f0e8" stroke="#5a5f5b" stroke-width="1"></rect>
+    <text x="12" y="22" font-size="13" font-weight="500" fill="#112418">NATS Bridge</text>
+    <text x="228" y="22" text-anchor="end" font-size="10" letter-spacing="0.1em" fill="#8a6420">OPTIONAL</text>
+    <text x="12" y="42" font-size="11" fill="#5a5f5b">cross-device messaging</text>
+  </g><g transform="translate(324 374)">
+    <rect width="240" height="60" fill="#f3f0e8" stroke="#5a5f5b" stroke-width="1"></rect>
+    <text x="12" y="22" font-size="13" font-weight="500" fill="#112418">Device Deployer</text>
+
+    <text x="12" y="42" font-size="11" fill="#5a5f5b">skill deployment</text>
+  </g><g transform="translate(592 374)">
+    <rect width="240" height="60" fill="#f3f0e8" stroke="#5a5f5b" stroke-width="1"></rect>
+    <text x="12" y="22" font-size="13" font-weight="500" fill="#112418">Standards Ingestion</text>
+    <text x="228" y="22" text-anchor="end" font-size="10" letter-spacing="0.1em" fill="#8a6420">CORPUS</text>
+    <text x="12" y="42" font-size="11" fill="#5a5f5b">.md ingestion</text>
+  </g>
+  <line x1="56" y1="450" x2="844" y2="450" stroke="#5a5f5b" stroke-width="1" stroke-dasharray="2 3"></line>
+  <text x="56" y="470" font-size="11" fill="#c89a3a">●</text>
+  <text x="72" y="470" font-size="11" font-weight="500" fill="#1a1f1c">LLM backend</text>
+  <text x="156" y="470" font-size="11" fill="#5a5f5b">direct (OpenAI API) or via gateway</text>
+</svg>

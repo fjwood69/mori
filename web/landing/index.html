@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mori (森) — Shared memory for AI coding agents</title>
+  <meta name="description" content="A shared memory layer for AI coding agents — one that compounds.">
+  <meta property="og:title" content="mori (森) — Shared memory for AI coding agents">
+  <meta property="og:description" content="A shared memory layer for AI coding agents — one that compounds.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://moriapp.dev">
+  <meta name="theme-color" content="#0d1117">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>森</text></svg>">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;1,9..144,300&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg:           #0d1117;
+      --bg-green:     #0a150f;
+      --surface:      #161b22;
+      --border:       #21262d;
+      --border-green: rgba(27, 67, 50, 0.6);
+      --text:         #e6edf3;
+      --text-muted:   #8b949e;
+      --text-faint:   #484f58;
+      --green:        #52b788;
+      --green-btn:    #2d6a4f;
+      --green-hover:  #40916c;
+      --green-deep:   #1b4332;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+      font-size: 16px;
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Layout ── */
+
+    .container {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 0 2rem;
+    }
+
+    section {
+      padding: 6rem 0;
+      border-top: 1px solid var(--border);
+    }
+
+    #hero { border-top: none; }
+
+    /* ── Typography ── */
+
+    h2 {
+      font-family: 'Fraunces', Georgia, serif;
+      font-size: clamp(1.75rem, 3vw, 2.25rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+      margin-bottom: 2rem;
+      color: var(--text);
+    }
+
+    h3 {
+      font-family: 'Fraunces', Georgia, serif;
+      font-size: 1.2rem;
+      font-weight: 400;
+      margin-bottom: 0.75rem;
+      color: var(--text);
+    }
+
+    p {
+      color: var(--text-muted);
+      font-weight: 300;
+      line-height: 1.8;
+    }
+
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.83em;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 0.1em 0.35em;
+      color: var(--text-muted);
+    }
+
+    /* ── Two-column grid ── */
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4rem;
+      align-items: center;
+    }
+
+    .two-col.rev .fig-wrap { order: -1; }
+
+    .prose p {
+      margin-bottom: 1.25rem;
+    }
+
+    .prose p:last-child { margin-bottom: 0; }
+
+    .prose strong {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .fig-wrap {
+      display: flex;
+      justify-content: center;
+    }
+
+    .fig-wrap img {
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* ── Hero ── */
+
+    #hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      text-align: center;
+      padding: clamp(2.5rem, 8vh, 4.5rem) 2rem 6rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #hero::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse 80% 55% at 50% 38%, rgba(27, 67, 50, 0.3) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-img {
+      width: min(620px, 88vw);
+      margin-bottom: 2.5rem;
+      position: relative;
+    }
+
+    .hero-title {
+      font-family: 'Fraunces', Georgia, serif;
+      font-size: clamp(3rem, 8vw, 5.5rem);
+      font-weight: 300;
+      letter-spacing: -0.03em;
+      line-height: 1.05;
+      margin-bottom: 1.25rem;
+      position: relative;
+    }
+
+    .hero-tagline {
+      font-size: clamp(1rem, 2.2vw, 1.2rem);
+      color: var(--text-muted);
+      font-weight: 300;
+      max-width: 520px;
+      line-height: 1.65;
+      margin-bottom: 2.5rem;
+      position: relative;
+    }
+
+    .hero-tagline em {
+      font-style: normal;
+      color: var(--green);
+      font-weight: 500;
+    }
+
+    .cta-row {
+      display: flex;
+      gap: 1.25rem;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      position: relative;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      background: var(--green-btn);
+      color: #d8f3dc;
+      text-decoration: none;
+      padding: 0.8rem 1.875rem;
+      border-radius: 6px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.975rem;
+      font-weight: 500;
+      border: 1px solid rgba(82, 183, 136, 0.25);
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+      letter-spacing: 0.01em;
+    }
+
+    .btn-primary:hover {
+      background: var(--green-hover);
+      color: #fff;
+      border-color: rgba(82, 183, 136, 0.5);
+    }
+
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      color: var(--text-faint);
+      text-decoration: none;
+      font-size: 0.925rem;
+      font-weight: 400;
+      transition: color 0.15s;
+    }
+
+    .btn-secondary:hover { color: var(--text-muted); }
+
+    .scroll-hint {
+      position: absolute;
+      bottom: 2.5rem;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    .scroll-line {
+      width: 1px;
+      height: 48px;
+      background: linear-gradient(to bottom, transparent 0%, var(--text-faint) 100%);
+      animation: scroll-pulse 2.4s ease-in-out infinite;
+    }
+
+    @keyframes scroll-pulse {
+      0%, 100% { opacity: 0.2; transform: scaleY(0.7) translateY(-6px); }
+      50%       { opacity: 0.6; transform: scaleY(1)   translateY(0); }
+    }
+
+    /* ── How it works ── */
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.5rem;
+      margin-bottom: 3.5rem;
+    }
+
+    .step {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 2rem 1.75rem;
+    }
+
+    .step-n {
+      display: block;
+      font-family: 'Fraunces', serif;
+      font-size: 2.75rem;
+      font-weight: 300;
+      color: var(--green-deep);
+      line-height: 1;
+      margin-bottom: 1.25rem;
+      letter-spacing: -0.03em;
+    }
+
+    .step p { font-size: 0.95rem; }
+
+    .fig-center {
+      display: flex;
+      justify-content: center;
+    }
+
+    .fig-center img { max-width: min(700px, 100%); }
+
+    /* ── No instrumentation ── */
+
+    #nocode {
+      background: var(--bg-green);
+      border-top-color: var(--border-green);
+    }
+
+    .nocode-inner { max-width: 680px; }
+
+    .nocode-inner p {
+      font-size: 1.05rem;
+      margin-bottom: 1.25rem;
+      line-height: 1.8;
+    }
+
+    .nocode-inner p:last-child { margin-bottom: 0; }
+
+    .green-text {
+      color: var(--green);
+      font-weight: 500;
+    }
+
+    /* ── Works with your agent ── */
+
+    #agents { text-align: center; }
+
+    .agent-row {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .agent-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.7rem 1.4rem;
+      font-size: 0.925rem;
+      color: var(--text-muted);
+      font-weight: 400;
+      transition: border-color 0.15s, color 0.15s;
+      user-select: none;
+    }
+
+    .agent-badge:hover {
+      border-color: var(--green-deep);
+      color: var(--text);
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      flex-shrink: 0;
+      opacity: 0.8;
+    }
+
+    /* ── Quickstart ── */
+
+    .qs-inner { max-width: 680px; }
+
+    .code-block {
+      position: relative;
+      background: #010409;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem 1.75rem;
+      margin: 1.75rem 0;
+      overflow: hidden;
+    }
+
+    .code-block::after {
+      content: 'bash';
+      position: absolute;
+      top: 0.8rem;
+      right: 1rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      color: var(--text-faint);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .copy-btn {
+      position: absolute;
+      top: 0.7rem;
+      right: 3.75rem;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text-faint);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.72rem;
+      padding: 0.2rem 0.55rem;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+      z-index: 1;
+    }
+
+    .copy-btn:hover {
+      border-color: var(--green-deep);
+      color: var(--text-muted);
+    }
+
+    #qs-code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      line-height: 1.75;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    .c-cmd { color: var(--text); }
+    .c-cmt { color: var(--text-faint); }
+    .c-ok  { color: var(--green); }
+
+    .qs-cta {
+      display: flex;
+      gap: 1.5rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      text-align: center;
+      margin: 0;
+    }
+
+    .qs-cta a {
+      color: var(--green);
+      text-decoration: none;
+      font-size: 0.95rem;
+      font-weight: 500;
+      transition: opacity 0.15s;
+    }
+
+    .qs-cta a:hover { opacity: 0.7; }
+
+    /* ── For teams ── */
+
+    .two-col + .two-col {
+      margin-top: 3.5rem;
+    }
+
+    .whispers-caption {
+      font-family: 'Fraunces', serif;
+      font-style: italic;
+      font-weight: 300;
+      font-size: 1rem;
+      color: var(--text);
+      line-height: 1.65;
+    }
+
+    /* ── Footer ── */
+
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2.25rem 2rem;
+    }
+
+    .footer-row {
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .footer-brand {
+      font-family: 'Fraunces', serif;
+      font-size: 1rem;
+      color: var(--text-muted);
+      font-weight: 300;
+    }
+
+    .footer-domain {
+      font-size: 0.85rem;
+      color: var(--text-faint);
+    }
+
+    .sep {
+      color: var(--text-faint);
+      font-size: 0.8rem;
+    }
+
+    footer a {
+      color: var(--text-faint);
+      text-decoration: none;
+      font-size: 0.85rem;
+      transition: color 0.15s;
+    }
+
+    footer a:hover { color: var(--text-muted); }
+
+    /* ── Responsive ── */
+
+    @media (max-width: 768px) {
+      section { padding: 4rem 0; }
+
+      .two-col {
+        grid-template-columns: 1fr;
+        gap: 2.5rem;
+      }
+
+      .two-col.rev .fig-wrap { order: 0; }
+
+      .steps {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+      }
+
+      #hero { padding: 2rem 1.5rem 4rem; }
+      .scroll-hint { display: none; }
+
+      h2 { margin-bottom: 1.5rem; }
+    }
+
+    @media (max-width: 480px) {
+      .container { padding: 0 1.25rem; }
+
+      .code-block { padding: 1.25rem; }
+
+      #qs-code { font-size: 0.775rem; }
+
+      .agent-row { gap: 0.75rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══ 1. HERO ═══ -->
+  <section id="hero">
+    <img class="hero-img" src="assets/header-dark.svg" alt="Mori">
+    <h1 class="hero-title">mori (森)</h1>
+    <p class="hero-tagline">
+      A shared memory layer for AI coding agents —<br>one that <em>compounds</em>.
+    </p>
+    <div class="cta-row">
+      <a href="#problem" class="btn-primary">Get started →</a>
+      <a href="https://github.com/fjwood69/mori" class="btn-secondary" target="_blank" rel="noopener">View on GitHub ↗</a>
+    </div>
+    <div class="scroll-hint" aria-hidden="true">
+      <div class="scroll-line"></div>
+    </div>
+  </section>
+
+  <!-- ═══ 2. THE PROBLEM ═══ -->
+  <section id="problem">
+    <div class="container">
+      <div class="two-col">
+        <div class="prose">
+          <h2>The problem</h2>
+          <p>One codebase. Many agents. No shared memory. Until now.</p>
+          <p>Your team shares a repo, standards, and a CI pipeline. But each agent session starts fresh — no memory of what the others decided, changed, or broke. <strong>Mori fixes that.</strong></p>
+        </div>
+        <div class="fig-wrap">
+          <img src="assets/figure-5-one-forest.svg" alt="One forest, many agents">
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 3. HOW IT WORKS ═══ -->
+  <section id="how">
+    <div class="container">
+      <h2>How it works</h2>
+      <div class="steps">
+        <div class="step">
+          <span class="step-n">01</span>
+          <h3>Capture</h3>
+          <p>Claude Code lifecycle hooks send session events to Mori automatically. Every tool call, decision, error — captured without changing how you work.</p>
+        </div>
+        <div class="step">
+          <span class="step-n">02</span>
+          <h3>Dream</h3>
+          <p>While you sleep, the dream pipeline distils events into durable memories. Signal, not transcripts. What matters, not what happened.</p>
+        </div>
+        <div class="step">
+          <span class="step-n">03</span>
+          <h3>Brief</h3>
+          <p>Every session starts with <code>/brief</code> — shared memories, team standards, cross-instance decisions. From turn one, every agent knows what the others know.</p>
+        </div>
+      </div>
+      <div class="fig-center">
+        <img src="assets/figure-1-dream-pipeline.svg" alt="The dream pipeline: capture, distil, brief">
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 4. NO INSTRUMENTATION ═══ -->
+  <section id="nocode">
+    <div class="container">
+      <div class="nocode-inner">
+        <h2>No instrumentation required</h2>
+        <p>Every other memory tool requires you to instrument your app — call <code>add()</code> after responses, call <code>search()</code> before prompts.</p>
+        <p><span class="green-text">Mori requires nothing.</span> Lifecycle hooks capture your sessions automatically. You just work.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 5. WORKS WITH YOUR AGENT ═══ -->
+  <section id="agents">
+    <div class="container">
+      <h2>Works with your agent</h2>
+      <div class="agent-row">
+        <div class="agent-badge"><span class="dot"></span>Claude Code</div>
+        <div class="agent-badge"><span class="dot"></span>Cursor</div>
+        <div class="agent-badge"><span class="dot"></span>Antigravity</div>
+        <div class="agent-badge"><span class="dot"></span>Cline</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 6. QUICKSTART ═══ -->
+  <section id="quickstart">
+    <div class="container">
+      <div class="qs-inner">
+        <h2>Get running in minutes</h2>
+        <div class="code-block">
+          <button class="copy-btn" onclick="handleCopy(this)">copy</button>
+<pre id="qs-code"><span class="c-cmd">git clone https://github.com/fjwood69/mori.git
+cd mori
+cp deploy/homelab/.env.example deploy/homelab/.env
+docker compose -f deploy/homelab/docker-compose.yml up -d</span>
+
+<span class="c-cmt"># Verify</span>
+<span class="c-cmd">curl http://localhost:8968/health</span>
+<span class="c-ok">{"status":"ok"}</span></pre>
+        </div>
+        <div class="qs-cta">
+          <a href="https://github.com/fjwood69/mori/tree/main/docs/deployment" target="_blank" rel="noopener">Full deployment guide →</a>
+          <a href="https://github.com/fjwood69/mori/tree/main/docs/getting-started" target="_blank" rel="noopener">Agent setup guide →</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 7. FOR TEAMS ═══ -->
+  <section id="teams">
+    <div class="container">
+      <div class="two-col rev">
+        <div class="fig-wrap">
+          <img src="assets/figure-4-architecture.svg" alt="Architecture: one server, many agents">
+        </div>
+        <div class="prose">
+          <h2>For teams</h2>
+          <p>One Mori, many agents. Every session benefits from what every other session learned.</p>
+          <p>Point every instance at the same server. That's it.</p>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="prose">
+          <p class="whispers-caption">The forest remembers. Now it whispers too — tasks and decisions passed directly between agents, without a shared session.</p>
+        </div>
+        <div class="fig-wrap">
+          <img src="assets/figure-8-the-forest-whispers-dark.svg" alt="The forest whispers — inter-agent messaging">
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 8. FOOTER ═══ -->
+  <footer>
+    <div class="footer-row">
+      <span class="footer-brand">森 mori</span>
+      <span class="sep">·</span>
+      <a href="https://github.com/fjwood69/mori/blob/main/LICENSE" target="_blank" rel="noopener">AGPL-3.0</a>
+      <span class="sep">·</span>
+      <a href="https://github.com/fjwood69/mori" target="_blank" rel="noopener">GitHub</a>
+      <span class="sep">·</span>
+      <a href="https://github.com/fjwood69/mori/blob/main/ROADMAP.md" target="_blank" rel="noopener">Roadmap ↗</a>
+      <span class="sep">·</span>
+      <a href="https://ko-fi.com/moriapp" target="_blank" rel="noopener">Ko-fi</a>
+      <span class="sep">·</span>
+      <a href="/privacy">Privacy</a>
+      <span class="sep">·</span>
+      <span class="footer-domain">moriapp.dev</span>
+    </div>
+  </footer>
+
+  <script>
+    function handleCopy(btn) {
+      var commands = [
+        'git clone https://github.com/fjwood69/mori.git',
+        'cd mori',
+        'cp deploy/homelab/.env.example deploy/homelab/.env',
+        'docker compose -f deploy/homelab/docker-compose.yml up -d'
+      ].join('\n');
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(commands).then(function() {
+          flash(btn);
+        }).catch(function() {
+          fallbackCopy(commands, btn);
+        });
+      } else {
+        fallbackCopy(commands, btn);
+      }
+    }
+
+    function fallbackCopy(text, btn) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      try { document.execCommand('copy'); } catch(e) {}
+      document.body.removeChild(ta);
+      flash(btn);
+    }
+
+    function flash(btn) {
+      btn.textContent = 'copied';
+      setTimeout(function() { btn.textContent = 'copy'; }, 1800);
+    }
+  </script>
+
+</body>
+</html>
