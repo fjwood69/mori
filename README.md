@@ -76,6 +76,15 @@ Pick a path:
 
 Full guide: [docs/getting-started/one-click-deploy.md](docs/getting-started/one-click-deploy.md)
 
+**Or try it instantly in GitHub Codespaces (no local setup):**
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/fjwood69/mori)
+
+Opens a pre-configured environment with all dependencies installed. Edit `.env` with your provider key, run `python -m mori_advisor.main`, and Mori is live on port 8968 — forwarded automatically by Codespaces.
+
+> **Note:** Codespaces are ephemeral. Use the one-click cloud deploys above for
+> persistent memory that survives across sessions.
+
 **Or run locally with Docker Compose:**
 
 ```bash

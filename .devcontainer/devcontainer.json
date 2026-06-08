@@ -1,0 +1,31 @@
+{
+  "name": "Mori",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bullseye",
+
+  "remoteEnv": {
+    "MORI_ADVISOR_DATA": "${containerWorkspaceFolder}/data"
+  },
+
+  "postCreateCommand": "echo 'Installing Python dependencies (this may take a couple of minutes)...' && pip install -r requirements.txt && echo '' && cat .devcontainer/NOTES.md",
+  "postStartCommand": "[ -f .env ] || cp deploy/homelab/.env.example .env",
+
+  "forwardPorts": [8968],
+  "portsAttributes": {
+    "8968": {
+      "label": "Mori Advisor",
+      "onAutoForward": "notify"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  }
+}
