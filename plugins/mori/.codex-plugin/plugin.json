@@ -1,0 +1,22 @@
+{
+  "name": "mori",
+  "version": "0.3.3",
+  "description": "Persistent, cross-device memory for your AI coding agents — self-hosted and AGPL, so your knowledge never leaves your own infrastructure. Connect to a Mori server you run; every session distils into durable, searchable memory, so agents start informed, not cold. /brief loads context, /pensieve searches it.",
+  "author": { "name": "fjwood69", "url": "https://github.com/fjwood69" },
+  "homepage": "https://github.com/fjwood69/mori",
+  "repository": "https://github.com/fjwood69/mori",
+  "license": "AGPL-3.0-only",
+  "keywords": ["memory", "mcp", "agents", "context", "cross-device"],
+
+  "skills": "./skills",
+  "mcpServers": "./mcp.json",
+  "hooks": "./hooks/hooks.json",
+
+  "interface": {
+    "displayName": "Mori (森)",
+    "shortDescription": "Self-hosted shared memory that compounds across sessions",
+    "longDescription": "Mori gives every coding agent session access to shared, durable memory — without changing how you work. Lifecycle hooks capture sessions automatically. The dream pipeline distils events into curated memories overnight. /brief re-grounds any agent on any machine from turn one.\n\nFully self-hosted (SQLite or Postgres). Your knowledge never leaves your own infrastructure. AGPL-3.0.",
+    "category": "memory",
+    "capabilities": ["memory", "context", "mcp", "cross-device", "governance"]
+  }
+}
