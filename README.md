@@ -66,24 +66,17 @@ Pick a path:
 | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/fjwood69/mori) | **Railway** + free Postgres ([Neon](https://neon.tech) / [Supabase](https://supabase.com)) | ✅ free Postgres | ~$5/mo + $0 Postgres |
 | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/fjwood69/mori) | **Render** (persistent disk in config) | ✅ SQLite on disk | ~$7/mo |
 | [![Run on Google Cloud](https://deploy.cloud.run/button.svg)](https://deploy.cloud.run/?git_repo=https://github.com/fjwood69/mori) | **Cloud Run** + free Postgres ([Neon](https://neon.tech) / [Supabase](https://supabase.com)) | ✅ free Postgres | Pay-per-use |
+| [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/fjwood69/mori) | **GitHub Codespaces** — evaluate Mori with no local setup | ⚠️ ephemeral | free tier |
 
 **Fly.io (CLI):** free persistent volume + SQLite, ~$3–5/mo — see [one-click-deploy.md](docs/getting-started/one-click-deploy.md).
 
 > **Persistence note:** SQLite needs a persistent disk or volume; stateless platforms
 > (Railway, Cloud Run, Render free tier) lose data on restart without Postgres. The deploy
 > script and guide walk through connecting a free Neon or Supabase database — the recommended
-> $0 durable path.
+> $0 durable path. Codespaces are ephemeral by design — use them to evaluate Mori, then
+> deploy to a persistent host when you're ready.
 
 Full guide: [docs/getting-started/one-click-deploy.md](docs/getting-started/one-click-deploy.md)
-
-**Or try it instantly in GitHub Codespaces (no local setup):**
-
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/fjwood69/mori)
-
-Opens a pre-configured environment with all dependencies installed. Edit `.env` with your provider key, run `python -m mori_advisor.main`, and Mori is live on port 8968 — forwarded automatically by Codespaces.
-
-> **Note:** Codespaces are ephemeral. Use the one-click cloud deploys above for
-> persistent memory that survives across sessions.
 
 **Or run locally with Docker Compose:**
 
