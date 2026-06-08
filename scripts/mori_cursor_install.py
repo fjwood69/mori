@@ -21,6 +21,29 @@ HOOK_EVENTS = (
     "PostCompact",
 )
 
+# Claude-compat events wired by plugin --parity (native hooks.json covers the rest).
+COMPAT_HOOK_EVENTS = ("PreCompact", "PostCompact")
+
+# Legacy overlap removed when plugin native hooks are active (avoid duplicate telemetry).
+NATIVE_COVERED_EVENTS = (
+    "PostToolUse",
+    "PostToolUseFailure",
+    "UserPromptSubmit",
+    "Stop",
+)
+
+PLUGIN_SKILL_NAMES = {
+    "brief",
+    "consult",
+    "dream",
+    "ingest",
+    "msg",
+    "nats",
+    "pensieve",
+    "req",
+    "wrap",
+}
+
 MORI_MCP_ALLOW = [
     # Core session tools
     "mcp__mori__brief",
@@ -161,6 +184,102 @@ def _settings_has_mori_hooks(settings: dict[str, Any]) -> bool:
         if isinstance(event_list, list) and _hook_list_has_mori(event_list):
             return True
     return False
+
+
+def _prune_mori_hooks_for_events(hooks: dict[str, Any], events: tuple[str, ...]) -> None:
+    """Remove _mori_managed (or mori-command) entries for the given hook events."""
+    for event in events:
+        entries = hooks.get(event)
+        if not isinstance(entries, list):
+            continue
+        pruned: list[Any] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                pruned.append(entry)
+                continue
+            if "hooks" in entry and isinstance(entry["hooks"], list):
+                nested = [
+                    h
+                    for h in entry["hooks"]
+                    if not (_is_mori_hook(h) if isinstance(h, dict) else False)
+                ]
+                if nested:
+                    entry = {**entry, "hooks": nested}
+                    pruned.append(entry)
+            elif not _is_mori_hook(entry):
+                pruned.append(entry)
+        if pruned:
+            hooks[event] = pruned
+        elif event in hooks:
+            del hooks[event]
+
+
+def merge_settings_compat(
+    settings_path: Path,
+    shipper: str,
+    mori_url: str,
+    client: str,
+    api_key: str,
+    *,
+    prune_native_overlap: bool = True,
+) -> None:
+    """Merge PreCompact/PostCompact + permissions only (plugin native hooks cover telemetry)."""
+    precompact_cmd = _hook_command(shipper, mori_url, client, api_key, "precompact")
+    brief_ext = ".ps1" if shipper.lower().endswith(".ps1") else ".sh"
+    brief_shipper = str(Path(shipper).parent / f"mori-post-compact-brief{brief_ext}")
+    postcompact_cmd = _postcompact_command(brief_shipper)
+
+    if settings_path.is_file():
+        with settings_path.open(encoding="utf-8") as f:
+            settings: dict[str, Any] = json.load(f)
+    else:
+        settings = {}
+
+    hooks = settings.setdefault("hooks", {})
+    if prune_native_overlap:
+        _prune_mori_hooks_for_events(hooks, NATIVE_COVERED_EVENTS)
+
+    for event in COMPAT_HOOK_EVENTS:
+        if event == "PreCompact":
+            cmd = precompact_cmd
+        else:
+            cmd = postcompact_cmd
+        hooks[event] = _merge_hook_list(hooks.get(event, []), cmd)
+
+    perms = settings.setdefault("permissions", {})
+    allow = perms.setdefault("allow", [])
+    if not isinstance(allow, list):
+        allow = []
+        perms["allow"] = allow
+    for tool in MORI_MCP_ALLOW:
+        if tool not in allow:
+            allow.append(tool)
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    with settings_path.open("w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+
+
+def merge_plugin_mcp(mcp_path: Path, mori_url: str, api_key: str = "") -> None:
+    """Merge mori MCP server into the plugin-bundled mcp.json."""
+    mori_server: dict[str, Any] = {
+        "type": "http",
+        "url": f"{mori_url.rstrip('/')}/mcp",
+    }
+    if api_key:
+        mori_server["headers"] = {"x-api-key": api_key}
+    if mcp_path.is_file() and mcp_path.stat().st_size > 0:
+        with mcp_path.open(encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = {}
+    servers = data.setdefault("mcpServers", {})
+    servers["mori"] = mori_server
+    mcp_path.parent.mkdir(parents=True, exist_ok=True)
+    with mcp_path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
 
 
 def merge_settings(
@@ -330,6 +449,173 @@ def _http_get(url: str, timeout: int = 5) -> tuple[int, str]:
         return 0, str(e)
 
 
+def _plugin_paths() -> tuple[Path, Path, Path]:
+    home = Path.home()
+    plugin_dir = home / ".cursor" / "plugins" / "local" / "mori"
+    return plugin_dir, plugin_dir / "mcp.json", home / ".cursor" / "hooks.json"
+
+
+def _hooks_json_has_mori(hooks_path: Path, min_events: int = 1) -> tuple[bool, set[str]]:
+    if not hooks_path.is_file():
+        return False, set()
+    try:
+        data = json.loads(hooks_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False, set()
+    hooks = data.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return False, set()
+    found: set[str] = set()
+    for event, entries in hooks.items():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            cmd = ""
+            if isinstance(entry, dict):
+                cmd = entry.get("command", "")
+                if not cmd and isinstance(entry.get("hooks"), list):
+                    for h in entry["hooks"]:
+                        if isinstance(h, dict):
+                            cmd = h.get("command", "")
+            if "mori-" in cmd:
+                found.add(event)
+    return len(found) >= min_events, found
+
+
+def _settings_has_postcompact(settings_path: Path) -> bool:
+    if not settings_path.is_file():
+        return False
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+    entries = data.get("hooks", {}).get("PostCompact", [])
+    if not isinstance(entries, list):
+        return False
+    return _hook_list_has_mori(entries)
+
+
+def doctor_plugin(mori_url: str | None, client: str, *, parity: bool = False) -> int:
+    plugin_dir, plugin_mcp, hooks_json = _plugin_paths()
+    settings_path = Path.home() / ".claude" / "settings.json"
+    errors = 0
+    warns = 0
+
+    print("--- Mori Cursor plugin doctor ---\n")
+    mode = "parity" if parity else "minimal"
+    print(f"Mode: {mode}\n")
+
+    caps: list[tuple[str, str, str]] = []  # name, status, note
+
+    if plugin_dir.is_dir():
+        print(f"OK  Plugin directory: {plugin_dir}")
+        caps.append(("Plugin installed", "OK", str(plugin_dir)))
+    else:
+        print(f"FAIL  Plugin directory missing: {plugin_dir}")
+        caps.append(("Plugin installed", "FAIL", "run install-mori-cursor-plugin.sh"))
+        errors += 1
+
+    if plugin_mcp.is_file():
+        print(f"OK  Plugin MCP: {plugin_mcp}")
+        url = None
+        try:
+            data = json.loads(plugin_mcp.read_text(encoding="utf-8"))
+            url = data.get("mcpServers", {}).get("mori", {}).get("url", "")
+            url = url.removesuffix("/mcp") if url else None
+        except json.JSONDecodeError:
+            pass
+        if url:
+            print(f"    mori URL: {url}")
+            mori_url = mori_url or url
+            caps.append(("MCP configured", "OK", url))
+        else:
+            print("FAIL  plugin mcp.json missing mcpServers.mori.url")
+            caps.append(("MCP configured", "FAIL", ""))
+            errors += 1
+    else:
+        print(f"FAIL  Plugin MCP missing: {plugin_mcp}")
+        errors += 1
+
+    skills_in_plugin = (
+        [p.parent.name for p in plugin_dir.glob("skills/*/SKILL.md")] if plugin_dir.is_dir() else []
+    )
+    deployed = set(skills_in_plugin) & PLUGIN_SKILL_NAMES
+    if len(deployed) >= len(PLUGIN_SKILL_NAMES):
+        print(f"OK  Plugin skills: {len(deployed)}/{len(PLUGIN_SKILL_NAMES)}")
+        caps.append(("Skills in plugin", "OK", f"{len(deployed)} skills"))
+    elif deployed:
+        print(f"WARN  Plugin skills: {len(deployed)}/{len(PLUGIN_SKILL_NAMES)}")
+        caps.append(("Skills in plugin", "WARN", ", ".join(sorted(deployed))))
+        warns += 1
+    else:
+        print(f"WARN  No skills under {plugin_dir}/skills/")
+        warns += 1
+
+    native_ok, native_events = _hooks_json_has_mori(hooks_json, min_events=3)
+    if native_ok:
+        print(f"OK  Native hooks (~/.cursor/hooks.json): {', '.join(sorted(native_events))}")
+        caps.append(("Native hooks", "OK", ", ".join(sorted(native_events))))
+    else:
+        print(f"WARN  Native hooks missing or incomplete in {hooks_json}")
+        caps.append(("Native hooks", "WARN", "run install-hooks-cursor.mjs"))
+        warns += 1
+
+    if parity:
+        expected_native = {
+            "sessionStart",
+            "postToolUse",
+            "stop",
+            "beforeSubmitPrompt",
+            "postToolUseFailure",
+        }
+        missing_native = expected_native - native_events
+        if missing_native:
+            print(f"WARN  Parity native events missing: {', '.join(sorted(missing_native))}")
+            caps.append(("Parity native events", "WARN", ", ".join(sorted(missing_native))))
+            warns += 1
+        else:
+            caps.append(("Parity native events", "OK", "all wired"))
+
+        if _settings_has_postcompact(settings_path):
+            print(f"OK  Compat PostCompact in {settings_path}")
+            caps.append(("Post-compact re-ground", "OK", "PostCompact hook"))
+        else:
+            print(f"WARN  PostCompact not in {settings_path}")
+            caps.append(("Post-compact re-ground", "WARN", "re-run with --parity"))
+            warns += 1
+
+        text = settings_path.read_text(encoding="utf-8") if settings_path.is_file() else ""
+        if "PreCompact" in text and "mori-ship-event" in text:
+            caps.append(("Pre-compact dream", "OK", "PreCompact compat hook"))
+        else:
+            caps.append(("Pre-compact dream", "WARN", "PreCompact compat hook missing"))
+            warns += 1
+
+    if mori_url:
+        code, body = _http_get(f"{mori_url.rstrip('/')}/health")
+        if code == 200 and "ok" in body:
+            print(f"OK  Server health: {mori_url}/health")
+            caps.append(("Server reachable", "OK", ""))
+        else:
+            print(f"FAIL  Server health ({code})")
+            caps.append(("Server reachable", "FAIL", body[:80]))
+            errors += 1
+    else:
+        errors += 1
+
+    print("\n--- Capability matrix ---\n")
+    for name, status, note in caps:
+        suffix = f" — {note}" if note else ""
+        print(f"  {status:4}  {name}{suffix}")
+
+    print(f"\nClient tag for events: {client}")
+    if errors:
+        print(f"\nDoctor: {errors} check(s) failed, {warns} warning(s).")
+        return 1
+    print(f"\nDoctor: passed ({warns} warning(s)). Reload Cursor after changes.")
+    return 0 if warns == 0 else 0
+
+
 def doctor(mori_url: str | None, client: str) -> int:
     mcp_path, settings_path = _mcp_paths()
     skills_dir = Path.home() / ".claude" / "skills"
@@ -441,6 +727,24 @@ def main() -> int:
     p_doc.add_argument("--url", default="")
     p_doc.add_argument("--client", default="cursor")
 
+    p_compat = sub.add_parser("merge-settings-compat")
+    p_compat.add_argument("--settings-path", required=True)
+    p_compat.add_argument("--shipper", required=True)
+    p_compat.add_argument("--url", required=True)
+    p_compat.add_argument("--client", required=True)
+    p_compat.add_argument("--api-key", default="")
+    p_compat.add_argument("--no-prune", action="store_true")
+
+    p_pmcp = sub.add_parser("merge-plugin-mcp")
+    p_pmcp.add_argument("--mcp-path", required=True)
+    p_pmcp.add_argument("--url", required=True)
+    p_pmcp.add_argument("--api-key", default="")
+
+    p_pdoc = sub.add_parser("doctor-plugin")
+    p_pdoc.add_argument("--url", default="")
+    p_pdoc.add_argument("--client", default="cursor")
+    p_pdoc.add_argument("--parity", action="store_true")
+
     args = parser.parse_args()
 
     if args.cmd == "merge-mcp":
@@ -463,6 +767,22 @@ def main() -> int:
     if args.cmd == "doctor":
         url = args.url or None
         return doctor(url, args.client)
+    if args.cmd == "merge-settings-compat":
+        merge_settings_compat(
+            Path(args.settings_path),
+            args.shipper,
+            args.url,
+            args.client,
+            args.api_key,
+            prune_native_overlap=not args.no_prune,
+        )
+        return 0
+    if args.cmd == "merge-plugin-mcp":
+        merge_plugin_mcp(Path(args.mcp_path), args.url, args.api_key)
+        return 0
+    if args.cmd == "doctor-plugin":
+        url = args.url or None
+        return doctor_plugin(url, args.client, parity=args.parity)
     return 1
 
 

@@ -114,8 +114,16 @@ project's own `.mcp.json` (same bare-secret rule):
 
 ### Cursor
 
-Copy `plugins/mori/` to `~/.cursor/plugins/local/mori/` (or the workspace
-`.cursor/plugins/mori/`).
+**Recommended:** from the mori repo root:
+
+```bash
+./scripts/install-mori-cursor-plugin.sh --url http://YOUR-SERVER:8968 --parity --force
+```
+
+Minimal hooks only (omit `--parity`). Doctor: add `--doctor` (and `--parity` if installed with parity).
+
+**Manual:** copy `plugins/mori/` to `~/.cursor/plugins/local/mori/` (or workspace
+`.cursor/plugins/mori/`), then edit `mcp.json` and run `install-hooks-cursor.mjs`.
 
 Edit `mcp.json` with your server URL and API key:
 
