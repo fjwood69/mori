@@ -1,6 +1,6 @@
 # Mori Plugin — unified multi-client package
 
-Connects **Claude Code**, **Cursor**, and **Antigravity** to a running
+Connects **Claude Code**, **Cursor**, **Antigravity**, and **Codex** to a running
 [mori-advisor](../../mori_advisor) server. The plugin ships:
 
 - **Skills** — shared agent skills (`/brief`, `/dream`, `/pensieve`, `/wrap`, …) for all three clients.
@@ -21,6 +21,7 @@ Cursor and Antigravity still use a bundled `mcp.json` / `mcp_config.json` you ed
 ```
 plugins/mori/
 ├── .claude-plugin/plugin.json   Claude Code manifest (skills + hooks; no bundled MCP)
+├── .codex-plugin/plugin.json    Codex manifest (skills + hooks + bundled MCP)
 ├── .cursor-plugin/plugin.json   Cursor manifest
 ├── plugin.json                  Antigravity manifest
 ├── mcp.json                     Cursor MCP config (edit url + bare-secret key manually)
@@ -160,6 +161,55 @@ Edit `mcp_config.json` with your server URL and API key:
 
 Antigravity reads `plugin.json` (root) as the manifest and `mcp_config.json` for the
 MCP connection. Skills in `skills/` are auto-discovered.
+
+---
+
+### Codex
+
+Add the plugin to a marketplace file and install:
+
+**`~/.agents/plugins/marketplace.json`** (personal) or **`.agents/plugins/marketplace.json`** (repo-scoped):
+
+```json
+{
+  "plugins": [
+    {
+      "name": "mori",
+      "source": "github:fjwood69/mori/plugins/mori",
+      "installPolicy": "manual"
+    }
+  ]
+}
+```
+
+```bash
+codex plugin install mori
+```
+
+Edit the installed plugin's `mcp.json` with your server URL and bare API key:
+
+```json
+{
+  "mcpServers": {
+    "mori": {
+      "type": "http",
+      "url": "http://YOUR-SERVER:8968/mcp",
+      "headers": { "x-api-key": "YOUR-64-CHAR-BARE-SECRET" }
+    }
+  }
+}
+```
+
+Set env vars for event capture hooks:
+
+```bash
+export MORI_SERVER_URL=http://YOUR-SERVER:8968
+export MORI_API_KEY=YOUR-64-CHAR-BARE-SECRET
+```
+
+> **MCP is bundled.** Unlike Claude Code, Codex reads the bundled `mcp.json` directly — no separate `codex mcp add` step. The same hook scripts used by Claude Code run unchanged; Codex provides `CLAUDE_PLUGIN_ROOT` as a compatibility alias for `PLUGIN_ROOT`.
+
+Full guide: [docs/getting-started/codex.md](../../docs/getting-started/codex.md)
 
 ---
 
