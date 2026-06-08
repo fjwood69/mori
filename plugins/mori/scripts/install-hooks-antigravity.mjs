@@ -41,11 +41,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // ---- Arg / env parsing ---------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { url: '', apiKey: '', dryRun: false };
+  const args = { url: '', apiKey: '', target: '', dryRun: false };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case '--url':     args.url    = argv[++i] ?? ''; break;
       case '--api-key': args.apiKey = argv[++i] ?? ''; break;
+      case '--target':  args.target = argv[++i] ?? ''; break;
       case '--dry-run': args.dryRun = true; break;
     }
   }
@@ -86,8 +87,9 @@ function main() {
   }
 
   // Resolve absolute paths to hook scripts
-  const contextHook = resolve(__dirname, 'mori-context-hook-antigravity.mjs');
-  const shipEvent   = resolve(__dirname, 'mori-ship-event-antigravity.mjs');
+  const contextHook     = resolve(__dirname, 'mori-context-hook-antigravity.mjs');
+  const shipEvent       = resolve(__dirname, 'mori-ship-event-antigravity.mjs');
+  const postCompactHook = resolve(__dirname, 'mori-post-compact-hook-antigravity.mjs');
 
   const apiKeyFlag = args.apiKey ? ` --api-key "${args.apiKey}"` : '';
   const baseShip   = `node "${shipEvent}" --url "${args.url}"${apiKeyFlag}`;
@@ -97,32 +99,46 @@ function main() {
     PreInvocation: [hookEntry(`node "${contextHook}" --url "${args.url}"`, 10)],
     PostToolUse:   [hookEntry(`${baseShip} --event PostToolUse`, 15)],
     Stop:          [hookEntry(`${baseShip} --event Stop`, 20)],
+    PostCompact:   [hookEntry(`node "${postCompactHook}"`, 10)],
   };
 
-  // Load existing config and merge
-  const hooksPath = join(homedir(), '.gemini', 'config', 'hooks.json');
-  const config = readHooks(hooksPath);
-
-  // Replace only the "mori" named hook; leave all others intact
-  config.mori = moriHook;
-
-  const output = JSON.stringify(config, null, 2);
-
-  if (args.dryRun) {
-    console.log(`[dry-run] Would write to: ${hooksPath}`);
-    console.log(output);
-    return;
+  // Determine target paths
+  const targets = [];
+  const geminiBase = join(homedir(), '.gemini');
+  if (args.target === 'cli') {
+    targets.push({ label: 'Antigravity CLI hooks.json', path: join(geminiBase, 'antigravity', 'hooks.json') });
+  } else if (args.target === 'ide') {
+    targets.push({ label: 'Antigravity IDE hooks.json', path: join(geminiBase, 'antigravity-ide', 'hooks.json') });
+  } else if (args.target === 'both') {
+    targets.push({ label: 'Antigravity CLI hooks.json', path: join(geminiBase, 'antigravity', 'hooks.json') });
+    targets.push({ label: 'Antigravity IDE hooks.json', path: join(geminiBase, 'antigravity-ide', 'hooks.json') });
+  } else {
+    // Default: write to the active configuration profile (via ~/.gemini/config/hooks.json symlink)
+    targets.push({ label: 'Active profile hooks.json', path: join(geminiBase, 'config', 'hooks.json') });
   }
 
-  // Ensure ~/.gemini/config exists
-  mkdirSync(join(homedir(), '.gemini', 'config'), { recursive: true });
-  writeFileSync(hooksPath, output, 'utf8');
+  for (const t of targets) {
+    const config = readHooks(t.path);
+    config.mori = moriHook;
+    const output = JSON.stringify(config, null, 2);
 
-  console.log(`Wrote mori hook entries to: ${hooksPath}`);
-  console.log(`  mori.PreInvocation → ${contextHook}`);
-  console.log(`  mori.PostToolUse   → ${shipEvent}`);
-  console.log(`  mori.Stop          → ${shipEvent}`);
-  console.log('Restart Antigravity for hooks to take effect.');
+    if (args.dryRun) {
+      console.log(`[dry-run] Would write to: ${t.path}`);
+      console.log(output);
+    } else {
+      mkdirSync(dirname(t.path), { recursive: true });
+      writeFileSync(t.path, output, 'utf8');
+      console.log(`Wrote mori hook entries to: ${t.path}`);
+    }
+  }
+
+  if (!args.dryRun) {
+    console.log(`  mori.PreInvocation → ${contextHook}`);
+    console.log(`  mori.PostToolUse   → ${shipEvent}`);
+    console.log(`  mori.Stop          → ${shipEvent}`);
+    console.log(`  mori.PostCompact   → ${postCompactHook}`);
+    console.log('Restart Antigravity for hooks to take effect.');
+  }
 }
 
 main();

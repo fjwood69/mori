@@ -152,7 +152,7 @@ Edit `mcp_config.json` with your server URL and API key:
   "mcpServers": {
     "mori": {
       "type": "http",
-      "url": "http://YOUR-SERVER:8968/mcp",
+      "serverUrl": "http://YOUR-SERVER:8968/mcp",
       "headers": { "x-api-key": "YOUR-64-CHAR-BARE-SECRET" }
     }
   }
@@ -312,25 +312,28 @@ After installing the plugin (MCP + skills), wire the hooks by running:
 ```bash
 node plugins/mori/scripts/install-hooks-antigravity.mjs \
   --url http://YOUR-SERVER:8968 \
-  --api-key YOUR_BARE_SECRET
+  --api-key YOUR_BARE_SECRET \
+  --target both
 ```
 
 Or via environment variables:
 
 ```bash
 MORI_SERVER_URL=http://YOUR-SERVER:8968 MORI_API_KEY=YOUR_BARE_SECRET \
-  node plugins/mori/scripts/install-hooks-antigravity.mjs
+  node plugins/mori/scripts/install-hooks-antigravity.mjs --target both
 ```
 
-Use `--dry-run` to preview the JSON without writing `~/.gemini/config/hooks.json`.
+* Use `--target cli|ide|both` to install to CLI profile (`~/.gemini/antigravity/hooks.json`), IDE profile (`~/.gemini/antigravity-ide/hooks.json`), or both profiles. (Default is the active configuration profile via the `~/.gemini/config/hooks.json` symlink).
+* Use `--dry-run` to preview the JSON without writing.
 
-The installer writes a `"mori"` named-hook block into `~/.gemini/config/hooks.json`:
+The installer writes a `"mori"` named-hook block into the targeted `hooks.json` file:
 
 | Antigravity event | Script wired |
 |---|---|
 | `PreInvocation` | `mori-context-hook-antigravity.mjs` — injects `MORI_SESSION_CONTEXT_FILE` once per conversation (throttled by conversationId) |
 | `PostToolUse` | `mori-ship-event-antigravity.mjs` — ships normalised event to mori server |
 | `Stop` | `mori-ship-event-antigravity.mjs` — ships Stop event (enriched with transcript tail) |
+| `PostCompact` | `mori-post-compact-hook-antigravity.mjs` — outputs context re-grounding nudge to run `/brief --post-compact` |
 
 Existing non-mori named hooks are preserved. Restart Antigravity after running the installer.
 
@@ -338,9 +341,7 @@ Existing non-mori named hooks are preserved. Restart Antigravity after running t
 > temp-file throttle (`$TMPDIR/mori-conv-<id>`) so context is injected exactly once per
 > conversation, not on every invocation.
 
-> **No session-start or post-compaction event in Antigravity.** The `PreInvocation`
-> once-per-conversation injection is the closest equivalent. Post-compact re-grounding
-> is Claude Code only.
+> **PostCompact support in Antigravity.** The `PostCompact` event fires after context compaction. The `mori-post-compact-hook-antigravity.mjs` outputs a system nudge asking the agent to run `/brief --post-compact` to re-ground itself.
 
 ---
 

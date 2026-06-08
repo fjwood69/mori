@@ -16,9 +16,8 @@ Connect your Google Antigravity IDE instance to your Mori shared memory server. 
 
 Mori ships as a unified plugin package at `plugins/mori/`. It includes an Antigravity-specific manifest (`plugin.json` at root), an MCP config (`mcp_config.json`), and shared skills — all from a single package.
 
-> **Antigravity-specific hooks are a fast-follow.** The Antigravity hook event model is being verified against live Antigravity docs before wiring. MCP tools and skills work fully today.
-
-### Global install
+### 1. Copy the plugin directory
+#### Global install
 
 ```bash
 cp -r plugins/mori ~/.gemini/config/plugins/mori
@@ -61,9 +60,23 @@ With API key authentication:
 }
 ```
 
-### Reload Antigravity
+### 4. Enable Lifecycle Event Hooks
 
-Restart the Antigravity IDE or reload the window. Confirm the `mori` MCP server appears in your active MCP connections.
+Wire the agent telemetry and post-compaction re-grounding hooks by running:
+
+```bash
+node plugins/mori/scripts/install-hooks-antigravity.mjs \
+  --url "http://YOUR-SERVER:8968" \
+  --api-key "YOUR_KEY" \
+  --target both
+```
+
+* Use `--target cli|ide|both` to specify whether to write to the CLI profile, the IDE profile, or both.
+* The installer merges the `"mori"` named hook block containing hooks for `PreInvocation`, `PostToolUse`, `Stop`, and `PostCompact` into `hooks.json`.
+
+### 5. Reload Antigravity
+
+Restart the Antigravity IDE or CLI session. Confirm the `mori` MCP server appears in your active MCP connections.
 
 ---
 

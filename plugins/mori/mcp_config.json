@@ -2,9 +2,9 @@
   "mcpServers": {
     "mori": {
       "type": "http",
-      "url": "http://localhost:8968/mcp",
+      "serverUrl": "http://localhost:8968/mcp",
       "headers": {
-        "x-api-key": "YOUR_BARE_SECRET_not_name:secret"
+        "X-Api-Key": "YOUR_BARE_SECRET_not_name:secret"
       }
     }
   }
