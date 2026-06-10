@@ -134,9 +134,9 @@ curl http://localhost:8968/health
 You'll be prompted for your Mori server URL and API key on enable (the key is stored
 in your OS keychain, not in `settings.json`). Then `/reload-plugins` or restart.
 
-The same plugin package (`plugins/mori/`) also targets **Codex**, **Cursor**, and
-**Google Antigravity** — MCP connection and skills work across all four; client-specific
-hooks land per platform. See the platform guides.
+The same plugin package (`plugins/mori/`) also targets **OpenCode**, **Codex**,
+**Cursor**, and **Google Antigravity** — MCP connection and skills work across all five;
+client-specific hooks land per platform. See the platform guides.
 
 **Or use the legacy installer scripts** (bespoke; superseded by the plugin):
 
@@ -151,6 +151,7 @@ powershell -File scripts/legacy/install-mori-claude.ps1   # Windows
 | Platform | Install | Full guide |
 |----------|---------|------------|
 | Claude Code | Plugin: `/plugin marketplace add fjwood69/mori` → `/plugin install mori@mori` (or `./scripts/legacy/install-mori-claude.sh`) | [docs/getting-started/claude-code.md](docs/getting-started/claude-code.md) |
+| OpenCode | `./scripts/install-mori-opencode.sh` (or `.\scripts\install-mori-opencode.ps1` on Windows) | [docs/getting-started/opencode.md](docs/getting-started/opencode.md) |
 | Codex | Plugin package `plugins/mori/` → `codex plugin install mori` | [docs/getting-started/codex.md](docs/getting-started/codex.md) |
 | Cursor | Plugin package `plugins/mori/` (or `./scripts/install-mori-cursor.sh`) | [docs/getting-started/cursor.md](docs/getting-started/cursor.md) |
 | Google Antigravity IDE | Plugin package `plugins/mori/` (or `./scripts/install-mori-antigravity.sh`) | [docs/getting-started/antigravity.md](docs/getting-started/antigravity.md) |

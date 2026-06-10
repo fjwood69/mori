@@ -1,6 +1,6 @@
 # Mori Plugin — unified multi-client package
 
-Connects **Claude Code**, **Cursor**, **Antigravity**, and **Codex** to a running
+Connects **Claude Code**, **OpenCode**, **Cursor**, **Antigravity**, and **Codex** to a running
 [mori-advisor](../../mori_advisor) server. The plugin ships:
 
 - **Skills** — shared agent skills (`/brief`, `/dream`, `/pensieve`, `/wrap`, …) for all three clients.
@@ -23,6 +23,7 @@ plugins/mori/
 ├── .claude-plugin/plugin.json   Claude Code manifest (skills + hooks; no bundled MCP)
 ├── .codex-plugin/plugin.json    Codex manifest (skills + hooks + bundled MCP)
 ├── .cursor-plugin/plugin.json   Cursor manifest
+├── opencode/                    OpenCode plugin (TypeScript; installer-deployed)
 ├── plugin.json                  Antigravity manifest
 ├── mcp.json                     Cursor MCP config (edit url + bare-secret key manually)
 ├── mcp_config.json              Antigravity MCP config (edit url/key manually)
@@ -218,6 +219,45 @@ export MORI_API_KEY=YOUR-64-CHAR-BARE-SECRET
 > **MCP is bundled.** Unlike Claude Code, Codex reads the bundled `mcp.json` directly — no separate `codex mcp add` step. The same hook scripts used by Claude Code run unchanged; Codex provides `CLAUDE_PLUGIN_ROOT` as a compatibility alias for `PLUGIN_ROOT`.
 
 Full guide: [docs/getting-started/codex.md](../../docs/getting-started/codex.md)
+
+---
+
+### OpenCode
+
+OpenCode uses a TypeScript plugin (`opencode/plugin.ts`) rather than a JSON manifest.
+The installer handles everything — plugin copy, MCP config merge, skills deploy.
+
+**Linux/macOS:**
+
+```bash
+./scripts/install-mori-opencode.sh --url http://YOUR-SERVER:8968 --key YOUR-64-CHAR-SECRET
+```
+
+**Windows (PowerShell 5.1+):**
+
+```powershell
+.\scripts\install-mori-opencode.ps1 -MoriUrl http://YOUR-SERVER:8968 -ApiKey YOUR-64-CHAR-SECRET
+```
+
+**Doctor / verify:**
+
+```bash
+./scripts/install-mori-opencode.sh --doctor --url http://YOUR-SERVER:8968
+```
+
+Edit the installed plugin's `mcp.json` with your server URL and bare API key if not
+set by the installer. Set `MORI_SERVER_URL` and `MORI_API_KEY` in your shell profile
+(or as Windows user environment variables) for the event capture hooks to fire.
+
+> **OpenCode reads MCP from `opencode.json`** (global: `~/.config/opencode/opencode.json`,
+> project: `opencode.json`). The installer merges the `mcpServers.mori` entry. Unlike
+> Claude Code, there is no separate `opencode mcp add` command — the JSON is the config.
+
+> **Compaction hook advantage.** OpenCode's `experimental.session.compacting` hook lets
+> Mori inject curated canon directly into the compaction summary so key decisions survive
+> context window resets. This is more powerful than Claude Code's PreCompact hook.
+
+Full guide: [docs/getting-started/opencode.md](../../docs/getting-started/opencode.md)
 
 ---
 

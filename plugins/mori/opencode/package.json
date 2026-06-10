@@ -1,0 +1,31 @@
+{
+  "name": "opencode-mori",
+  "version": "0.1.0",
+  "description": "Mori shared memory layer for OpenCode — self-hosted, sovereign, zero-instrumentation",
+  "main": "plugin.ts",
+  "type": "module",
+  "keywords": [
+    "opencode",
+    "mori",
+    "memory",
+    "mcp",
+    "agents",
+    "context",
+    "cross-device",
+    "sovereign"
+  ],
+  "author": {
+    "name": "fjwood69",
+    "url": "https://github.com/fjwood69"
+  },
+  "homepage": "https://github.com/fjwood69/mori",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fjwood69/mori.git",
+    "directory": "plugins/mori/opencode"
+  },
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=18"
+  }
+}

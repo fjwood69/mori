@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mori": {
+      "type": "remote",
+      "url": "${MORI_SERVER_URL}/mcp",
+      "headers": {
+        "x-api-key": "${MORI_API_KEY}"
+      }
+    }
+  }
+}
