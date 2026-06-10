@@ -374,8 +374,15 @@ class SQLiteStore(BaseStore):
         dry_run=False,
         error_count=0,
         status="committed",
+        candidates_total=None,
+        convention_ratio=None,
+        anchorable_pct=None,
     ) -> None:
-        """Record an ingestion run in the ingestion_log table."""
+        """Record an ingestion run in the ingestion_log table.
+
+        candidates_total / convention_ratio / anchorable_pct are the ingest-shape
+        instrument (measurement layer); nullable for backward compat.
+        """
         tags_json = json.dumps(tags or [])
         conn = self._mem._get_conn()
         try:
@@ -383,8 +390,9 @@ class SQLiteStore(BaseStore):
                 """
                 INSERT INTO ingestion_log
                     (source_path, source_hash, memories_written, model,
-                     focus, tier, tags, dry_run, error_count, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     focus, tier, tags, dry_run, error_count, status,
+                     candidates_total, convention_ratio, anchorable_pct)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_path,
@@ -397,6 +405,9 @@ class SQLiteStore(BaseStore):
                     1 if dry_run else 0,
                     error_count,
                     status,
+                    candidates_total,
+                    convention_ratio,
+                    anchorable_pct,
                 ),
             )
             conn.commit()
@@ -440,6 +451,21 @@ class SQLiteStore(BaseStore):
 
     def count_ingestion(self) -> int:
         return self._mem.count_ingestion()
+
+    def latest_ingestion_shape(self) -> dict | None:
+        """Most-recent committed ingest's shape metrics (measurement layer), or None."""
+        conn = self._mem._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT candidates_total, convention_ratio, anchorable_pct "
+                "FROM ingestion_log WHERE status='committed' AND candidates_total IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        return {"candidates_total": row[0], "convention_ratio": row[1], "anchorable_pct": row[2]}
 
     # ── Msg ────────────────────────────────────────────────────────────────
 

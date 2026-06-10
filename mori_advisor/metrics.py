@@ -161,6 +161,23 @@ _nats_connected = Gauge(
 _ingestion_log = Gauge(
     "mori_ingestion_log_total", "Total ingestion log entries", registry=prom_registry
 )
+# Ingest-shape instrument (measurement layer) — last committed ingest. The journal
+# (ingestion_log rows) is the real artifact; these gauges are the convenience surface.
+_ingest_last_candidates = Gauge(
+    "mori_ingest_last_candidates",
+    "Candidates produced by the last committed ingest",
+    registry=prom_registry,
+)
+_ingest_last_convention_ratio = Gauge(
+    "mori_ingest_last_convention_ratio",
+    "Share of last ingest's candidates that clustered with another (granularity signal)",
+    registry=prom_registry,
+)
+_ingest_last_anchorable_pct = Gauge(
+    "mori_ingest_last_anchorable_pct",
+    "Share of last ingest's candidates with a file/symbol reference (smoke signal)",
+    registry=prom_registry,
+)
 _scrape_duration = Gauge(
     "mori_scrape_duration_seconds", "Time taken to collect metrics", registry=prom_registry
 )
@@ -262,6 +279,19 @@ async def collect_metrics(store, nats_url: Optional[str] = None) -> bytes:
     try:
         ingestions = await _a(store.count_ingestion())
         _ingestion_log.set(ingestions)
+    except Exception:
+        pass
+
+    # Ingest-shape (last committed ingest)
+    try:
+        shape = await _a(store.latest_ingestion_shape())
+        if shape:
+            if shape.get("candidates_total") is not None:
+                _ingest_last_candidates.set(shape["candidates_total"])
+            if shape.get("convention_ratio") is not None:
+                _ingest_last_convention_ratio.set(shape["convention_ratio"])
+            if shape.get("anchorable_pct") is not None:
+                _ingest_last_anchorable_pct.set(shape["anchorable_pct"])
     except Exception:
         pass
 

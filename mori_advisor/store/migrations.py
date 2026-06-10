@@ -549,6 +549,19 @@ MIGRATIONS: tuple[Migration, ...] = (
             ")"
         ),
     ),
+    Migration(
+        id=12,
+        name="ingestion_log_shape",
+        # Ingest-shape instrument (measurement layer): candidate volume + the
+        # convention/occurrence ratio + anchorability per ingest. SQLite is handled
+        # by the legacy bootstrap's guarded ALTERs (memory_store); this covers
+        # existing Postgres DBs (fresh PG gets the columns from _DDL). Additive, nullable.
+        postgres_sql=(
+            "ALTER TABLE ingestion_log ADD COLUMN IF NOT EXISTS candidates_total INTEGER; "
+            "ALTER TABLE ingestion_log ADD COLUMN IF NOT EXISTS convention_ratio REAL; "
+            "ALTER TABLE ingestion_log ADD COLUMN IF NOT EXISTS anchorable_pct REAL"
+        ),
+    ),
 )
 
 

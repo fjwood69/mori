@@ -196,7 +196,10 @@ CREATE TABLE IF NOT EXISTS ingestion_log (
     tags             JSONB NOT NULL DEFAULT '[]',
     dry_run          BOOLEAN NOT NULL DEFAULT FALSE,
     error_count      INTEGER NOT NULL DEFAULT 0,
-    status           TEXT NOT NULL DEFAULT 'committed'
+    status           TEXT NOT NULL DEFAULT 'committed',
+    candidates_total INTEGER,
+    convention_ratio REAL,
+    anchorable_pct   REAL
 );
 CREATE INDEX IF NOT EXISTS idx_ingestion_log_hash ON ingestion_log (source_hash);
 
@@ -1797,6 +1800,9 @@ class PostgresStore(BaseStore):
         dry_run=False,
         error_count=0,
         status="committed",
+        candidates_total=None,
+        convention_ratio=None,
+        anchorable_pct=None,
     ) -> None:
         self._ensure_pool()
         tags_v = _tags_json(tags)
@@ -1804,8 +1810,9 @@ class PostgresStore(BaseStore):
             await conn.execute(
                 """INSERT INTO ingestion_log
                    (source_path, source_hash, memories_written, model, focus, tier,
-                    tags, dry_run, error_count, status, ingested_at)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11)""",
+                    tags, dry_run, error_count, status, ingested_at,
+                    candidates_total, convention_ratio, anchorable_pct)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14)""",
                 source_path,
                 source_hash,
                 memories_written,
@@ -1817,6 +1824,9 @@ class PostgresStore(BaseStore):
                 error_count,
                 status,
                 _now_utc(),
+                candidates_total,
+                convention_ratio,
+                anchorable_pct,
             )
 
     async def get_ingestion_status(self, limit: int = 20) -> str:
@@ -1848,6 +1858,23 @@ class PostgresStore(BaseStore):
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             return await conn.fetchval("SELECT COUNT(*) FROM ingestion_log")
+
+    async def latest_ingestion_shape(self) -> dict | None:
+        """Most-recent committed ingest's shape metrics (measurement layer), or None."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT candidates_total, convention_ratio, anchorable_pct "
+                "FROM ingestion_log WHERE status='committed' AND candidates_total IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1"
+            )
+        if not row:
+            return None
+        return {
+            "candidates_total": row["candidates_total"],
+            "convention_ratio": row["convention_ratio"],
+            "anchorable_pct": row["anchorable_pct"],
+        }
 
     # ── Msg ────────────────────────────────────────────────────────────────
 

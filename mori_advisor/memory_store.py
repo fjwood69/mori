@@ -328,7 +328,11 @@ class MemoryStore:
             "  tags TEXT NOT NULL DEFAULT '[]',"
             "  dry_run INTEGER NOT NULL DEFAULT 0,"
             "  error_count INTEGER NOT NULL DEFAULT 0,"
-            "  status TEXT NOT NULL DEFAULT 'committed'"
+            "  status TEXT NOT NULL DEFAULT 'committed',"
+            # ingest-shape instrument (measurement layer) — nullable
+            "  candidates_total INTEGER,"
+            "  convention_ratio REAL,"
+            "  anchorable_pct REAL"
             ")"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ingestion_hash ON ingestion_log(source_hash)")
@@ -341,6 +345,17 @@ class MemoryStore:
             )
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+        # Migrate: ingest-shape columns (measurement layer) for existing DBs
+        for _col, _type in (
+            ("candidates_total", "INTEGER"),
+            ("convention_ratio", "REAL"),
+            ("anchorable_pct", "REAL"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE ingestion_log ADD COLUMN {_col} {_type}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
         conn.commit()
         conn.close()

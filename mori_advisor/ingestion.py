@@ -20,10 +20,12 @@ import base64
 import hashlib
 import inspect
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from mori_advisor.bifrost_client import BifrostClient
+from mori_advisor.clustering import cluster_keys
 from mori_advisor.memory_store import MemoryStore
 from mori_advisor.parsers import (
     CONTENT_SIZE_CEILING,
@@ -72,6 +74,43 @@ FOCUS_GUIDANCE: dict[str, str] = {
     "conventions": "Focus on conventions: extract coding standards, naming patterns, workflow conventions, and team practices. Look for style guides, linting rules, and established practices.",
     "gotchas": "Focus on gotchas: extract pitfalls, workarounds, edge cases, and things that surprised the team. Look for bug reports, troubleshooting notes, and hard-won lessons.",
 }
+
+
+# ---- Ingest-shape instrument (measurement layer) ----
+# anchorability is a SMOKE signal (regex), not ground truth: false positives on URLs/
+# package names, false negatives on non-standard symbol syntax. Use as a trend, not a gate.
+_FILE_PAT = re.compile(r"[\w/]+\.(py|ts|js|go|rs|java|json|ya?ml|toml|sql|sh)\b")
+_SYM_PAT = re.compile(
+    r"\b[a-z_]{2,}\.[a-z_]{2,}\b|\b[A-Z][a-z]+[A-Z][a-zA-Z]+\b|\b[a-z]+_[a-z_]+\b"
+)
+
+
+def _shape_metrics(cands: list[dict]) -> dict:
+    """Ingest-shape telemetry over a batch of distilled candidates.
+
+    - candidates_total: how many the dreamer produced.
+    - convention_ratio: share whose name clusters with another candidate's
+      (via clustering.cluster_keys) — the granularity / near-dup signal; higher =
+      more fragmentation. NOT a stable KPI: re-tuning cluster_keys redefines it.
+    - anchorable_pct: share whose body carries a file/symbol reference (smoke signal).
+    """
+    total = len(cands)
+    if not total:
+        return {"candidates_total": 0, "convention_ratio": 0.0, "anchorable_pct": 0.0}
+    names = [c.get("name") or "" for c in cands if c.get("name")]
+    keymap = cluster_keys(list(dict.fromkeys(names))) if names else {}
+    # a name "clusters" when its cluster key is a shared suffix (not the name itself)
+    in_conv = sum(1 for n in names if keymap.get(n, n) != n)
+    anchorable = sum(
+        1
+        for c in cands
+        if _FILE_PAT.search(c.get("body") or "") or _SYM_PAT.search(c.get("body") or "")
+    )
+    return {
+        "candidates_total": total,
+        "convention_ratio": round(in_conv / total, 3),
+        "anchorable_pct": round(100 * anchorable / total, 1),
+    }
 
 
 # ---- Tiered MIME routing table ----
@@ -248,6 +287,7 @@ class IngestionPipeline:
                         all_tags,
                         dry_run=False,
                         status="committed",
+                        shape=_shape_metrics(batch_memories),
                     )
 
                 # Contradiction scan (unless dry run)
@@ -486,6 +526,7 @@ class IngestionPipeline:
                         tags=tags,
                         dry_run=False,
                         status="committed",
+                        shape=_shape_metrics(batch_memories),
                     )
 
                 # Contradiction scan (unless dry run)
@@ -874,6 +915,7 @@ class IngestionPipeline:
         tags: list[str],
         dry_run: bool,
         status: str = "committed",
+        shape: dict | None = None,
     ) -> None:
         """Record an ingestion run in the log."""
         file_hash = self._hash_file(source_path)
@@ -886,6 +928,7 @@ class IngestionPipeline:
             tags=tags,
             dry_run=dry_run,
             status=status,
+            shape=shape,
         )
 
     async def _record_ingestion_by_fields(
@@ -898,8 +941,10 @@ class IngestionPipeline:
         tags: list[str],
         dry_run: bool,
         status: str = "committed",
+        shape: dict | None = None,
     ) -> None:
         """Record ingestion — shared by filesystem and content modes."""
+        shape = shape or {}
         try:
             await _a(
                 self._store.log_ingestion(
@@ -912,6 +957,9 @@ class IngestionPipeline:
                     tags=tags,
                     dry_run=dry_run,
                     status=status,
+                    candidates_total=shape.get("candidates_total"),
+                    convention_ratio=shape.get("convention_ratio"),
+                    anchorable_pct=shape.get("anchorable_pct"),
                 )
             )
         except Exception as e:
