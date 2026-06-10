@@ -27,6 +27,7 @@
 | `MORI_TRUSTED_DREAMERS` | — | Comma-separated hostnames for write approval bypass (host mode only) |
 | `MORI_STANDARDS_DIR` | — | Path to team standards .md directory |
 | `MORI_SKILLS_DIR` | — | Path to slash command skill files (for /update) |
+| `MORI_PROMPTS_DIR` | packaged | Directory of distillation prompt files (`dreamer.txt`, `archivist.txt`). Overrides the packaged defaults — see [Distillation prompts](#distillation-prompts). |
 | `MORI_DREAM_INTERVAL` | `60` | Dream pipeline interval in minutes |
 | `MORI_BIFROST_TIMEOUT` | `300` | API timeout in seconds |
 | `MORI_MSG_HEADLESS_ENABLED` | `false` | Spawn headless `claude` process for incoming `task` messages |
@@ -272,6 +273,33 @@ export MORI_POST_COMPACT_BRIEF=false
 
 The hook is deployed alongside other Mori hooks by `scripts/legacy/install-mori-claude.sh` /
 `scripts/legacy/install-mori-claude.ps1` (legacy bespoke installers) or via the plugin (`plugins/mori/`).
+
+## Distillation prompts
+
+The prompts that drive memory distillation are **editable text files**, not baked into the
+code — tune them without a code change or image rebuild:
+
+| File | Used by | Schema |
+|------|---------|--------|
+| `dreamer.txt` | Dream pipeline (session events → memory) | `reason / confidence / path / body / evidence` |
+| `archivist.txt` | Ingestion pipeline (`/ingest` corpus → memory) | `name / title / description / body / tier / tags / confidence` |
+
+The shipped defaults live in `mori_advisor/prompts/`. To override, point `MORI_PROMPTS_DIR`
+at your own directory (a missing or empty file falls back to a compact built-in prompt, logged):
+
+```bash
+# Container: bind-mount a host dir and edit prompts on the host, then restart
+podman run ... \
+  -e MORI_PROMPTS_DIR=/etc/mori/prompts \
+  -v /srv/mori/prompts:/etc/mori/prompts:ro \
+  ...
+# edit /srv/mori/prompts/dreamer.txt → podman restart mori
+```
+
+Prompts are resolved **once at startup**, so changes take effect on the next restart. Do not
+put the output-format instruction ("raw JSON only…") in the file — the pipeline appends that
+contract last, after the dynamic focus/tier/tags lines, so it always sits in the model's
+recency-most position.
 
 ## Ports
 

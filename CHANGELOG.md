@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.2.17 — externalised distillation prompts + dreamer/archivist rewrite
+
+**feat: distillation prompts are now editable text files, tuned without a code change.**
+- New `mori_advisor/prompt_loader.py` + `mori_advisor/prompts/{dreamer,archivist}.txt`. The
+  dreamer and archivist system prompts load from these files at startup; `MORI_PROMPTS_DIR`
+  overrides the location (bind-mount + restart in containers). A missing/empty file falls
+  back to a compact in-code prompt (logged) so it can never hard-fail. Packaged via
+  `[tool.setuptools.package-data]` so wheels ship them too.
+
+**feat: dreamer/archivist prompt rewrite (unit = convention, not occurrence).**
+- Both prompts now direct **one memory per convention, listing locations** — not one per
+  occurrence — to address measured over-production (ingest emitted ~one candidate per file).
+- Dreamer: **`action` field removed** (the dreamer can't see canon, so CREATE/MERGE/DELETE
+  was a guess the write path ignored anyway — it only tagged with it). Added `evidence[]`
+  (display-only), reason-first field order, an explicit "empty array is valid" clause
+  reconciled with the recall rule, and worked examples (single-site gotcha + multi-site
+  convention). `mem.get("action", "CREATE")` already defaulted, so no consumer change.
+
+**fix: ingest prompt assembly buried the output contract.**
+- `_distill_batch` appended `focus`/`tier`/`tags` *after* the prompt's format instruction,
+  so the assembled prompt ended on "Add these tags to every memory: …" — a weak recency
+  position that the format anchor should hold. The output contract is now appended **last**
+  (system tail) and at the **bottom of the user payload** (the true recency-most position).
+- Regression-tested: `tests/test_prompt_loader.py` asserts the assembled prompt ends on the
+  contract, plus loader override/fallback and the dropped-`action` / `UNIT OF OUTPUT` invariants.
+
 ## plugin v0.2.0 — config via env vars (MORI_SERVER_URL / MORI_API_KEY), not userConfig
 
 **fix(plugin): the Claude Code plugin never connected on `claude plugin install` (CLI).**

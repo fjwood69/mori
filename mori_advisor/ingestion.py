@@ -35,6 +35,7 @@ from mori_advisor.parsers.exceptions import (
     ParserDependencyError,
 )
 from mori_advisor.parsers.text_parser import parse_directory as parse_text_directory
+from mori_advisor.prompt_loader import OUTPUT_REMINDER, load_prompt
 from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
 
 logger = logging.getLogger(__name__)
@@ -54,24 +55,14 @@ DEFAULT_INPUT_PRICE_PER_1K = 0.00015
 DEFAULT_OUTPUT_PRICE_PER_1K = 0.00060
 ESTIMATED_OUTPUT_TOKENS_PER_CHUNK = 4096  # conservative estimate for JSON response
 
-INGESTION_SYSTEM_PROMPT = """You are the Archivist. Extract durable knowledge, decisions, patterns, and conventions from the provided source material into structured memories.
+# Emergency fallback only — the packaged mori_advisor/prompts/archivist.txt is the real
+# default and the operator-editable source of truth (see prompt_loader). The output
+# contract (the "raw JSON only" closer) is NOT part of this prompt: _distill_batch
+# appends it LAST, after the dynamic focus/tier/tags lines, so the format anchor is
+# never buried mid-prompt (the bug where the assembled prompt ended on "add tag g").
+_INGEST_PROMPT_FALLBACK = """You are the Archivist. Extract durable knowledge, decisions, patterns, and conventions from the source material into a JSON array of memory objects, each with: name (kebab-case, naming the convention NOT the location), title, description, body (2-6 lines of markdown), tier, tags, confidence (0.0-1.0). Emit ONE memory per convention, never one per file. If nothing meaningful is found, return []."""
 
-Output a JSON array of memory objects:
-- name: unique kebab-case identifier (lowercase, hyphens)
-- title: human-readable title (one line)
-- description: one-line summary
-- body: 2-6 lines of markdown with context, implications, and rationale
-- tier: \"canonical\" or \"working\"
-- tags: list of relevant categories (architecture, decisions, conventions, gotchas, patterns, etc.)
-- confidence: 0.0 to 1.0
-
-Capture: architectural decisions, coding conventions, project patterns, gotchas, configuration rationale, domain knowledge, deferred decisions.
-
-Ignore: one-off comments, noise, boilerplate, personal information, anything recoverable from docs or git without distillation.
-
-If nothing meaningful is found, return an empty array [].
-
-CRITICAL: Begin your response with [ and end with ]. No prose before or after the JSON."""
+INGESTION_SYSTEM_PROMPT = load_prompt("archivist", _INGEST_PROMPT_FALLBACK)
 
 
 FOCUS_GUIDANCE: dict[str, str] = {
@@ -687,6 +678,10 @@ class IngestionPipeline:
             system += f'\n\nSet tier to "{tier}" for all memories.'
         if tags:
             system += f"\n\nAdd these tags to every memory: {', '.join(tags)}"
+        # Output contract LAST — keeps the format anchor out from under the dynamic
+        # focus/tier/tags housekeeping (which otherwise leaves the prompt ending on
+        # "Add these tags to every memory: ...", a weak recency position).
+        system += "\n\n" + OUTPUT_REMINDER
 
         # Separate text and image chunks
         text_parts = []
@@ -703,6 +698,9 @@ class IngestionPipeline:
             if text_parts
             else "Analyse the attached image(s) and extract durable memories."
         )
+        # Reminder at the bottom of the user payload — the recency-most position the
+        # model reads last, after all the source chunks.
+        user_text += "\n\n" + OUTPUT_REMINDER
 
         try:
             if image_uris:

@@ -10,13 +10,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mori-advisor"
-version = "2.2.12"
+version = "2.2.17"
 description = "Shared memory layer for AI coding agents — self-hosted"
 requires-python = ">=3.12"
 license = {text = "AGPL-3.0-only"}
 
 [tool.setuptools.packages.find]
 include = ["mori_advisor*"]
+
+# Ship the externalised distillation prompts (mori_advisor/prompts/*.txt) in wheels —
+# setuptools omits non-.py files otherwise, and load_prompt would fall back to the
+# compact emergency prompts. (The container already gets them via Dockerfile COPY.)
+[tool.setuptools.package-data]
+mori_advisor = ["prompts/*.txt"]
 
 # ── Dev tooling ────────────────────────────────────────────────────────────────
 

@@ -91,6 +91,12 @@ The differentiator. Stage 1 write-only intake is live. Path: policy + human revi
 ### Policy-as-config seam
 Simple declarative ruleset + tiny evaluator now. OPA/Rego as the enterprise evolution of the same seam — embedded in mori, not a separate engine. The pitch: regulated industries already maintain policy definitions; Mori makes those policies agent-aware without a separate governance committee. Roadmap OPA explicitly; build the seam, not the engine.
 
+### Externalised distillation prompts — ✅ shipped v2.2.17
+Dreamer and archivist prompts moved to editable files (`mori_advisor/prompts/*.txt`,
+overridable via `MORI_PROMPTS_DIR`). Prompt rewrite: unit-of-output = the convention,
+not the occurrence; dreamer `action` field dropped (it guessed set-relationships against
+a canon it can't see); ingest output-contract no longer buried by tier/tags. See CHANGELOG.
+
 ### Human-review surfacing — ✅ shipped v2.2.16
 Intake candidates → dreamer review UI + approve/reject → promote, now explicit and
 human-gated (Full two-phase B). The default path: the bridge surfaces a pending_write
@@ -173,4 +179,4 @@ Decided on paper now. Open core stays thin.
 
 ---
 
-*Last updated: v2.2.16 — 2026-06-07*
+*Last updated: v2.2.17 — 2026-06-10*

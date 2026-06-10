@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mori_advisor.bifrost_client import BifrostClient
+from mori_advisor.prompt_loader import OUTPUT_REMINDER, load_prompt
 from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
 
 logger = logging.getLogger(__name__)
@@ -44,19 +45,12 @@ async def _begin_txn(store):
             yield conn
 
 
-DREAM_SYSTEM_PROMPT = """You are the Dreamer. Distill session noise into durable memory for the team. If you suspect a pattern but can't confirm it, record it as LOW confidence rather than silently dropping it.
+# Emergency fallback only — the packaged mori_advisor/prompts/dreamer.txt is the real
+# default and the operator-editable source of truth (see prompt_loader). This compact
+# version is used only if that file is missing/unreadable, and the use is logged.
+_DREAM_PROMPT_FALLBACK = """You are the Dreamer. Distill the session into a JSON array of memory objects, each with: reason (one line), confidence (HIGH/MEDIUM/LOW), path (kebab-case, naming the convention NOT the location), body (2-6 lines of markdown), evidence (array of file/symbol refs, may be empty). Emit ONE memory per convention, never one per occurrence. If the session was purely tactical, return []. Output raw JSON only, starting with [ and ending with ]."""
 
-Output a JSON array of memory objects:
-- path: hierarchical kebab-case (e.g., "project/api/auth-decision" or "profile/dev-workflow")
-- action: "CREATE" | "MERGE" | "DELETE"
-- confidence: "HIGH" (fact/decision), "MEDIUM" (pattern), "LOW" (hypothesis)
-- reason: one-line rationale
-- body: 2-6 line markdown with context, implications, and any unresolved tension
-
-Capture: architecture, conventions, preferences, gotchas, recurring patterns, deferred decisions, cross-tool context.
-Ignore: one-off bugs, standard fixes, noise, anything recoverable from docs or git.
-
-CRITICAL: Begin your response must start with [ and end with ]. No prose before or after the JSON."""
+DREAM_SYSTEM_PROMPT = load_prompt("dreamer", _DREAM_PROMPT_FALLBACK)
 
 
 class DreamPipeline:
@@ -425,10 +419,14 @@ class DreamPipeline:
         return "\n\n".join(parts)
 
     def _call_dream_model(self, events_text: str) -> str:
-        """Send formatted events to the dream model and return the response."""
+        """Send formatted events to the dream model and return the response.
+
+        The output contract is appended to the BOTTOM of the user payload (after the
+        transcript) so it occupies the recency-most position the model reads last.
+        """
         return self.client.consult(
             system=DREAM_SYSTEM_PROMPT,
-            user=events_text,
+            user=events_text + "\n\n" + OUTPUT_REMINDER,
             vk="dream",
             max_tokens=16384,
             temperature=0.3,
