@@ -271,6 +271,11 @@ class MemoryStore:
         # Supports the post-compact delta brief (get_memories_changed_since) —
         # turns the updated_at range scan into an index lookup.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_updated_at ON memories(updated_at)")
+        # Serves canon_mortality_rate() (measurement layer) without a table scan.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_canon_mortality "
+            "ON memories(tier, created_at, retrieval_count)"
+        )
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS pending_writes ("

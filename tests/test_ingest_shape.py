@@ -46,3 +46,35 @@ def test_handles_missing_name_and_body():
     s = _shape_metrics(cands)
     assert s["candidates_total"] == 2  # totals count all candidates
     assert s["convention_ratio"] == 0.0
+
+
+# ── canon mortality (SQLite) ──────────────────────────────────────────────────
+
+
+def test_canon_mortality_rate(tmp_path):
+    from mori_advisor.store.sqlite_store import SQLiteStore
+
+    store = SQLiteStore(tmp_path / "m.db")
+    store.bootstrap()
+    for n in ("old-unread", "old-read", "recent-unread"):
+        store.write(name=n, title=n, body="x", type="project", tier="canonical")
+    conn = store._mem._get_conn()
+    conn.execute(
+        "UPDATE memories SET created_at = datetime('now','-200 days') "
+        "WHERE name IN ('old-unread','old-read')"
+    )
+    conn.execute("UPDATE memories SET retrieval_count = 3 WHERE name = 'old-read'")
+    conn.commit()
+    conn.close()
+    # cohort = the two backdated canonical memories (recent excluded); 1 of 2 never read
+    assert store.canon_mortality_rate(days=90) == 0.5
+
+
+def test_canon_mortality_none_when_no_cohort(tmp_path):
+    from mori_advisor.store.sqlite_store import SQLiteStore
+
+    store = SQLiteStore(tmp_path / "m.db")
+    store.bootstrap()
+    store.write(name="fresh", title="F", body="x", type="project", tier="canonical")
+    # created just now → not in the >90d cohort → None
+    assert store.canon_mortality_rate(days=90) is None

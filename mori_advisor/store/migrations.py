@@ -562,6 +562,17 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ALTER TABLE ingestion_log ADD COLUMN IF NOT EXISTS anchorable_pct REAL"
         ),
     ),
+    Migration(
+        id=13,
+        name="canon_mortality_index",
+        # Composite index serving canon_mortality_rate() so the /metrics gauge never
+        # scans the memories table as the corpus grows (consult). SQLite gets the same
+        # index from the legacy bootstrap (memory_store).
+        postgres_sql=(
+            "CREATE INDEX IF NOT EXISTS idx_memories_canon_mortality "
+            "ON memories (tier, created_at, retrieval_count) WHERE deleted_at IS NULL"
+        ),
+    ),
 )
 
 

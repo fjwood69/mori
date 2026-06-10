@@ -467,6 +467,27 @@ class SQLiteStore(BaseStore):
             return None
         return {"candidates_total": row[0], "convention_ratio": row[1], "anchorable_pct": row[2]}
 
+    def canon_mortality_rate(self, days: int = 90) -> float | None:
+        """Cohort mortality: share of canonical memories created >`days` ago that have
+        never been retrieved (retrieval_count=0). None if no eligible cohort. A *rate*,
+        not a raw count, so projects of different sizes aren't averaged away — this is
+        the gauge that tests the compounding thesis over time (measurement layer)."""
+        conn = self._mem._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, "
+                "SUM(CASE WHEN retrieval_count = 0 THEN 1 ELSE 0 END) AS dead "
+                "FROM memories WHERE tier='canonical' AND deleted_at IS NULL "
+                "AND created_at < datetime('now', ?)",
+                (f"-{int(days)} days",),
+            ).fetchone()
+        finally:
+            conn.close()
+        total = (row[0] or 0) if row else 0
+        if not total:
+            return None
+        return round((row[1] or 0) / total, 3)
+
     # ── Msg ────────────────────────────────────────────────────────────────
 
     def log_message(self, msg, status: str = "pending") -> None:

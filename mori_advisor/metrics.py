@@ -178,6 +178,11 @@ _ingest_last_anchorable_pct = Gauge(
     "Share of last ingest's candidates with a file/symbol reference (smoke signal)",
     registry=prom_registry,
 )
+_canon_mortality = Gauge(
+    "mori_canon_mortality_rate_90d",
+    "Share of canonical memories created >90d ago never retrieved (cohort mortality)",
+    registry=prom_registry,
+)
 _scrape_duration = Gauge(
     "mori_scrape_duration_seconds", "Time taken to collect metrics", registry=prom_registry
 )
@@ -292,6 +297,14 @@ async def collect_metrics(store, nats_url: Optional[str] = None) -> bytes:
                 _ingest_last_convention_ratio.set(shape["convention_ratio"])
             if shape.get("anchorable_pct") is not None:
                 _ingest_last_anchorable_pct.set(shape["anchorable_pct"])
+    except Exception:
+        pass
+
+    # Canon mortality (cohort rate — measurement layer)
+    try:
+        rate = await _a(store.canon_mortality_rate(days=90))
+        if rate is not None:
+            _canon_mortality.set(rate)
     except Exception:
         pass
 

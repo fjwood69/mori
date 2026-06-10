@@ -1876,6 +1876,24 @@ class PostgresStore(BaseStore):
             "anchorable_pct": row["anchorable_pct"],
         }
 
+    async def canon_mortality_rate(self, days: int = 90) -> float | None:
+        """Cohort mortality: share of canonical memories created >`days` ago never
+        retrieved (retrieval_count=0). None if no eligible cohort. A rate, not a count
+        (measurement layer). Served by the idx_memories_canon_mortality composite index."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS total, "
+                "COUNT(*) FILTER (WHERE retrieval_count = 0) AS dead "
+                "FROM memories WHERE tier='canonical' AND deleted_at IS NULL "
+                "AND created_at < NOW() - ($1 || ' days')::INTERVAL",
+                str(int(days)),
+            )
+        total = row["total"] or 0
+        if not total:
+            return None
+        return round(row["dead"] / total, 3)
+
     # ── Msg ────────────────────────────────────────────────────────────────
 
     async def log_message(self, msg, status: str = "pending") -> None:
