@@ -759,24 +759,36 @@ class PostgresStore(BaseStore):
                 return name, f"Memory '{name}' restored."
 
     async def insert_audit(
-        self, op: str, actor: str, name: str, content_hash: str, detail: str = ""
+        self,
+        op: str,
+        actor: str,
+        name: str,
+        content_hash: str,
+        detail: str = "",
+        reason_code: str = "",
     ) -> None:
-        """Insert a row into write_audit.  Silently no-ops if the table is absent."""
+        """Insert a row into write_audit.  Silently no-ops if the table/column is absent.
+
+        reason_code is the TD decision taxonomy (measurement layer) on approve/reject.
+        """
         self._ensure_pool()
         try:
             async with self.pool.acquire() as conn:
                 await conn.execute(
-                    "INSERT INTO write_audit (actor_key_name, op, memory_name, content_hash, detail) "
-                    "VALUES ($1, $2, $3, $4, $5)",
+                    "INSERT INTO write_audit "
+                    "(actor_key_name, op, memory_name, content_hash, detail, reason_code) "
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
                     actor,
                     op,
                     name,
                     content_hash,
                     detail,
+                    reason_code or None,
                 )
         except Exception as exc:
-            if "write_audit" in str(exc).lower() or "does not exist" in str(exc).lower():
-                pass  # migration 8 not yet applied
+            msg = str(exc).lower()
+            if "write_audit" in msg or "does not exist" in msg or "reason_code" in msg:
+                pass  # migration not yet applied
             else:
                 raise
 
@@ -1893,6 +1905,42 @@ class PostgresStore(BaseStore):
         if not total:
             return None
         return round(row["dead"] / total, 3)
+
+    async def audit_governance_stats(self, days: int = 7) -> dict:
+        """write_audit-derived governance metrics (measurement layer b+d):
+        td_reason distribution + coverage over approve/reject, and net_canon_growth
+        (approvals - rejections - deletions) over the last `days`."""
+        self._ensure_pool()
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT reason_code, COUNT(*) AS n FROM write_audit "
+                    "WHERE op IN ('approve','reject') GROUP BY reason_code"
+                )
+                net = await conn.fetchval(
+                    "SELECT COUNT(*) FILTER (WHERE op='approve') "
+                    "- COUNT(*) FILTER (WHERE op='reject') "
+                    "- COUNT(*) FILTER (WHERE op LIKE '%delete%') "
+                    "FROM write_audit WHERE ts >= NOW() - ($1 || ' days')::INTERVAL",
+                    str(int(days)),
+                )
+        except Exception as exc:
+            if "write_audit" in str(exc).lower() or "does not exist" in str(exc).lower():
+                return {}
+            raise
+        dist: dict[str, int] = {}
+        total = reasoned = 0
+        for r in rows:
+            total += r["n"]
+            if r["reason_code"]:
+                dist[r["reason_code"]] = r["n"]
+                reasoned += r["n"]
+        return {
+            "td_reason": dist,
+            "td_total": total,
+            "td_reasoned": reasoned,
+            "net_canon_growth": net or 0,
+        }
 
     # ── Msg ────────────────────────────────────────────────────────────────
 

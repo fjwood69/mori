@@ -151,9 +151,15 @@ class SQLiteStore(BaseStore):
         return self._mem.restore_memory(name)
 
     def insert_audit(
-        self, op: str, actor: str, name: str, content_hash: str, detail: str = ""
+        self,
+        op: str,
+        actor: str,
+        name: str,
+        content_hash: str,
+        detail: str = "",
+        reason_code: str = "",
     ) -> None:
-        return self._mem.insert_audit(op, actor, name, content_hash, detail)
+        return self._mem.insert_audit(op, actor, name, content_hash, detail, reason_code)
 
     def get_audit_log(self, memory_name: str = "", actor: str = "", limit: int = 100) -> list:
         return self._mem.get_audit_log(memory_name=memory_name, actor=actor, limit=limit)
@@ -487,6 +493,44 @@ class SQLiteStore(BaseStore):
         if not total:
             return None
         return round((row[1] or 0) / total, 3)
+
+    def audit_governance_stats(self, days: int = 7) -> dict:
+        """write_audit-derived governance metrics (measurement layer b+d):
+        td_reason distribution + coverage over approve/reject, and net_canon_growth
+        (approvals - rejections - deletions) over the last `days`."""
+        import sqlite3
+
+        conn = self._mem._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT reason_code, COUNT(*) FROM write_audit "
+                "WHERE op IN ('approve','reject') GROUP BY reason_code"
+            ).fetchall()
+            net = conn.execute(
+                "SELECT "
+                "  SUM(CASE WHEN op='approve' THEN 1 ELSE 0 END) "
+                "- SUM(CASE WHEN op='reject' THEN 1 ELSE 0 END) "
+                "- SUM(CASE WHEN op LIKE '%delete%' THEN 1 ELSE 0 END) "
+                "FROM write_audit WHERE ts >= datetime('now', ?)",
+                (f"-{int(days)} days",),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return {}
+        finally:
+            conn.close()
+        dist: dict[str, int] = {}
+        total = reasoned = 0
+        for rc, cnt in rows:
+            total += cnt
+            if rc:
+                dist[rc] = cnt
+                reasoned += cnt
+        return {
+            "td_reason": dist,
+            "td_total": total,
+            "td_reasoned": reasoned,
+            "net_canon_growth": (net[0] if net and net[0] is not None else 0),
+        }
 
     # ── Msg ────────────────────────────────────────────────────────────────
 

@@ -183,6 +183,24 @@ _canon_mortality = Gauge(
     "Share of canonical memories created >90d ago never retrieved (cohort mortality)",
     registry=prom_registry,
 )
+# TD decision instrument (measurement layer b) — fixed label set (no cardinality risk).
+_td_reason = Gauge(
+    "mori_td_reason_total",
+    "TD approve/reject decisions by reason",
+    ["reason"],
+    registry=prom_registry,
+)
+_td_reason_coverage = Gauge(
+    "mori_td_reason_coverage",
+    "Share of TD approve/reject decisions carrying a reason code",
+    registry=prom_registry,
+)
+# Net canon growth (measurement layer d) — over-production signal.
+_net_canon_growth = Gauge(
+    "mori_net_canon_growth_7d",
+    "Approvals - rejections - deletions over the last 7 days",
+    registry=prom_registry,
+)
 _scrape_duration = Gauge(
     "mori_scrape_duration_seconds", "Time taken to collect metrics", registry=prom_registry
 )
@@ -305,6 +323,19 @@ async def collect_metrics(store, nats_url: Optional[str] = None) -> bytes:
         rate = await _a(store.canon_mortality_rate(days=90))
         if rate is not None:
             _canon_mortality.set(rate)
+    except Exception:
+        pass
+
+    # TD decisions + net canon growth (measurement layer b+d)
+    try:
+        g = await _a(store.audit_governance_stats(days=7))
+        if g:
+            dist = g.get("td_reason", {})
+            for reason in ("too-granular", "duplicate", "stale", "low-value", "other"):
+                _td_reason.labels(reason=reason).set(dist.get(reason, 0))
+            total = g.get("td_total", 0)
+            _td_reason_coverage.set(round(g.get("td_reasoned", 0) / total, 3) if total else 0.0)
+            _net_canon_growth.set(g.get("net_canon_growth", 0))
     except Exception:
         pass
 

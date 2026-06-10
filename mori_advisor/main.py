@@ -2202,35 +2202,57 @@ async def memory_pending_list(status: str = "pending") -> str:
 
 
 @mcp.tool()
-async def memory_approve(write_id: int, note: str = "", reviewer: str = "") -> str:
+async def memory_approve(
+    write_id: int, note: str = "", reviewer: str = "", reason: str = ""
+) -> str:
     """Approve a pending write. Applies the change and records reviewer.
 
     Args:
         write_id: ID of the pending write from memory_pending_list.
         note: Optional review note.
         reviewer: Hostname of the reviewer (auto-detected if empty).
+        reason: Optional TD decision code (too-granular|duplicate|stale|low-value|other)
+                for the measurement layer; omitted → not counted toward coverage.
     """
     try:
         require_role("dreamer")
     except PermissionDenied as exc:
         return str(exc)
-    return await _a(memory_store.approve(write_id, note=note, reviewer=reviewer))
+    result = await _a(memory_store.approve(write_id, note=note, reviewer=reviewer))
+    await _write_audit(
+        "approve",
+        reviewer or "unknown",
+        f"write:{write_id}",
+        note,
+        reason_code=_normalise_reason(reason),
+    )
+    return result
 
 
 @mcp.tool()
-async def memory_reject(write_id: int, note: str = "", reviewer: str = "") -> str:
+async def memory_reject(write_id: int, note: str = "", reviewer: str = "", reason: str = "") -> str:
     """Reject a pending write without applying.
 
     Args:
         write_id: ID of the pending write from memory_pending_list.
         note: Optional review note.
         reviewer: Hostname of the reviewer (auto-detected if empty).
+        reason: Optional TD decision code (too-granular|duplicate|stale|low-value|other)
+                for the measurement layer; omitted → not counted toward coverage.
     """
     try:
         require_role("dreamer")
     except PermissionDenied as exc:
         return str(exc)
-    return await _a(memory_store.reject(write_id, note=note, reviewer=reviewer))
+    result = await _a(memory_store.reject(write_id, note=note, reviewer=reviewer))
+    await _write_audit(
+        "reject",
+        reviewer or "unknown",
+        f"write:{write_id}",
+        note,
+        reason_code=_normalise_reason(reason),
+    )
+    return result
 
 
 @mcp.tool()
@@ -3027,23 +3049,41 @@ _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 _BODY_MAX_BYTES = 64 * 1024  # 64 KB
 
 
-async def _write_audit(op: str, actor_name: str, name: str, body: str, *, detail: str = "") -> None:
+# TD decision taxonomy (measurement layer b). A reason is OPTIONAL on approve/reject
+# (non-breaking): omitted → stored NULL and counts against td_reason_coverage; provided
+# → normalised to the taxonomy ("other" for anything unrecognised, aligned to intake's
+# rejection_reason). Coverage tells us adoption; the distribution tells us why the TD rejects.
+_TD_REASONS = {"too-granular", "duplicate", "stale", "low-value", "other"}
+
+
+def _normalise_reason(value) -> str:
+    r = (value or "").strip().lower()
+    if not r:
+        return ""  # omitted → NULL → counts against coverage
+    return r if r in _TD_REASONS else "other"
+
+
+async def _write_audit(
+    op: str, actor_name: str, name: str, body: str, *, detail: str = "", reason_code: str = ""
+) -> None:
     """Emit a structured audit log line AND insert a row into write_audit.
 
     Fires on every governed write/approve/reject/delete after a successful store
     op.  Audit insert failure is logged but never raised — it must not roll back
-    the primary operation.
+    the primary operation.  reason_code carries the TD decision taxonomy on
+    approve/reject (measurement layer).
     """
     content_hash = hashlib.sha256(body.strip().encode("utf-8", errors="replace")).hexdigest()[:16]
     logger.info(
-        "AUDIT op=%s actor=%s name=%s content_hash=%s",
+        "AUDIT op=%s actor=%s name=%s content_hash=%s reason=%s",
         op,
         actor_name,
         name,
         content_hash,
+        reason_code or "-",
     )
     try:
-        await _a(store.insert_audit(op, actor_name, name, content_hash, detail or ""))
+        await _a(store.insert_audit(op, actor_name, name, content_hash, detail or "", reason_code))
     except Exception as exc:
         logger.warning("audit insert failed (op=%s name=%s): %s", op, name, exc)
 
@@ -3437,7 +3477,13 @@ async def approve_memory(request: Request) -> JSONResponse:
         )
         if "not found" in result.lower() or "already processed" in result.lower():
             return JSONResponse({"error": result}, status_code=404)
-        await _write_audit("approve", actor_name, mem_name, note)
+        await _write_audit(
+            "approve",
+            actor_name,
+            mem_name,
+            note,
+            reason_code=_normalise_reason(payload.get("reason")),
+        )
         return JSONResponse({"status": "approved", "name": mem_name, "detail": result})
     except Exception as e:
         logger.error("POST /api/memories/%s/approve failed: %s", mem_name, e)
@@ -3493,7 +3539,13 @@ async def reject_memory(request: Request) -> JSONResponse:
         )
         if "not found" in result.lower() or "already processed" in result.lower():
             return JSONResponse({"error": result}, status_code=404)
-        await _write_audit("reject", actor_name, mem_name, note)
+        await _write_audit(
+            "reject",
+            actor_name,
+            mem_name,
+            note,
+            reason_code=_normalise_reason(payload.get("reason")),
+        )
         return JSONResponse({"status": "rejected", "name": mem_name, "detail": result})
     except Exception as e:
         logger.error("POST /api/memories/%s/reject failed: %s", mem_name, e)

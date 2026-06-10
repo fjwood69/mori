@@ -1233,24 +1233,33 @@ class MemoryStore:
             conn.close()
 
     def insert_audit(
-        self, op: str, actor: str, name: str, content_hash: str, detail: str = ""
+        self,
+        op: str,
+        actor: str,
+        name: str,
+        content_hash: str,
+        detail: str = "",
+        reason_code: str = "",
     ) -> None:
-        """Insert a row into write_audit.  Silently no-ops if the table is absent
-        (pre-migration 8 databases — migration runs on startup but tests may skip it).
+        """Insert a row into write_audit.  Silently no-ops if the table/column is absent
+        (pre-migration databases — migration runs on startup but tests may skip it).
+
+        reason_code is the TD decision taxonomy (measurement layer) on approve/reject.
         """
         import sqlite3
 
         conn = self._get_conn()
         try:
             conn.execute(
-                "INSERT INTO write_audit (actor_key_name, op, memory_name, content_hash, detail) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (actor, op, name, content_hash, detail),
+                "INSERT INTO write_audit (actor_key_name, op, memory_name, content_hash, detail, reason_code) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (actor, op, name, content_hash, detail, reason_code or None),
             )
             conn.commit()
         except sqlite3.OperationalError as e:
-            if "no such table" in str(e).lower():
-                pass  # migration 8 not yet applied (e.g. test with bare schema)
+            msg = str(e).lower()
+            if "no such table" in msg or "no such column" in msg:
+                pass  # migration not yet applied (e.g. test with bare schema)
             else:
                 raise
         finally:

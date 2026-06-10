@@ -573,6 +573,13 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ON memories (tier, created_at, retrieval_count) WHERE deleted_at IS NULL"
         ),
     ),
+    Migration(
+        id=14,
+        name="write_audit_reason_code",
+        # TD decision taxonomy on approve/reject (measurement layer b). Additive, nullable.
+        sqlite_sql=("ALTER TABLE write_audit ADD COLUMN reason_code TEXT",),
+        postgres_sql="ALTER TABLE write_audit ADD COLUMN IF NOT EXISTS reason_code TEXT",
+    ),
 )
 
 

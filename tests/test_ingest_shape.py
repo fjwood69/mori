@@ -78,3 +78,24 @@ def test_canon_mortality_none_when_no_cohort(tmp_path):
     store.write(name="fresh", title="F", body="x", type="project", tier="canonical")
     # created just now → not in the >90d cohort → None
     assert store.canon_mortality_rate(days=90) is None
+
+
+# ── TD reason distribution + coverage + net growth (b+d, SQLite) ──────────────
+
+
+def test_audit_governance_stats(tmp_path):
+    from mori_advisor.store.sqlite_store import SQLiteStore
+
+    store = SQLiteStore(tmp_path / "m.db")
+    store.bootstrap()
+    store.insert_audit("approve", "td", "m1", "h1", reason_code="duplicate")
+    store.insert_audit("approve", "td", "m2", "h2", reason_code="too-granular")
+    store.insert_audit("reject", "td", "m3", "h3")  # no reason → uncounted in coverage
+    store.insert_audit("hard_delete", "td", "m4", "h4")
+
+    g = store.audit_governance_stats(days=7)
+    assert g["td_reason"] == {"duplicate": 1, "too-granular": 1}
+    assert g["td_total"] == 3  # 2 approve + 1 reject
+    assert g["td_reasoned"] == 2  # only the two with a reason
+    # net = approve(2) - reject(1) - delete(1) = 0
+    assert g["net_canon_growth"] == 0
