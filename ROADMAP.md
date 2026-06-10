@@ -80,17 +80,21 @@ Updated with each release.
 
 ---
 
-## Horizon 1 — Finish governance to "promotable"
+## Horizon 1 — Governance: the human gate is the product
 
-The differentiator. Stage 1 write-only intake is live. Path: policy + human review → flip `MORI_INTAKE_PROMOTION_ENABLED`.
+The differentiator is the gate itself — *machine proposes, human promotes* — and it's shipped and live: human-review surfacing (v2.2.16) plus the review roll-up (v2.2.18). **Unattended promotion (`MORI_INTAKE_PROMOTION_ENABLED`) is demoted to indefinitely-opt-in** — not the destination it was once framed as. The benchmark puts the value in the human gate (~22% → ~51% discovery-cost cut), so the active H1 work is the **measurement layer + curation throughput**, not the Stage-2 concurrency machinery (frozen — see below).
 
-### P0 gate items (blocking Stage 2)
+### Active
 - ✅ **Structured-output assessor verdicts** (shipped v2.2.14) — strict `json_schema` + Pydantic validation replaces free-text parsing in B2; fail-closed to NEEDS_REVIEW on any malformed output
-- Agent retrieval excludes WORKING/agent-intake tier — prevents intake candidates polluting `/brief`
-- Atomic assessment state machine — `ASSESSING` lease prevents concurrent B2 workers racing on the same candidate
-- Bifrost circuit-breaker in assessor — fast model VK failures don't stall the assessment pipeline
-- Dream-concurrency guard OPS-002 — dream lease and B3 promotion worker must not race on the same canon write connection
-- E2E A→B1→B2→B3 test — full pipeline round-trip test before enabling unattended promotion
+- **Measurement layer + curation throughput** — instrument discovery-cost, candidates/ingest, and TD review burden as the system runs; the published curve is the product claim, not a one-off benchmark
+- **Agent retrieval excludes WORKING/agent-intake tier** — blast-radius protector: pending intake candidates never pollute `/brief` (maintained regardless of promotion mode)
+- **Bifrost circuit-breaker in assessor** — fast-model VK failures don't stall the assessment pipeline (matters in the human-gated path too)
+
+### Frozen — unattended-promotion machinery (opt-in only)
+Unattended promotion stays opt-in behind `MORI_INTAKE_PROMOTION_ENABLED`; these are frozen until the human-reviewed queue is consistently pristine (per the 2026-06 architecture review):
+- Atomic assessment state machine — `ASSESSING` lease preventing concurrent B2 workers racing on a candidate
+- Dream-concurrency guard OPS-002 — dream lease vs B3 promotion worker on the canon write connection
+- E2E A→B1→B2→B3 test — full unattended round-trip before enabling auto-promotion
 
 ### Policy-as-config seam
 Simple declarative ruleset + tiny evaluator now. OPA/Rego as the enterprise evolution of the same seam — embedded in mori, not a separate engine. The pitch: regulated industries already maintain policy definitions; Mori makes those policies agent-aware without a separate governance committee. Roadmap OPA explicitly; build the seam, not the engine.
@@ -114,11 +118,13 @@ human-gated (Full two-phase B). The default path: the bridge surfaces a pending_
 + trusted ticket, a TD votes, the finalizer re-runs GOV-002 against the live candidate
 before canon. Unattended auto-promotion remains opt-in behind `MORI_INTAKE_PROMOTION_ENABLED`.
 
-### Additional governance hardening
+### Additional governance hardening (general — independent of promotion mode)
 - Candidate-body immutability — Postgres trigger rejecting `UPDATE` of `canonicalized_body`/`content_hash` once a candidate is `under_review` (defence-in-depth; the finalizer's `body_hash` pin already rejects a mutated body, so this hardens earlier in the lifecycle)
-- Finalizer/drainer advisory lock — a Postgres advisory lock around `finalize_once`/`drain_once` so a future multi-worker bridge can't race a double canon write (today a single drainer + `unique(memories.name)` upsert makes this latent)
 - Intake backpressure — 503 when candidate depth > N; prevents unbounded queue growth
-- Tailscale ACL `tag:intake←tag:hermes` before unattended promotion — network-level isolation
+
+Frozen with the unattended-promotion machinery above (opt-in only):
+- Finalizer/drainer advisory lock — a Postgres advisory lock around `finalize_once`/`drain_once` so a future multi-worker bridge can't race a double canon write (today a single drainer + `unique(memories.name)` upsert makes this latent)
+- Tailscale ACL `tag:intake←tag:hermes` — network-level isolation before any unattended promotion
 - Flip sequence: operator-CLI promotion first → dream B3 second
 
 ---
@@ -138,8 +144,8 @@ before canon. Unattended auto-promotion remains opt-in behind `MORI_INTAKE_PROMO
 
 Near-zero coupling to core. Can ship any time.
 
-- **README "Why use mori?" section** — right after the banner; the elevator pitch in the repo
-- **`docs/concepts/claude-md-vs-mori.md`** — the unconditional floor vs compounding layer framing; CLAUDE.md and Mori are complementary, not competing
+- ✅ **README "Why use mori?" section** (shipped) — inverted to lead with the gate + the benchmark table (incl. the auto-extraction≈CLAUDE.md row); the dream pipeline demoted to the proposal half
+- **`docs/concepts/claude-md-vs-mori.md`** — the unconditional floor vs the governed layer above it; CLAUDE.md and Mori are complementary, not competing (canon *compounding* is a stated design thesis, not asserted)
 - **Demo video** — cheap, high-leverage; unblocks Product Hunt, HN Show HN, enterprise eval cycles. Still not shipped.
 - **Public roadmap page** — `moriapp.dev/roadmap` with feedback form; buried markdown helps nobody
 - **Bifrost interface contract** — OpenAPI + contract test; publish/document as standalone OSS. The real "extraction" — not a code fork, a documented interface
