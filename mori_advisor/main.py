@@ -3324,7 +3324,15 @@ async def get_pending_json(request: Request) -> JSONResponse:
     try:
         items = await _a(store.pending_list_json(status=status_filter))
         items = _json_safe_rows(items)
-        return JSONResponse({"status": status_filter, "count": len(items), "items": items})
+        # Review roll-up: group near-duplicate candidates by convention (the memory
+        # name) so the TD disposes of a convention once, not N times. Additive —
+        # `clusters` lists only multi-member groups (member names); `items` is unchanged.
+        from mori_advisor.clustering import cluster_index
+
+        clusters = cluster_index(items, id_field="name", name_field="name")
+        return JSONResponse(
+            {"status": status_filter, "count": len(items), "items": items, "clusters": clusters}
+        )
     except Exception as e:
         logger.error("GET /api/pending/json failed: %s", e)
         return JSONResponse({"error": str(e)}, status_code=500)

@@ -91,6 +91,13 @@ The differentiator. Stage 1 write-only intake is live. Path: policy + human revi
 ### Policy-as-config seam
 Simple declarative ruleset + tiny evaluator now. OPA/Rego as the enterprise evolution of the same seam — embedded in mori, not a separate engine. The pitch: regulated industries already maintain policy definitions; Mori makes those policies agent-aware without a separate governance committee. Roadmap OPA explicitly; build the seam, not the engine.
 
+### TD review roll-up — ✅ shipped v2.2.18
+Near-duplicate review candidates are grouped by convention (deterministic, embedding-free
+suffix key) so the Trusted-Dreamer disposes of a convention once, not N times. Surfaced on
+both review queues (`/api/pending/json`, `/intake/candidates`); review-side presentation
+only — never drops at generation, never auto-merges. Embeddings deferred until the lexical
+floor proves too coarse.
+
 ### Externalised distillation prompts — ✅ shipped v2.2.17
 Dreamer and archivist prompts moved to editable files (`mori_advisor/prompts/*.txt`,
 overridable via `MORI_PROMPTS_DIR`). Prompt rewrite: unit-of-output = the convention,
@@ -179,4 +186,4 @@ Decided on paper now. Open core stays thin.
 
 ---
 
-*Last updated: v2.2.17 — 2026-06-10*
+*Last updated: v2.2.18 — 2026-06-10*

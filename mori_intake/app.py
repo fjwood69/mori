@@ -305,20 +305,28 @@ async def get_candidates(
     _require_write(x_api_key)
 
     pool = db.get_pool()
+    # stable_key (the agent's convention key) lives on the submission, not the
+    # candidate — pull the most recent corroborating submission's key so the
+    # review roll-up has a convention to cluster on.
     rows = await pool.fetch(
-        "SELECT id, canonicalized_body, content_hash, status, "
-        "       reinforcement_count, created_at, promoted_canon_name "
-        "FROM intake_candidates "
-        "WHERE status = $1 "
-        "ORDER BY created_at DESC "
+        "SELECT c.id, c.canonicalized_body, c.content_hash, c.status, "
+        "       c.reinforcement_count, c.created_at, c.promoted_canon_name, "
+        "       (SELECT s.stable_key FROM intake_corroborations cor "
+        "          JOIN intake_submissions s ON s.id = cor.submission_id "
+        "         WHERE cor.candidate_id = c.id "
+        "         ORDER BY cor.recorded_at DESC LIMIT 1) AS stable_key "
+        "FROM intake_candidates c "
+        "WHERE c.status = $1 "
+        "ORDER BY c.created_at DESC "
         "LIMIT $2",
         status,
         limit,
     )
 
-    return [
+    candidates = [
         {
             "id": str(r["id"]),
+            "stable_key": r["stable_key"],
             "canonicalized_body": r["canonicalized_body"],
             "content_hash": r["content_hash"],
             "status": r["status"],
@@ -328,3 +336,16 @@ async def get_candidates(
         }
         for r in rows
     ]
+
+    # Review roll-up: group near-duplicate candidates by convention (stable_key)
+    # so the TD disposes of a convention once, not N times. `clusters` lists only
+    # multi-member groups (member ids); `candidates` is the full flat list.
+    from mori_advisor.clustering import cluster_index
+
+    clusters = cluster_index(candidates, id_field="id", name_field="stable_key")
+    return {
+        "status": status,
+        "count": len(candidates),
+        "candidates": candidates,
+        "clusters": clusters,
+    }

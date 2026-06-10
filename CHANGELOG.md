@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.2.18 — TD review roll-up (near-duplicate clustering)
+
+**feat: group near-duplicate review candidates so the Trusted-Dreamer disposes of a
+convention once, not N times.**
+- New `mori_advisor/clustering.py` — deterministic, embedding-free clustering. Candidates
+  are grouped by the longest trailing hyphen-suffix they share (≥2 segments, ≥10 chars), so
+  `lineup4-game-state-contract` and `greedy-pig-game-state-contract` roll up under
+  `game-state-contract`, while distinct `*-contract` conventions stay apart. This is the
+  *near*-dup layer; exact-dup is already handled upstream (intake `content_hash` UNIQUE).
+- Review-side presentation only: never changes what the dreamer emits (recall intact) and
+  never auto-merges (the TD disposes). Embeddings deferred until the lexical floor proves
+  too coarse.
+- Wired into both review surfaces, additive:
+  - `GET /api/pending/json` → adds `clusters` (grouped by memory `name`); `items` unchanged.
+  - `GET /intake/candidates` → adds a `stable_key` join (the convention key lives on the
+    submission) + `clusters`; response is now `{status, count, candidates, clusters}`.
+  - `clusters` lists only multi-member roll-ups (member ids, not duplicated payloads).
+- Validated in UAT against real Postgres: a seeded `learned-game-state-contract` +
+  `fact-game-state-contract` rolled up under `game-state-contract` while an unrelated key
+  stayed separate; no false clusters among the 24 seeded pending writes.
+
 ## v2.2.17 — externalised distillation prompts + dreamer/archivist rewrite
 
 **feat: distillation prompts are now editable text files, tuned without a code change.**
