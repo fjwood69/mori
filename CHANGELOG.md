@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.2.19 — measurement layer (passive instruments from real usage)
+
+**feat: instrument the value of curation from production use, not one-off synthetic
+benchmarks.** Per the 2026-06 architecture review + a deep `/consult` pass — passive
+instruments that emit as a byproduct of normal use. Honest framing: they flag *when* to
+re-benchmark and *which canon is dead*; they do **not** prove the cost-thesis by themselves.
+
+- **c1 (fix):** Postgres bumped `retrieval_count` only in `read()` — `list`/`search`/`brief`
+  (the real recall paths) didn't, so production measured ~zero memory usage. Now bumped
+  (deferred/batched, after the result returns — write-amplification guard). Prerequisite for
+  the usage instrument, and a latent bug.
+- **a — ingest-shape:** per `/ingest`, `candidates_total`, `convention_ratio` (granularity/
+  near-dup signal via `clustering.cluster_keys`), `anchorable_pct` (smoke signal) →
+  `ingestion_log` columns + last-ingest gauges.
+- **c2 — canon mortality:** `mori_canon_mortality_rate_90d` — the cohort % of canonical
+  memories created >90d ago never retrieved (tests the compounding thesis over time) + a
+  serving composite index so the gauge never scans.
+- **b — TD reason-code:** optional `reason` on approve/reject (taxonomy `too-granular|
+  duplicate|stale|low-value|other`, aligned to intake), non-breaking; persisted as
+  `write_audit.reason_code` → `mori_td_reason_total{reason}` (fixed labels) +
+  `mori_td_reason_coverage`. Also closes a gap: MCP approve/reject now write to the audit too.
+- **d — net canon growth:** `mori_net_canon_growth_7d` (approvals − rejections − deletions) —
+  the over-production signal.
+- Migrations 12–14 (additive, both backends); rides the existing `/metrics` scrape — no new
+  endpoints, no backfill. Sunset clause: prune ingest-shape + TD-reason if they don't
+  correlate with the next benchmark within 90 days.
+
 ## v2.2.18 — TD review roll-up (near-duplicate clustering)
 
 **feat: group near-duplicate review candidates so the Trusted-Dreamer disposes of a

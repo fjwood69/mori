@@ -86,7 +86,7 @@ The differentiator is the gate itself — *machine proposes, human promotes* —
 
 ### Active
 - ✅ **Structured-output assessor verdicts** (shipped v2.2.14) — strict `json_schema` + Pydantic validation replaces free-text parsing in B2; fail-closed to NEEDS_REVIEW on any malformed output
-- **Measurement layer + curation throughput** — instrument discovery-cost, candidates/ingest, and TD review burden as the system runs; the published curve is the product claim, not a one-off benchmark
+- **Measurement layer + curation throughput** — ✅ passive instruments shipped v2.2.19 (ingest-shape, canon-mortality, TD-reason/coverage, net-canon-growth, the Postgres retrieval-count fix); they ride `/metrics` and flag *when* to re-benchmark. Next: the published compounding curve from the accruing data.
 - **Agent retrieval excludes WORKING/agent-intake tier** — blast-radius protector: pending intake candidates never pollute `/brief` (maintained regardless of promotion mode)
 - **Bifrost circuit-breaker in assessor** — fast-model VK failures don't stall the assessment pipeline (matters in the human-gated path too)
 
@@ -199,4 +199,4 @@ Decided on paper now. Open core stays thin.
 
 ---
 
-*Last updated: v2.2.18 — 2026-06-10*
+*Last updated: v2.2.19 — 2026-06-10*
