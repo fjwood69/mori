@@ -1,34 +1,60 @@
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/565341369703026ecaf74377abf259223f7dcdaf/docs/assets/header-dark-v0_1_4.svg)
 
-Mori (森) is a shared memory layer for AI coding agents — one that compounds.
-Sessions feed a dream pipeline that distils activity into durable knowledge,
-so every instance starts informed rather than cold. One Mori, many agents —
-every session benefits from what every other session learned.
+Mori (森) is a **governed** shared-memory layer for AI coding agents. Automated
+pipelines *propose* durable knowledge from session activity; a human *promotes* it
+to canon. That gate — proposal vs promotion — is the whole product: in a cold-start
+benchmark it's the difference between a **~22%** and a **~51%** cut in an agent's
+re-exploration cost. One Mori, many agents — every session starts informed by what
+a human chose to keep.
 
-Works with any OpenAI-compatible provider. No homelab, no Anthropic
-account, no LLM Gateway required — though those all work too.
+Bring your own agent; the knowledge outlives it. Works with any OpenAI-compatible
+provider and any agent harness — no homelab, no Anthropic account, no LLM gateway
+required, though those all work too.
 
 ---
 
 ## Why use mori?
 
 You're right to be sceptical of "memory systems" — most are a vector DB with a
-retrieval prompt bolted on, and you already have a `CLAUDE.md` (or `.cursorrules`)
-that works. Keep it. Mori doesn't replace that file; it's the layer **above** it.
+retrieval prompt bolted on, and in our own measurements the auto-extracted memory
+they produce is **no better than a `CLAUDE.md` you'd write by hand.** So we measured
+the thing that actually moves the needle, and we'll show you the number that doesn't
+flatter us first.
 
-- **`CLAUDE.md` is your unconditional floor** — static facts you hand-edit, always
-  present, that never change: commands, conventions, hard rules.
-- **Mori is the compounding layer** — the decisions, patterns, and institutional
-  knowledge that *accumulate* as you work. A dream pipeline distils each session
-  into curated, tiered, freshness-checked memories, so the next session — on any
-  machine, any agent — starts from what was actually learned, not a cold prompt.
+**The benchmark.** Cold-start *discovery cost* — how many files an agent reads,
+greps, and explores before its first edit (lower is better). One task, one repo,
+n≈10 runs:
 
-The rule: **if it never changes, it belongs in `CLAUDE.md`; if it compounds, it
-belongs in mori.** Complementary, not competing — the static floor and the layer
-that grows above it. ([the full distinction →](docs/concepts/claude-md-vs-mori.md))
+| What the agent starts with | Discovery cost | vs cold start |
+|---|---|---|
+| Nothing (cold start) | 22.5 | — |
+| Auto-extracted memories | ~17–18 | ~22% better |
+| Hand-written `CLAUDE.md` | ~17–18 | ~22% better |
+| **Human-curated canon (mori)** | **11** | **~51% better** |
 
-And it's yours: self-hosted (your server, your data), open-source (AGPL-3.0), and
-provider-agnostic. No data leaves your infrastructure.
+Read the unflattering row first: **auto-extraction ties with a hand-written
+`CLAUDE.md`.** A pipeline that merely distils sessions into memories buys you about
+what a good static doc already does. The step change — ~22% to ~51% — comes from the
+**gate**: the pipeline proposes at high recall, and a *human promotes* the few
+load-bearing memories to canon. **The curation is the product; the pipeline is how
+you make curation cheap.**
+
+> *One repo, one task, n≈10 — directional, not yet generalised across repos. We'd
+> rather show you the limits of the number than a marketing curve.*
+
+So mori doesn't replace your `CLAUDE.md` — keep it as your **unconditional floor**
+(static facts you hand-edit, always present: commands, conventions, hard rules).
+Mori is the **governed layer above it**: the decisions and patterns a human chose to
+keep, surfaced to every session, on any machine, any agent.
+([the full distinction →](docs/concepts/claude-md-vs-mori.md))
+
+We expect that curated canon to **compound** as it grows — but that's a stated
+*design thesis*, not a proven claim. We're instrumenting it as an ongoing
+measurement (canon value at 200+ memories) rather than asserting it.
+
+And it's yours: self-hosted (your server, your data), open-source (AGPL-3.0),
+provider- and **agent-neutral**. No data leaves your infrastructure; the knowledge
+outlives whichever agent you're using this year.
 
 ---
 
@@ -172,7 +198,14 @@ external knowledge*:
 
 ## How it works
 
-### Dream pipeline
+### Dream pipeline — the proposal half of the gate
+
+The dream pipeline is the *proposal* mechanism, not the product. It runs at **high
+recall**: it turns session activity into candidate memories and deliberately
+over-produces — recall over precision — because nothing it emits reaches canon
+without a human promoting it (see [Governance](#governance--the-gate) below). That
+division of labour — machine proposes, human disposes — is the gate the benchmark
+measures.
 
 Session events are captured via agent lifecycle hooks (Claude Code, Cursor,
 Antigravity) and distilled into structured memories by a configurable LLM.
@@ -209,6 +242,21 @@ session ID, hostname, working directory, transcript path, and (on `Stop`)
 the assistant's own reasoning — the plans, analysis, and decisions behind
 each turn.
 
+### Governance — the gate
+
+Proposals don't become canon on their own. Both the dream pipeline (your sessions)
+and the autonomous-agent intake path (other agents) write to a **review queue**, not
+to canon. A **trusted dreamer** — a human — reviews candidates and promotes the
+load-bearing ones; every promotion is versioned and `write_audit`-logged. Agents
+*read* canon; they never silently write it.
+
+To keep that review cheap, mori **rolls up near-duplicate candidates** so the
+reviewer disposes of a *convention* once instead of many times. The proposal side
+runs at high recall; the gate is what makes high recall affordable instead of
+exhausting. This is the line the benchmark measures — and the commercial seam too:
+standards and policy packs enter through the *same* gate (signed in, versioned,
+audited), not by trusting the filesystem.
+
 ### Memory store
 
 ![The Forest Remembers](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-2-the-forest-remembers.svg)
@@ -216,14 +264,16 @@ each turn.
 Memories live in the store — SQLite (`memories.db`) for solo/sync deployments,
 Postgres for team/async — with three tiers:
 
-> **Backend requirement — SQLite is the base mode, Postgres is mandatory for anything
-> meaningful.** SQLite is the zero-config default for a single user on one machine. For
-> a team, multiple machines/agents, or any concurrent-writer workload, **Postgres is
-> mandatory** — SQLite's file-level locking serialises writes and cannot sustain it.
-> Some capabilities are **Postgres-only by design** (e.g. the autonomous-agent intake /
-> governance pipeline): they require concurrent writers and the async store, and are
-> simply unavailable on a SQLite backend. We do not engineer every capability for both
-> backends — choose Postgres for production/team use.
+> **SQLite vs Postgres is a trust boundary, not just a backend toggle.** SQLite is the
+> *one-human, one-writer* mode — the zero-config default for a single user on one
+> machine, where you are the only thing that writes. Postgres is the *team* mode —
+> many machines, many agents, concurrent writers — and it's **mandatory** for anything
+> beyond solo: SQLite's file-level locking serialises writes and cannot sustain it.
+> Capabilities that exist *because* multiple writers do (the autonomous-agent intake /
+> governance pipeline) are **Postgres-only by design**. The curation queue still runs on
+> SQLite in degraded single-writer form — one human gating their own agents — so the gate
+> is never unavailable; it just doesn't need concurrency until a team does. Choose Postgres
+> for production/team use.
 
 | Tier | Scope | Lifecycle |
 |------|-------|-----------|

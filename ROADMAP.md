@@ -1,5 +1,9 @@
 ![Mori Roadmap](https://raw.githubusercontent.com/fjwood69/mori/12c16127afff279df6a4b4b9c6ccdd71b6b78f80/docs/assets/roadmap-banner.svg)
 
+> **Make the agents better, don't care which ones.**
+
+That's the company thesis. It's the position Devin can't occupy and the platform vendors won't: agent-neutral by design. Memory features will commoditise into every harness; governed, portable, self-hosted institutional memory that *outlives the agent* will not.
+
 This file tracks what has shipped, what is in progress, and what is planned.
 Updated with each release.
 
@@ -140,6 +144,9 @@ Near-zero coupling to core. Can ship any time.
 - **Public roadmap page** — `moriapp.dev/roadmap` with feedback form; buried markdown helps nobody
 - **Bifrost interface contract** — OpenAPI + contract test; publish/document as standalone OSS. The real "extraction" — not a code fork, a documented interface
 - **Docker Compose as canonical self-host** — polish; Homebrew as frictionless install
+- **Vertical packs (FSI first)** — OPA policy pack + conventions standards + migration runbooks as one commercial artifact, riding existing seams (`MORI_STANDARDS_DIR`, `/consult`, `/pensieve`). Engine stays AGPL; packs are the paid wedge into regulated industries.
+- **Standards attestation** — pack/standards imports enter through the review gate (TD signs in, versioned, `write_audit` logged), not filesystem trust. Small change; it's the entire vendor-review answer.
+- **Positioning: agent-neutral by design** — "bring your own agent; the knowledge outlives it." Memory features will commoditise into every harness; governed, portable, self-hosted institutional memory won't. Every roadmap and README sentence sells the second thing, never the first.
 
 ---
 
