@@ -553,9 +553,13 @@ MIGRATIONS: tuple[Migration, ...] = (
         id=12,
         name="ingestion_log_shape",
         # Ingest-shape instrument (measurement layer): candidate volume + the
-        # convention/occurrence ratio + anchorability per ingest. SQLite is handled
-        # by the legacy bootstrap's guarded ALTERs (memory_store); this covers
-        # existing Postgres DBs (fresh PG gets the columns from _DDL). Additive, nullable.
+        # convention/occurrence ratio + anchorability per ingest. Additive, nullable —
+        # in the registry (not the legacy bootstrap) so EXISTING DBs get the columns too.
+        sqlite_sql=(
+            "ALTER TABLE ingestion_log ADD COLUMN candidates_total INTEGER",
+            "ALTER TABLE ingestion_log ADD COLUMN convention_ratio REAL",
+            "ALTER TABLE ingestion_log ADD COLUMN anchorable_pct REAL",
+        ),
         postgres_sql=(
             "ALTER TABLE ingestion_log ADD COLUMN IF NOT EXISTS candidates_total INTEGER; "
             "ALTER TABLE ingestion_log ADD COLUMN IF NOT EXISTS convention_ratio REAL; "
@@ -566,8 +570,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         id=13,
         name="canon_mortality_index",
         # Composite index serving canon_mortality_rate() so the /metrics gauge never
-        # scans the memories table as the corpus grows (consult). SQLite gets the same
-        # index from the legacy bootstrap (memory_store).
+        # scans the memories table as the corpus grows (consult).
+        sqlite_sql=(
+            "CREATE INDEX IF NOT EXISTS idx_memories_canon_mortality "
+            "ON memories(tier, created_at, retrieval_count)",
+        ),
         postgres_sql=(
             "CREATE INDEX IF NOT EXISTS idx_memories_canon_mortality "
             "ON memories (tier, created_at, retrieval_count) WHERE deleted_at IS NULL"

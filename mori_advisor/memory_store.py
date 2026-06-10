@@ -271,11 +271,7 @@ class MemoryStore:
         # Supports the post-compact delta brief (get_memories_changed_since) —
         # turns the updated_at range scan into an index lookup.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_updated_at ON memories(updated_at)")
-        # Serves canon_mortality_rate() (measurement layer) without a table scan.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_memories_canon_mortality "
-            "ON memories(tier, created_at, retrieval_count)"
-        )
+        # idx_memories_canon_mortality is added by migration 13 (so existing DBs get it).
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS pending_writes ("
@@ -333,11 +329,10 @@ class MemoryStore:
             "  tags TEXT NOT NULL DEFAULT '[]',"
             "  dry_run INTEGER NOT NULL DEFAULT 0,"
             "  error_count INTEGER NOT NULL DEFAULT 0,"
-            "  status TEXT NOT NULL DEFAULT 'committed',"
-            # ingest-shape instrument (measurement layer) — nullable
-            "  candidates_total INTEGER,"
-            "  convention_ratio REAL,"
-            "  anchorable_pct REAL"
+            "  status TEXT NOT NULL DEFAULT 'committed'"
+            # ingest-shape columns (candidates_total/convention_ratio/anchorable_pct)
+            # are added by migration 12 — NOT here — so existing DBs (whose baseline is
+            # already stamped) get them too.
             ")"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ingestion_hash ON ingestion_log(source_hash)")
@@ -350,17 +345,6 @@ class MemoryStore:
             )
         except sqlite3.OperationalError:
             pass  # Column already exists
-
-        # Migrate: ingest-shape columns (measurement layer) for existing DBs
-        for _col, _type in (
-            ("candidates_total", "INTEGER"),
-            ("convention_ratio", "REAL"),
-            ("anchorable_pct", "REAL"),
-        ):
-            try:
-                conn.execute(f"ALTER TABLE ingestion_log ADD COLUMN {_col} {_type}")
-            except sqlite3.OperationalError:
-                pass  # Column already exists
 
         conn.commit()
         conn.close()
