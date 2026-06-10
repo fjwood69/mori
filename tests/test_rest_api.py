@@ -166,6 +166,43 @@ def test_pg_search_json():
     assert [m["name"] for m in out["filt"]] == ["beta-y"]
 
 
+@requires_pg
+def test_pg_retrieval_count_bumps_on_recall():
+    """Postgres must bump retrieval_count on the agent-recall paths (search/list/brief),
+    matching SQLite — the measurement-layer prerequisite. Browse (get_memory) must not.
+    The bump is deferred/fire-and-forget, so we drain it before asserting.
+    """
+    from mori_advisor.store.postgres_store import PostgresStore
+
+    async def run():
+        store = PostgresStore(PG_URL)
+        await store.bootstrap()
+        async with store.pool.acquire() as c:
+            await c.execute("DELETE FROM memories")
+        await store.write(
+            name="recall-a",
+            title="A",
+            body="reboot survival note",
+            type="project",
+            tier="canonical",
+            tags=["project:demo"],
+        )
+        await store.search(query="reboot")  # recall 1
+        await store.list()  # recall 2
+        await store.get_memories_by_project("demo")  # recall 3 (brief path)
+        await asyncio.sleep(0.5)  # drain the deferred bumps
+        rc = (await store.get_memory("recall-a"))["retrieval_count"]
+        await store.get_memory("recall-a")  # browse — must NOT bump
+        await asyncio.sleep(0.2)
+        rc_after_browse = (await store.get_memory("recall-a"))["retrieval_count"]
+        await store.pool.close()
+        return rc, rc_after_browse
+
+    rc, rc_after_browse = asyncio.run(run())
+    assert rc == 3, f"expected 3 recall bumps, got {rc}"
+    assert rc_after_browse == 3, "get_memory (browse) must not bump retrieval_count"
+
+
 # ── SQLite get_memory ────────────────────────────────────────────────────────
 
 

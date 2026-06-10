@@ -272,6 +272,42 @@ class PostgresStore(BaseStore):
     def __init__(self, dsn: str) -> None:
         self.dsn = dsn
         self.pool = None  # initialised by bootstrap() or connect()
+        # Strong refs to fire-and-forget retrieval-bump tasks so they aren't GC'd
+        # before completion (see _bump_retrieval_bg).
+        self._bg_tasks: set = set()
+
+    def _bump_retrieval_bg(self, names: list[str]) -> None:
+        """Fire-and-forget retrieval bump for agent-recall paths (list/search/brief).
+
+        ``retrieval_count`` here means "returned in a result set surfaced to the agent"
+        (exposure), NOT "used in the final prompt" — a search returning 50 bumps all 50.
+        Deferred + batched so it never blocks recall latency (the consult's
+        write-amplification guard); best-effort — errors are logged, never raised.
+        """
+        if not names:
+            return
+
+        async def _do() -> None:
+            try:
+                self._ensure_pool()
+                async with self.pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE memories SET retrieval_count = retrieval_count + 1, "
+                        "last_retrieved_at = $2 WHERE name = ANY($1::text[]) "
+                        "AND deleted_at IS NULL",
+                        names,
+                        _now_utc(),
+                    )
+            except Exception as e:  # never let a metrics bump break recall
+                logger.debug("retrieval bump failed (non-fatal): %s", e)
+
+        try:
+            task = asyncio.create_task(_do())
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
+        except RuntimeError:
+            # No running loop (e.g. sync test context) — skip the bump silently.
+            pass
 
     async def connect(self) -> None:
         """Create the connection pool. Called by bootstrap() and health probes."""
@@ -543,6 +579,7 @@ class PostgresStore(BaseStore):
             )
         if not rows:
             return "No memories found."
+        self._bump_retrieval_bg([r["name"] for r in rows])
         lines = [f"- **{r['name']}** ({r['type']}/{r['tier']}) — {r['title']}" for r in rows]
         return f"{len(rows)} memories:\n" + "\n".join(lines)
 
@@ -612,6 +649,7 @@ class PostgresStore(BaseStore):
             )
         if not rows:
             return "No results."
+        self._bump_retrieval_bg([r["name"] for r in rows])
         lines = [f"- **{r['name']}** ({r['type']}/{r['tier']}) — {r['title']}" for r in rows]
         return "\n".join(lines)
 
@@ -889,6 +927,11 @@ class PostgresStore(BaseStore):
 
         project_memories = [_row_to_dict(r) for r in project_rows]
         global_memories = [_row_to_dict(r) for r in global_rows]
+        # Brief surfaces these bodies to the agent → count as recall (the other-project
+        # index is counts only, not bodies, so it is not bumped).
+        self._bump_retrieval_bg(
+            [m["name"] for m in project_memories] + [m["name"] for m in global_memories]
+        )
 
         other_counts: dict[str, int] = {}
         for row in other_raw:
