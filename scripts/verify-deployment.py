@@ -40,6 +40,7 @@ GUARDED_ROUTES = [
     ("POST", "/api/git/ingest", {"repo": "verify", "ref": "main", "commits": []}),
     ("GET", "/api/smoke", None),
     ("GET", "/api/memories?query=verify&limit=1", None),
+    ("GET", "/api/export?format=standard&limit=1", None),
     ("GET", "/api/events?limit=1", None),
     # Write API (#14) — auth-gating probes only (mutating routes use safe strategies below)
     ("GET", "/api/pending", None),

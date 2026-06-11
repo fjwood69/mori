@@ -36,6 +36,7 @@ These fire mid-task, when you need something specific. Intentional and on-demand
 | `/pensieve` | Any time | Search shared memory across all sessions, devices, and agents. "What did we decide about the Postgres sequence reset?" — instant recall regardless of when or where it was learned. |
 | `/consult` | When you need strategic guidance | LLM guidance grounded in your actual project context and team standards — not generic advice. Relevant standards are injected automatically by focus area. |
 | `/ingest` | When bootstrapping or adding external knowledge | Feed PDFs, git history, transcripts, URLs, or code into the store. The same distillation pipeline that powers the dream phase extracts structured memories from any source. |
+| `/export` | Before external review, audit, or dashboard download | Bundle the canon into one structured Markdown document — `--format consult` formats it for upload to an external model (alongside `/consult`) for a coherence audit. Internal provenance/PII is stripped by default. |
 | `/reflect` *(planned — Horizon 2)* | When you need targeted distillation now | On-demand dream scoped to a specific topic — "distil everything about the auth migration, right now" — without waiting for the next cron cycle. |
 
 ### The mental model
