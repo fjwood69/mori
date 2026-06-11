@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import socket
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
+from mori_advisor import canon_export
 from mori_advisor.auth import configured_clients, generate_key, init_auth
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.dream import DreamPipeline
@@ -430,6 +432,36 @@ async def _a(val):
     if inspect.isawaitable(val):
         return await val
     return val
+
+
+def _mori_version() -> str:
+    """Best-effort mori version for the export pin (env override → dist metadata → 'dev')."""
+    v = os.environ.get("MORI_VERSION", "")
+    if v:
+        return v
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        for dist in ("mori-advisor", "mori"):
+            try:
+                return version(dist)
+            except PackageNotFoundError:
+                continue
+    except Exception:
+        pass
+    return "dev"
+
+
+def _export_scope(project: str, type_filter: str, include_working: bool) -> str:
+    """Human-readable export scope for the pin header."""
+    bits = []
+    if project:
+        bits.append(f"project:{project}")
+    if type_filter:
+        bits.append(f"type:{type_filter}")
+    if include_working:
+        bits.append("+working")
+    return " ".join(bits) if bits else "all"
 
 
 dream_pipeline = DreamPipeline(
@@ -2022,6 +2054,42 @@ async def memory_delete(name: str) -> str:
 
 
 @mcp.tool()
+async def export_canon(
+    project: str = "",
+    type: str = "",
+    format: str = "standard",
+    limit: int = 200,
+    include_working: bool = False,
+) -> str:
+    """Export canonical memories as ONE structured Markdown doc for external review.
+
+    Distinct from memory_export (single memory) and memory_export_all (per-file backup):
+    this bundles the canon into a grouped, reproducible document for upload to an external
+    model (e.g. via /consult) or dashboard download. Internal provenance/PII is stripped by
+    default.
+
+    Args:
+        project: Filter to memories tagged with this project (e.g. 'mori', 'bifrost').
+        type: Filter by memory type (e.g. 'decision', 'pattern', 'standard').
+        format: 'standard' (readable), 'consult' (coherence-review rubric for an external
+                LLM), or 'json' (raw structured).
+        limit: Maximum memories to export (default 200).
+        include_working: Include working-tier memories as well as canonical (default False).
+    """
+    import datetime as _dt
+
+    tiers = ("canonical", "working") if include_working else ("canonical",)
+    rows = await _a(memory_store.export_rows(tiers=tiers, type_filter=type, limit=limit))
+    meta = {
+        "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "instance": os.environ.get("MORI_INSTANCE_URL", socket.gethostname().split(".")[0]),
+        "version": _mori_version(),
+        "scope": _export_scope(project, type, include_working),
+    }
+    return canon_export.build(rows, fmt=format, meta=meta, project=project)
+
+
+@mcp.tool()
 async def memory_export(name: str, output_path: str | None = None) -> str:
     """Export a memory entry to a markdown file with YAML frontmatter.
 
@@ -2522,6 +2590,41 @@ async def get_memory_detail(request: Request) -> JSONResponse:
     except Exception as e:
         logger.error("GET /api/memories/%s failed: %s", name, e)
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/export", methods=["GET"])
+async def export_canon_route(request: Request) -> Response:
+    """Structured canon export for external review / dashboard download → text/markdown.
+
+    Query: format=standard|consult|json, project, type, limit, include_working=true|false.
+    Read-role (X-Api-Key enforced by middleware). Internal provenance/PII stripped by default.
+    """
+    import datetime as _dt
+
+    q = request.query_params
+    fmt = q.get("format", "standard")
+    project = q.get("project", "")
+    type_filter = q.get("type", "")
+    try:
+        limit = int(q.get("limit", "200"))
+    except (ValueError, TypeError):
+        limit = 200
+    include_working = q.get("include_working", "false").lower() == "true"
+    tiers = ("canonical", "working") if include_working else ("canonical",)
+    try:
+        rows = await _a(memory_store.export_rows(tiers=tiers, type_filter=type_filter, limit=limit))
+        meta = {
+            "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "instance": os.environ.get("MORI_INSTANCE_URL", socket.gethostname().split(".")[0]),
+            "version": _mori_version(),
+            "scope": _export_scope(project, type_filter, include_working),
+        }
+        out = canon_export.build(rows, fmt=fmt, meta=meta, project=project)
+    except Exception as e:
+        logger.error("GET /api/export failed: %s", e)
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+    media = "application/json" if fmt == "json" else "text/markdown"
+    return Response(out, media_type=media)
 
 
 @mcp.custom_route("/api/events", methods=["GET"])

@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.2.20 — `/export`: structured canon export for external review
+
+**feat: bundle the canon into one structured Markdown document for external-LLM review,
+audit, or dashboard download.** Distinct from `memory_export` (single memory) and
+`memory_export_all` (per-file backup): a grouped, reproducible doc you can paste into an
+external model (alongside `/consult`) or download from the dashboard. Additive — no
+breaking changes.
+
+- **`export_canon` MCP tool + `GET /api/export`** (read-role) + the `/export` skill. Formats:
+  `standard` (grouped, with a reproducibility pin header — instance/version/canon-size),
+  `consult` (the standard body prefixed by a coherence-review rubric), `json`.
+- **`--format consult` scores COHERENCE, not truth.** A reviewer can't see the codebase, so
+  the rubric judges only internal consistency — contradictions, redundancy, clarity — and
+  emits TD-disposal suggestions (merge/archive/clarify/split), never "is this still true".
+  A unit test fails if a truth-scoring verb ever leaks back into the rubric.
+- **PII-safe by default.** Output is an allowlist (name/title/body/type/tier/tags/timestamps);
+  internal provenance (`origin_session_ids`, `origin_clients`, …) is stripped unless
+  `include_provenance=True`.
+- New store method `export_rows()` (both backends); hybrid grouper (type → tag → Uncategorized),
+  most-retrieved first. New route registered in `verify-deployment.py` (one place, both gates).
+
 ## v2.2.19 — measurement layer (passive instruments from real usage)
 
 **feat: instrument the value of curation from production use, not one-off synthetic

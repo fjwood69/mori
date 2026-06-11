@@ -505,6 +505,45 @@ class PostgresStore(BaseStore):
         ]
         return "\n".join(lines)
 
+    async def export_rows(
+        self, tiers: tuple[str, ...] = ("canonical",), type_filter: str = "", limit: int = 200
+    ) -> list[dict]:
+        """Raw active memory rows for canon export, most-retrieved first.
+
+        Returns full row dicts (the caller sanitises onto the export allowlist). JSONB
+        tags are normalised to a list.
+        """
+        self._ensure_pool()
+        clauses = ["deleted_at IS NULL", "tier = ANY($1)"]
+        params: list = [list(tiers)]
+        if type_filter:
+            params.append(type_filter)
+            clauses.append(f"type = ${len(params)}")
+        params.append(int(limit))
+        sql = (
+            f"SELECT * FROM memories WHERE {' AND '.join(clauses)} "
+            f"ORDER BY retrieval_count DESC, updated_at DESC LIMIT ${len(params)}"
+        )
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+
+        def _to_list(val):
+            if val is None:
+                return []
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except (json.JSONDecodeError, TypeError):
+                    return []
+            return val if isinstance(val, list) else []
+
+        out = []
+        for row in rows:
+            d = dict(row)
+            d["tags"] = _to_list(d.get("tags"))
+            out.append(d)
+        return out
+
     async def get_memory(self, name: str) -> dict | None:
         """Return a curated detail dict for a single memory, or None if not found.
 

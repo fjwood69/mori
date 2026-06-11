@@ -849,6 +849,39 @@ class MemoryStore:
         ]
         return "\n".join(parts)
 
+    def export_rows(
+        self, tiers: tuple[str, ...] = ("canonical",), type_filter: str = "", limit: int = 200
+    ) -> list[dict]:
+        """Raw active memory rows for canon export, most-retrieved first (caller sanitises)."""
+        conn = self._get_conn()
+        try:
+            conn.row_factory = sqlite3.Row
+            placeholders = ",".join("?" for _ in tiers)
+            clauses = [_ACTIVE, f"tier IN ({placeholders})"]
+            params: list = list(tiers)
+            if type_filter:
+                clauses.append("type = ?")
+                params.append(type_filter)
+            params.append(int(limit))
+            sql = (
+                f"SELECT * FROM memories WHERE {' AND '.join(clauses)} "
+                "ORDER BY retrieval_count DESC, updated_at DESC LIMIT ?"
+            )
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+        out = []
+        for row in rows:
+            d = dict(row)
+            t = d.get("tags")
+            if isinstance(t, str):
+                try:
+                    d["tags"] = json.loads(t)
+                except (json.JSONDecodeError, TypeError):
+                    d["tags"] = []
+            out.append(d)
+        return out
+
     def get_memory(self, name: str) -> dict | None:
         """Return a curated detail dict for a single memory, or None if not found.
 
