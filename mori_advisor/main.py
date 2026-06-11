@@ -3721,21 +3721,10 @@ async def metrics(request: Request) -> Response:
 # ── Entry point ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import sys as _sys
-
-    # stdio mode: mcp-proxy subprocess (Glama and similar managed environments).
-    # GLAMA_VERSION is set automatically in every Glama container; MCP_TRANSPORT=stdio
-    # is an explicit opt-in. In stdio mode stdout is the MCP protocol channel — logs
-    # must go to stderr only, and uvicorn must not start.
-    _stdio_mode = bool(
-        os.environ.get("GLAMA_VERSION") or os.environ.get("MCP_TRANSPORT", "").lower() == "stdio"
-    )
-
-    if _stdio_mode:
-        logging.basicConfig(level=logging.WARNING, stream=_sys.stderr)
-    elif os.environ.get("GCE_METADATA_HOST"):
-        # Structured JSON logging for GCP Cloud Logging
+    # Structured JSON logging for GCP Cloud Logging
+    if os.environ.get("GCE_METADATA_HOST"):
         import json as _json
+        import sys as _sys
 
         class GCPJsonFormatter(logging.Formatter):
             def format(self, record):
@@ -3753,53 +3742,44 @@ if __name__ == "__main__":
         logging.basicConfig(level=logging.INFO, handlers=[handler])
     else:
         logging.basicConfig(level=logging.INFO)
-
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if STANDARDS_DIR:
         logger.info("Standards directory: %s", STANDARDS_DIR)
         result = import_standards()
         logger.info(result)
     init_auth()
+    import uvicorn
+    from starlette.middleware import Middleware
+    from starlette.middleware.cors import CORSMiddleware
 
-    if _stdio_mode:
-        import asyncio
+    from mori_advisor.middleware import ApiKeyMiddleware
 
-        asyncio.run(mcp.run_stdio_async(show_banner=False))
-    else:
-        import uvicorn
-        from starlette.middleware import Middleware
-        from starlette.middleware.cors import CORSMiddleware
+    # CORS must sit OUTSIDE the auth middleware: a browser dashboard sends an OPTIONS
+    # preflight with the custom X-Api-Key header, which ApiKeyMiddleware would 401.
+    # CORSMiddleware answers preflight before auth runs. Origins via MORI_CORS_ORIGINS
+    # (comma-separated; default "*" — the routes are still API-key gated; no cookies).
+    _cors = os.environ.get("MORI_CORS_ORIGINS", "*").strip()
+    _cors_origins = ["*"] if _cors == "*" else [o.strip() for o in _cors.split(",") if o.strip()]
 
-        from mori_advisor.middleware import ApiKeyMiddleware
+    # Build the ASGI app explicitly so custom_route registrations are always
+    # included regardless of FastMCP version or Python version.
+    app = mcp.http_app(
+        transport="streamable-http",
+        middleware=[
+            Middleware(
+                CORSMiddleware,
+                allow_origins=_cors_origins,
+                allow_methods=["GET", "OPTIONS"],
+                allow_headers=["x-api-key", "content-type"],
+            ),
+            Middleware(ApiKeyMiddleware),
+        ],
+    )
 
-        # CORS must sit OUTSIDE the auth middleware: a browser dashboard sends an OPTIONS
-        # preflight with the custom X-Api-Key header, which ApiKeyMiddleware would 401.
-        # CORSMiddleware answers preflight before auth runs. Origins via MORI_CORS_ORIGINS
-        # (comma-separated; default "*" — the routes are still API-key gated; no cookies).
-        _cors = os.environ.get("MORI_CORS_ORIGINS", "*").strip()
-        _cors_origins = (
-            ["*"] if _cors == "*" else [o.strip() for o in _cors.split(",") if o.strip()]
-        )
-
-        # Build the ASGI app explicitly so custom_route registrations are always
-        # included regardless of FastMCP version or Python version.
-        app = mcp.http_app(
-            transport="streamable-http",
-            middleware=[
-                Middleware(
-                    CORSMiddleware,
-                    allow_origins=_cors_origins,
-                    allow_methods=["GET", "OPTIONS"],
-                    allow_headers=["x-api-key", "content-type"],
-                ),
-                Middleware(ApiKeyMiddleware),
-            ],
-        )
-
-        uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=int(os.environ.get("APP_PORT") or os.environ.get("PORT", "8968")),
-            log_level="info",
-            lifespan="on",
-        )
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.environ.get("APP_PORT") or os.environ.get("PORT", "8968")),
+        log_level="info",
+        lifespan="on",
+    )
