@@ -39,8 +39,11 @@ what a good static doc already does. The step change — ~22% to ~51% — comes 
 load-bearing memories to canon. **The curation is the product; the pipeline is how
 you make curation cheap.**
 
-> *One repo, one task, n≈10 — directional, not yet generalised across repos. We'd
-> rather show you the limits of the number than a marketing curve.*
+> *One repo, one task, n≈10 — directional. We've since run a second repo: the
+> pipeline ported with zero changes, but the curation win proved **task-relative** —
+> it pays when conventions must transfer, and *backfires* when the task is a near-clone
+> of an existing feature and the occurrence a blind curator dropped was the answer. We'd
+> rather show you where the number flips than a marketing curve.*
 
 So mori doesn't replace your `CLAUDE.md` — keep it as your **unconditional floor**
 (static facts you hand-edit, always present: commands, conventions, hard rules).
