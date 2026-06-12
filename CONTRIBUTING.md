@@ -51,3 +51,5 @@ client, see the [quickstart in the README](README.md#quickstart) and the per-cli
 [`docs/concepts/`](docs/concepts/) and [`docs/reference/`](docs/reference/).
 
 Questions? Open an issue. Thanks for helping make mori better.
+
+<!-- CLA flow verification PR — safe to close. -->
