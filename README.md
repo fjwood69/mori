@@ -94,7 +94,7 @@ Pick a path:
 |---|---|---|---|
 | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/fjwood69/mori) | **Railway** + free Postgres ([Neon](https://neon.tech) / [Supabase](https://supabase.com)) | ✅ free Postgres | ~$5/mo + $0 Postgres |
 | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/fjwood69/mori) | **Render** (persistent disk in config) | ✅ SQLite on disk | ~$7/mo |
-| [![Run on Google Cloud](https://deploy.cloud.run/button.svg)](https://deploy.cloud.run/?git_repo=https://github.com/fjwood69/mori) | **Cloud Run** + free Postgres ([Neon](https://neon.tech) / [Supabase](https://supabase.com)) | ✅ free Postgres | Pay-per-use |
+| [![Run on Google Cloud](https://storage.googleapis.com/cloudrun/button.svg)](https://deploy.cloud.run/?git_repo=https://github.com/fjwood69/mori) | **Cloud Run** + free Postgres ([Neon](https://neon.tech) / [Supabase](https://supabase.com)) | ✅ free Postgres | Pay-per-use |
 | [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/fjwood69/mori) | **GitHub Codespaces** — evaluate Mori with no local setup | ⚠️ ephemeral | free tier |
 
 **Fly.io (CLI):** free persistent volume + SQLite, ~$3–5/mo — see [one-click-deploy.md](docs/getting-started/one-click-deploy.md).
