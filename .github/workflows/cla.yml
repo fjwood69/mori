@@ -33,5 +33,5 @@ jobs:
           # The agreement contributors are signing.
           path-to-document: 'https://github.com/fjwood69/mori/blob/main/.github/CLA.md'
           # Owners + bots don't sign the project's own CLA.
-          allowlist: 'fjwood69,dependabot[bot],github-actions[bot],renovate[bot]'
+          allowlist: 'dependabot[bot],github-actions[bot],renovate[bot]'
           custom-allsigned-prcomment: 'All contributors have signed the CLA. ✍️ Thank you — merging is unblocked.'
