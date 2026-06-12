@@ -77,6 +77,13 @@ jobs:
           print("OK: plugin is skills + hooks only; no bundled MCP, no userConfig.")
           PY
 
+      # Mirror guard: plugins/mori/skills/ is a MANUAL copy of skills/ (see
+      # scripts/sync-plugin-skills.sh). Fails CI if the two drift, so a canonical-only
+      # skill edit can't ship a stale plugin mirror — the exact gap that let the v2.2.21
+      # PostCompact→SessionStart line stay stale in the plugin copy (fixed in PR #49).
+      - name: Guard — plugin skills mirror in sync with skills/
+        run: bash scripts/sync-plugin-skills.sh --check
+
   test:
     name: Unit tests
     runs-on: ubuntu-latest
