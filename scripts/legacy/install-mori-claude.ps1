@@ -4,8 +4,6 @@
 # Installs MCP config + hooks + permissions + skills for Claude Code CLI
 # and/or VS Code extension.
 
-Write-Warning "This bespoke installer is superseded by the Mori plugin. Recommended: in Claude Code run '/plugin marketplace add fjwood69/mori' then '/plugin install mori@mori'. See plugins/mori/README.md. This script still works during the deprecation window."
-
 param(
     [string]$MoriUrl = "http://localhost:8968",
     [string]$ApiKey = "",
@@ -15,6 +13,10 @@ param(
     [switch]$Doctor,
     [switch]$UpgradeSkills
 )
+
+# NOTE: param() must be the first statement in a PowerShell script (only comments may
+# precede it), so the deprecation notice is emitted here, immediately after it.
+Write-Warning "This bespoke installer is superseded by the Mori plugin. Recommended: in Claude Code run '/plugin marketplace add fjwood69/mori' then '/plugin install mori@mori'. See plugins/mori/README.md. This script still works during the deprecation window."
 
 $ErrorActionPreference = "Stop"
 
@@ -85,10 +87,12 @@ function Merge-MoriSettings {
     param([string]$Path, [string]$ShipperPath, [string]$BriefPath, [string]$Url, [string]$Client, [string]$Key)
     $cmds = Get-MoriShipperCommands -ShipperPath $ShipperPath -Url $Url -Client $Client -Key $Key
     $briefCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$BriefPath`""
+    # Post-compaction re-ground is a SessionStart[compact] hook, NOT PostCompact —
+    # Claude Code's PostCompact hook cannot inject context the model sees.
     $events = @{
         PostToolUse = $cmds.raw; PostToolUseFailure = $cmds.raw
         UserPromptSubmit = $cmds.raw; Stop = $cmds.raw; PreCompact = $cmds.precompact
-        PostCompact = $briefCmd
+        SessionStart = $briefCmd
     }
 
     if (Test-Path $Path) {
@@ -132,10 +136,12 @@ function Merge-MoriSettings {
                 -not ($isFlatMori -or $isWrappedMori)
             })
         }
-        # Prepend fresh wrapped-format entry
-        $newEntry = if ($name -eq "PostToolUse") {
+        # Prepend fresh wrapped-format entry. PostToolUse matches all tools ("*");
+        # SessionStart scopes to the post-compaction boundary ("compact").
+        $matcher = switch ($name) { "PostToolUse" { "*" } "SessionStart" { "compact" } default { $null } }
+        $newEntry = if ($null -ne $matcher) {
             [PSCustomObject]@{
-                matcher = "*"
+                matcher = $matcher
                 hooks = @([PSCustomObject]@{ type = "command"; command = $cmd })
             }
         } else {
@@ -145,6 +151,22 @@ function Merge-MoriSettings {
         }
         $list = @($newEntry) + $list
         $existing.hooks | Add-Member -NotePropertyName $name -NotePropertyValue $list -Force
+    }
+
+    # Clean up the legacy broken PostCompact mori hook on upgrade: strip mori entries,
+    # and drop the key entirely if nothing non-mori remains.
+    if ($existing.hooks.PSObject.Properties.Name -contains "PostCompact") {
+        $kept = @($existing.hooks.PostCompact | Where-Object {
+            $isFlatMori = ($_.type -eq "command" -and (Test-MoriHookCommand ($_.command)))
+            $isWrappedMori = ($_.PSObject.Properties.Name -contains "hooks") -and
+                             (@($_.hooks) | Where-Object { Test-MoriHookCommand ($_.command) }).Count -gt 0
+            -not ($isFlatMori -or $isWrappedMori)
+        })
+        if ($kept.Count -gt 0) {
+            $existing.hooks | Add-Member -NotePropertyName PostCompact -NotePropertyValue $kept -Force
+        } else {
+            $existing.hooks.PSObject.Properties.Remove("PostCompact")
+        }
     }
 
     # permissions.allow — additive, no duplicates

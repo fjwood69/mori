@@ -246,26 +246,35 @@ merge_json() {
         # Detect a mori hook command
         def is_mori_cmd: . // "" | test("mori-ship-event|/api/events/raw|/api/precompact|mori-post-compact-brief");
 
-        # Per-event hook merge: strip all mori hooks (flat or wrapped), prepend fresh wrapped entry
-        def upsert_hook(cmd; has_matcher):
+        # Strip every mori hook (flat or wrapped) from an event array
+        def strip_mori:
           (if . == null then [] else . end)
           | map(select(
               (.hooks? // [] | any(.[]; .command? | is_mori_cmd) | not) and
               (.command? | is_mori_cmd | not)
-            ))
-          | [(if has_matcher then {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]} else {"hooks": [{"type": "command", "command": cmd}]} end)] + .;
+            ));
+
+        # Per-event hook merge: strip all mori hooks, prepend a fresh wrapped entry.
+        # matcher is a string ("*", "compact", ...) or null for an un-matched hook.
+        def upsert_hook(cmd; matcher):
+          strip_mori
+          | [(if matcher != null then {"matcher": matcher, "hooks": [{"type": "command", "command": cmd}]} else {"hooks": [{"type": "command", "command": cmd}]} end)] + .;
 
         # mcpServers.mori — include x-api-key header if key provided
         .mcpServers.mori = ({"type": "http", "url": $mori_url} +
           if $api_key != "" then {"headers": {"x-api-key": $api_key}} else {} end) |
 
         # hooks — per-event merge preserves non-Mori hooks
-        .hooks.PostToolUse        = (.hooks.PostToolUse        | upsert_hook($raw; true)) |
-        .hooks.PostToolUseFailure = (.hooks.PostToolUseFailure | upsert_hook($raw; false)) |
-        .hooks.UserPromptSubmit   = (.hooks.UserPromptSubmit   | upsert_hook($raw; false)) |
-        .hooks.Stop               = (.hooks.Stop               | upsert_hook($raw; false)) |
-        .hooks.PreCompact         = (.hooks.PreCompact         | upsert_hook($compact; false)) |
-        .hooks.PostCompact        = (.hooks.PostCompact        | upsert_hook($brief; false)) |
+        .hooks.PostToolUse        = (.hooks.PostToolUse        | upsert_hook($raw; "*")) |
+        .hooks.PostToolUseFailure = (.hooks.PostToolUseFailure | upsert_hook($raw; null)) |
+        .hooks.UserPromptSubmit   = (.hooks.UserPromptSubmit   | upsert_hook($raw; null)) |
+        .hooks.Stop               = (.hooks.Stop               | upsert_hook($raw; null)) |
+        .hooks.PreCompact         = (.hooks.PreCompact         | upsert_hook($compact; null)) |
+        # Post-compaction re-ground is a SessionStart[compact] hook, NOT PostCompact
+        # (PostCompact cannot inject context). Strip any legacy PostCompact mori hook.
+        .hooks.SessionStart       = (.hooks.SessionStart       | upsert_hook($brief; "compact")) |
+        .hooks.PostCompact        = (.hooks.PostCompact        | strip_mori) |
+        (if (.hooks.PostCompact // [] | length) == 0 then del(.hooks.PostCompact) else . end) |
 
         # permissions.allow — additive, no duplicates
         .permissions.allow = ((.permissions.allow // []) + $allow | unique)
@@ -318,7 +327,7 @@ generate_config_json() {
     "UserPromptSubmit":   [{"hooks": [{"type": "command", "command": "${RAW_CMD//\"/\\\"}"}]}],
     "Stop":               [{"hooks": [{"type": "command", "command": "${RAW_CMD//\"/\\\"}"}]}],
     "PreCompact":         [{"hooks": [{"type": "command", "command": "${COMPACT_CMD//\"/\\\"}"}]}],
-    "PostCompact":        [{"hooks": [{"type": "command", "command": "${BRIEF_CMD//\"/\\\"}"}]}]
+    "SessionStart":       [{"matcher": "compact", "hooks": [{"type": "command", "command": "${BRIEF_CMD//\"/\\\"}"}]}]
   },
   "permissions": {
     "allow": ${allow_json}

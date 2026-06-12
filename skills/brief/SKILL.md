@@ -12,7 +12,7 @@ Parse the raw input for:
 - `--auto`: detect project from the current git working directory
 - `--post-compact`: lightweight **delta** re-grounding after a context compaction —
   surfaces only what changed in shared state since the last brief, not the full base.
-  Fired automatically by the Mori `PostCompact` hook; can also be run manually.
+  Fired automatically by the Mori `SessionStart` hook (`source=compact`); can also be run manually.
 
 If no arguments: run the standard unscoped brief.
 

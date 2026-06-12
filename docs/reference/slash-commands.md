@@ -67,9 +67,9 @@ Loads shared memories and team standards into context at the start of every sess
 - Team standards count with category breakdown (e.g. "5 standards loaded — coding=2, security=2, ethos=1")
 - Dream pipeline state (watermark, backlog)
 
-**Usage:** Runs automatically at session start. `/brief` to re-run manually — including after context compression (the PostCompact hook prompts you to run `/brief --post-compact` when this happens).
+**Usage:** Runs automatically at session start. `/brief` to re-run manually — including after context compression (the `SessionStart` re-ground hook prompts you to run `/brief --post-compact` when this happens).
 
-**After context compression:** the PostCompact hook fires `/brief --post-compact` — a lightweight **delta** that surfaces only what changed in shared state since your last brief (new/updated memories, decisions superseded under you, fresh evictions, pending `mori-msg`, NATS traffic). It deliberately skips the full memory base, the standards dump, and the per-memory freshness scan — the working context is already preserved by the compaction summary. Delta lists cap at 30; when truncated it points you to run a full `/brief` if you need the rest.
+**After context compression:** the `SessionStart` hook (`source=compact`) prompts `/brief --post-compact` — a lightweight **delta** that surfaces only what changed in shared state since your last brief (new/updated memories, decisions superseded under you, fresh evictions, pending `mori-msg`, NATS traffic). It deliberately skips the full memory base, the standards dump, and the per-memory freshness scan — the working context is already preserved by the compaction summary. Delta lists cap at 30; when truncated it points you to run a full `/brief` if you need the rest.
 
 **Project-scoped loading:**
 

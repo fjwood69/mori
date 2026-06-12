@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.2.21 — post-compaction re-ground uses SessionStart, not PostCompact
+
+**fix: the legacy Claude Code installers wired post-compaction re-grounding to a `PostCompact`
+hook, which Claude Code rejects.** `PostCompact` is observability-only and cannot inject context
+the model sees — a `hookSpecificOutput` with `hookEventName: "PostCompact"` fails the harness's
+JSON validation, and only a user-facing `systemMessage` survived, so the agent was never actually
+nudged to run `/brief --post-compact`. Now wired to the sanctioned `SessionStart` hook with a
+`compact` matcher, matching the plugin's `mori-context-hook.mjs` (the plugin path was already
+correct — no change there).
+
+- **`scripts/mori-post-compact-brief.{sh,ps1}`**: read the hook payload on stdin and emit a
+  `SessionStart` `additionalContext` nudge only when `source == "compact"` — silent on ordinary
+  startup/resume/clear, even if wired without a matcher.
+- **`scripts/legacy/install-mori-claude.{sh,ps1}`**: wire the brief script to `SessionStart`
+  (`matcher: "compact"`), strip the legacy `PostCompact` mori hook on upgrade (dropping the key if
+  nothing non-mori remains), and preserve all non-mori hooks. The PowerShell installer also had a
+  pre-existing parse error — a `Write-Warning` ahead of `param()` made it un-runnable on Windows —
+  now corrected.
+- **Docs/example** (`examples/settings.json`, `docs/reference/configuration.md`,
+  `docs/reference/slash-commands.md`, `skills/brief/SKILL.md`) updated to describe the
+  `SessionStart[source=compact]` mechanism.
+
+Disable with `MORI_POST_COMPACT_BRIEF=false`. Also bumps `pyproject.toml` to `2.2.21` (it had
+lagged at `2.2.19` through the `v2.2.20` release).
+
 ## v2.2.20 — `/export`: structured canon export for external review
 
 **feat: bundle the canon into one structured Markdown document for external-LLM review,

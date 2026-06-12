@@ -42,11 +42,16 @@
         "_mori_managed": true
       }
     ],
-    "PostCompact": [
+    "SessionStart": [
       {
-        "type": "command",
-        "command": "\"$HOME/.claude/mori-post-compact-brief.sh\"",
-        "_mori_managed": true
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.claude/mori-post-compact-brief.sh\"",
+            "_mori_managed": true
+          }
+        ]
       }
     ]
   }

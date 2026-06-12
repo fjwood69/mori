@@ -259,11 +259,16 @@ dream-cron sidecar). For Podman/systemd deployments, set via the dream timer.
 | 1–4 people | 60 (1 hour) | More events, catches cold restarts and short sessions |
 | 5–10 people | 30 minutes | High event density, any session could be the last before the server goes down |
 
-## PostCompact hook
+## Post-compaction re-ground hook
 
-The `mori-post-compact-brief.sh` hook fires after every context compression. It
-outputs a `systemMessage` prompting the agent to run `/brief`, re-establishing
-session context (NATS messages, pending mori-msg items, state from before compaction).
+The `mori-post-compact-brief.sh` hook re-grounds the agent after context compression.
+It is wired to the **`SessionStart` event with a `compact` matcher**, not `PostCompact` —
+Claude Code's `PostCompact` hook is observability-only and cannot inject anything the model
+sees, whereas `SessionStart` re-fires after a compaction (`source=compact`) and its
+`additionalContext` is honoured. The hook reads the payload on stdin and only nudges when
+`source == "compact"`, prompting the agent to run `/brief --post-compact` — a lightweight
+delta that re-establishes shared state (new/superseded memories, pending mori-msg items,
+NATS traffic) from before the compaction.
 
 Enabled by default. Disable with:
 
