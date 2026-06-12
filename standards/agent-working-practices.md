@@ -33,7 +33,12 @@ recall. Training memory is a snapshot: confidently wrong once the thing has chan
 fails *silently* — a plausible-but-stale call that looks right and breaks on a channel no one
 watches. Fetch the official docs, query a live-docs tool (such as Context7 for library and
 framework references), or use the platform's own help. When you assert that something supports
-a capability, you should be able to point at where the docs say so.
+a capability, you should be able to point at where the docs say so. The same discipline runs the
+other way: when a memory or a project convention tells you what to do, demand its *warrant* — the
+file, symbol, or reason that lets you verify it against the current code. A rule you can
+corroborate, you follow; one that contradicts what the codebase plainly shows, with no verifiable
+reason why, you neither quietly obey nor thrash against — flag the contradiction and `/consult`
+before acting.
 
 ## Delegate the mechanical, own the result
 Hand well-specified, mechanical work — builds, deploys, scaffolding, broad repetitive
