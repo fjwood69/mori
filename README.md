@@ -452,6 +452,7 @@ podman build -t localhost/mori-advisor:latest .
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
 AGPL-3.0 — see [LICENSE](LICENSE). Commercial licences available — see [COMMERCIAL.md](COMMERCIAL.md).
+Contributions require a one-time CLA — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
