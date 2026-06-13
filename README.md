@@ -107,7 +107,7 @@ Pick a path:
 
 Full guide: [docs/getting-started/one-click-deploy.md](docs/getting-started/one-click-deploy.md)
 
-[![Install with Homebrew](https://brew.sh/assets/img/homebrew.svg)](https://github.com/fjwood69/homebrew-mori) **macOS (Homebrew):**
+**macOS (Homebrew):**
 
 ```bash
 brew tap fjwood69/mori
