@@ -99,14 +99,6 @@ Pick a path:
 
 **Fly.io (CLI):** free persistent volume + SQLite, ~$3–5/mo — see [one-click-deploy.md](docs/getting-started/one-click-deploy.md).
 
-**macOS (Homebrew):**
-
-```bash
-brew tap fjwood69/mori
-brew install mori
-mori-setup   # wizard: API key, LLM provider, start service
-```
-
 > **Persistence note:** SQLite needs a persistent disk or volume; stateless platforms
 > (Railway, Cloud Run, Render free tier) lose data on restart without Postgres. The deploy
 > script and guide walk through connecting a free Neon or Supabase database — the recommended
@@ -114,6 +106,14 @@ mori-setup   # wizard: API key, LLM provider, start service
 > deploy to a persistent host when you're ready.
 
 Full guide: [docs/getting-started/one-click-deploy.md](docs/getting-started/one-click-deploy.md)
+
+**macOS (Homebrew):**
+
+```bash
+brew tap fjwood69/mori
+brew install mori
+mori-setup   # wizard: API key, LLM provider, start service
+```
 
 **Or run locally with Docker Compose:**
 
