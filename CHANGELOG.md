@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.2.22 — provenance scope routing for `/brief` (`MORI_BRIEF_SCOPE`)
+
+**feat: scope-aware retrieval so one project's origin-bound canon can't leak into another
+project's brief.** Shared memory across a team's repos means every memory is "valid *where*?"
+Without provenance, an out-of-scope memory surfaced in a brief leads the agent to chase APIs that
+don't exist in the current repo (a retrieval-interference failure we reproduced across multiple
+models). `brief()` gains a `scope` argument (env `MORI_BRIEF_SCOPE`, default `"safe"`):
+
+- **`safe`** (default): cross-project body exposure is provenance-routed. A memory reaches the
+  global lane only via an explicit `scope:global` / `scope:cross-project` tag — `type=profile`/
+  `pattern` alone no longer auto-globalizes. Out-of-project memories are **zero-knowledge** in the
+  passive brief (not even an index): an index teaser of an out-of-scope rule induces the agent to
+  hallucinate the missing payload, so the brief withholds it and points to explicit search instead.
+  An unscoped brief surfaces the global lane only.
+- **`all`**: legacy behaviour (auto-global by type, other-project index shown, unscoped lists
+  everything) — opt-in via `scope="all"` or `MORI_BRIEF_SCOPE=all` for solo / single-repo use.
+
+`strict_global` is threaded through all store backends (Postgres, SQLite, in-memory); the store
+default is unchanged, so only the brief path opts in (no behaviour change for direct store callers).
+Adds `tests/test_provenance_scope.py` plus brief-scope coverage in `tests/test_mcp_tools.py`.
+
 ## v2.2.21 — post-compaction re-ground uses SessionStart, not PostCompact
 
 **fix: the legacy Claude Code installers wired post-compaction re-grounding to a `PostCompact`

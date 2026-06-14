@@ -679,6 +679,67 @@ def test_brief_scoped(backend, tmp_path, monkeypatch):
     _run_with_backend(backend, tmp_path, monkeypatch, run)
 
 
+def _stub_brief_env(m, monkeypatch, store, tmp_path):
+    from mori_advisor.dream import DreamPipeline
+
+    monkeypatch.setattr(
+        m,
+        "dream_pipeline",
+        DreamPipeline(db_path=tmp_path / "memories.db", bifrost_client=m.bifrost, store=store),
+    )
+    memory_store, _ = _derived_globals(store)
+    monkeypatch.setattr(
+        memory_store,
+        "check_freshness",
+        lambda llm_consult, limit=20: {"checked": 0, "fresh": 0, "stale": 0, "no": 0, "errors": 0},
+    )
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_brief_scoped_safe_blocks_type_global_leak(backend, tmp_path, monkeypatch):
+    """Provenance: a memory mistyped 'pattern' (no explicit scope tag) leaks into EVERY
+    project's brief via the legacy type-auto-global. Safe scope must exclude it; the
+    out-of-project body must never surface during work on a different project."""
+    import mori_advisor.main as m
+    from mori_advisor.main import brief
+
+    async def run(store):
+        await _seed_memory(store, name="this-proj", tags=["project:mori"])
+        # origin-bound knowledge mistyped as a transferable 'pattern' — the cross-project leak
+        await _seed_memory(store, name="leaky-pattern", type="pattern", tags=[])
+        _stub_brief_env(m, monkeypatch, store, tmp_path)
+
+        legacy = await brief(project="mori", scope="all")
+        assert "leaky-pattern" in legacy, "legacy auto-globalizes type=pattern (the leak we close)"
+
+        safe = await brief(project="mori", scope="safe")
+        assert "leaky-pattern" not in safe, (
+            "safe scope must NOT surface a mistyped-pattern cross-project"
+        )
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_brief_unscoped_safe_global_only(backend, tmp_path, monkeypatch):
+    """Provenance: unscoped brief in safe scope surfaces the global lane only; project-bound
+    memories are withheld (closes the unscoped leak)."""
+    import mori_advisor.main as m
+    from mori_advisor.main import brief
+
+    async def run(store):
+        await _seed_memory(store, name="proj-only", tags=["project:mori"])
+        await _seed_memory(store, name="glob-mem", tags=["scope:global"])
+        _stub_brief_env(m, monkeypatch, store, tmp_path)
+
+        safe = await brief(project=None, scope="safe")
+        assert "glob-mem" in safe, "global lane must surface"
+        assert "proj-only" not in safe, "project-bound memory leaked in unscoped safe brief"
+        assert "withheld" in safe.lower()
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_brief_post_compact(backend, tmp_path, monkeypatch):
     """brief with post_compact=True must return a str."""

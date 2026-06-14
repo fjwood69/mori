@@ -175,8 +175,12 @@ class SQLiteStore(BaseStore):
 
     # ── Memory metadata ────────────────────────────────────────────────────
 
-    def get_memories_by_project(self, project: str, include_global: bool = True) -> dict:
-        return self._mem.get_memories_by_project(project, include_global=include_global)
+    def get_memories_by_project(
+        self, project: str, include_global: bool = True, strict_global: bool = False
+    ) -> dict:
+        return self._mem.get_memories_by_project(
+            project, include_global=include_global, strict_global=strict_global
+        )
 
     def get_memories_changed_since(
         self,

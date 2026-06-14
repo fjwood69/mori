@@ -921,7 +921,9 @@ class PostgresStore(BaseStore):
 
     # ── Memory metadata ────────────────────────────────────────────────────
 
-    async def get_memories_by_project(self, project: str, include_global: bool = True) -> dict:
+    async def get_memories_by_project(
+        self, project: str, include_global: bool = True, strict_global: bool = False
+    ) -> dict:
         self._ensure_pool()
         tag_value = f"project:{project}"
 
@@ -946,15 +948,20 @@ class PostgresStore(BaseStore):
                 json.dumps([tag_value]),
             )
 
+            # Provenance (strict_global): in strict mode a memory reaches the cross-project
+            # lane ONLY via an explicit scope:global / scope:cross-project tag. The legacy
+            # `type IN (profile, pattern)` auto-global is dropped — an origin-bound memory
+            # mistyped 'pattern' would otherwise leak into every project's brief.
             global_rows: list = []
             if include_global:
+                type_clause = "" if strict_global else "OR type IN ('profile', 'pattern')"
                 global_rows = await conn.fetch(
-                    """
+                    f"""
                     SELECT * FROM memories
                     WHERE (
                         tags @> '["scope:global"]'::jsonb
                         OR tags @> '["scope:cross-project"]'::jsonb
-                        OR type IN ('profile', 'pattern')
+                        {type_clause}
                     )
                     AND (superseded_by IS NULL OR superseded_by = '')
                     AND deleted_at IS NULL

@@ -735,13 +735,25 @@ async def brief(
     include_index: bool = True,
     post_compact: bool = False,
     since: str | None = None,
+    scope: str | None = None,
 ) -> str:
     """Session bootstrap: load shared memories and team standards.
 
     When project is specified, loads memories in tiered scopes:
-      - Full body: all memories tagged project:<name> + global/cross-project memories
-      - Index only: other projects (title + count, no body)
-    When project is None, loads all memories (legacy behaviour, limit=50).
+      - Full body: all memories tagged project:<name> + explicit global/cross-project memories
+      - Other projects: NOT surfaced (zero-knowledge in safe scope — see below)
+    When project is None, loads only the global/transferable lane in safe scope.
+
+    Provenance scope (the ``scope`` arg / ``MORI_BRIEF_SCOPE`` env, default "safe"):
+      - "safe":  cross-project body exposure is provenance-routed. A memory reaches the
+                 global lane ONLY via an explicit scope:global / scope:cross-project tag
+                 (type=profile/pattern alone no longer auto-globalizes). Out-of-project
+                 memories are given ZERO-KNOWLEDGE in the passive brief — not even an index
+                 — because an index teaser of an out-of-scope rule induces the agent to
+                 hallucinate the missing payload (use /pensieve to search other projects
+                 explicitly). Unscoped brief surfaces the global lane only.
+      - "all":   legacy behaviour — auto-global by type, other-project index shown, and an
+                 unscoped brief lists everything (limit=50). Opt-in for solo/single-repo use.
 
     Also runs a freshness check on canonical memories and reports dream state.
 
@@ -765,13 +777,20 @@ async def brief(
     if post_compact:
         return await _post_compact_brief(project=project, since=since)
 
+    # Provenance scope resolution (default "safe"). safe_scope routes cross-project body
+    # exposure: strict global lane + zero-knowledge out-of-scope. "all" = legacy.
+    _scope = (scope or os.environ.get("MORI_BRIEF_SCOPE", "safe")).strip().lower()
+    safe_scope = _scope != "all"
+
     parts: list[str] = []
 
     # ── Scoped loading ─────────────────────────────────────────────────
     if project:
         try:
             scoped = await _a(
-                memory_store.get_memories_by_project(project, include_global=include_global)
+                memory_store.get_memories_by_project(
+                    project, include_global=include_global, strict_global=safe_scope
+                )
             )
             proj_mems = scoped["project_memories"]
             glob_mems = scoped["global_memories"]
@@ -823,30 +842,58 @@ async def brief(
                     lines.append(f"- **{m['name']}**: {m['title']} ({m['type']})")
                 parts.append("\n".join(lines))
 
-            # Other-project index
-            if include_index and other:
-                idx_parts = []
-                for name, count in other[:8]:
-                    idx_parts.append(f"{name} ({count})")
-                parts.append(
-                    f"\n*{total_other} memories from other projects: "
-                    f"{', '.join(idx_parts)} — /pensieve to explore*"
-                )
+            # Other-project memories. In SAFE scope these are ZERO-KNOWLEDGE — not even an
+            # index — because teasing the agent with an out-of-scope rule title induces it to
+            # hallucinate the missing payload (adversarial self-injection). The most we surface
+            # is a name-free pointer to the explicit search tool.
+            if other:
+                if safe_scope:
+                    parts.append(
+                        f"\n*{total_other} memories from other projects are out of scope here "
+                        f"— use /pensieve to search them explicitly.*"
+                    )
+                elif include_index:
+                    idx_parts = [f"{name} ({count})" for name, count in other[:8]]
+                    parts.append(
+                        f"\n*{total_other} memories from other projects: "
+                        f"{', '.join(idx_parts)} — /pensieve to explore*"
+                    )
 
         except Exception as e:
             parts.append(f"**Memories:** error loading scoped brief ({e})")
             project = None  # fall through to unscoped
 
-    # ── Unscoped loading (legacy behaviour) ────────────────────────────
+    # ── Unscoped loading ───────────────────────────────────────────────
     if not project:
         try:
-            memories = await _a(memory_store.list(limit=50))
-            mem_count = 0
-            if memories and "No memories" not in memories:
-                mem_count = sum(
-                    1 for line in memories.split("\n") if line.strip().startswith("- **")
+            if safe_scope:
+                # No project context → surface only the global/transferable lane
+                # (provenance-safe). Project-bound memories are withheld — there is no
+                # project to scope to, and surfacing everything is the unscoped leak.
+                gl = await _a(
+                    memory_store.get_memories_by_project(
+                        "", include_global=True, strict_global=True
+                    )
                 )
-            parts.append(f"**Shared memories:** {mem_count} loaded")
+                glob = gl.get("global_memories", [])
+                if glob:
+                    lines = ["**Global memories:**"]
+                    for m in glob:
+                        lines.append(f"- **{m['name']}**: {m['title']} ({m['type']})")
+                    parts.append("\n".join(lines))
+                else:
+                    parts.append("**Shared memories:** 0 global (no project scope set)")
+                parts.append(
+                    '*Project-scoped memories withheld — pass a project or scope="all" to include them.*'
+                )
+            else:
+                memories = await _a(memory_store.list(limit=50))
+                mem_count = 0
+                if memories and "No memories" not in memories:
+                    mem_count = sum(
+                        1 for line in memories.split("\n") if line.strip().startswith("- **")
+                    )
+                parts.append(f"**Shared memories:** {mem_count} loaded")
         except Exception as e:
             parts.append(f"**Shared memories:** error loading ({e})")
 

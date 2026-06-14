@@ -1491,6 +1491,7 @@ class MemoryStore:
         self,
         project: str,
         include_global: bool = True,
+        strict_global: bool = False,
     ) -> dict:
         """Return project-scoped memory sets for brief() tiered loading.
 
@@ -1527,16 +1528,21 @@ class MemoryStore:
             )
             project_rows = cur.fetchall()
 
-            # Global memories — always loaded regardless of project filter
+            # Global memories — always loaded regardless of project filter.
+            # Provenance (strict_global): in strict mode a memory reaches the cross-project
+            # lane ONLY via an explicit scope:global / scope:cross-project tag. The legacy
+            # `type IN (profile, pattern)` auto-global is dropped — an origin-bound memory
+            # mistyped 'pattern' would otherwise leak into every project's brief.
             global_rows: list = []
             if include_global:
+                type_clause = "" if strict_global else "OR type IN ('profile', 'pattern')"
                 cur = conn.execute(
-                    """
+                    f"""
                     SELECT * FROM memories
                     WHERE (
                         tags LIKE '%"scope:global"%'
                         OR tags LIKE '%"scope:cross-project"%'
-                        OR type IN ('profile', 'pattern')
+                        {type_clause}
                     )
                     AND (superseded_by IS NULL OR superseded_by = '')
                     AND deleted_at IS NULL

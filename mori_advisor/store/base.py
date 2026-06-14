@@ -112,7 +112,9 @@ class BaseStore(ABC):
     # ── Memory metadata ────────────────────────────────────────────────────
 
     @abstractmethod
-    def get_memories_by_project(self, project: str, include_global: bool = True) -> dict: ...
+    def get_memories_by_project(
+        self, project: str, include_global: bool = True, strict_global: bool = False
+    ) -> dict: ...
 
     @abstractmethod
     def get_memories_changed_since(
