@@ -1,0 +1,77 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="620" viewBox="0 0 900 620">
+  
+  <defs><pattern id="g10" width="20" height="20" patternUnits="userSpaceOnUse"><line x1="20" y1="0" x2="20" y2="20" stroke="rgba(0,0,0,0.04)" stroke-width="1"></line><line x1="0" y1="20" x2="20" y2="20" stroke="rgba(0,0,0,0.04)" stroke-width="1"></line></pattern></defs>
+  <defs><linearGradient id="dialL" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#1a3a2a"></stop><stop offset="48%" stop-color="rgba(26,58,42,0.5)"></stop><stop offset="60%" stop-color="#c89a3a" stop-opacity="0.6"></stop><stop offset="100%" stop-color="#c89a3a"></stop></linearGradient></defs>
+  <rect width="900" height="620" fill="#e8eae1"></rect>
+  <rect width="900" height="620" fill="url(#g10)"></rect>
+  <g stroke="#d6d2c5" stroke-width="1" fill="none"><path d="M12 22 L12 12 L22 12"></path><path d="M878 12 L888 12 L888 22"></path><path d="M12 598 L12 608 L22 608 M878 608 L888 608 L888 598"></path></g>
+  
+  <text x="40" y="64" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="27" font-weight="500" letter-spacing="-0.04em" fill="#112418">Governed pattern playbooks</text>
+  <text x="860" y="50" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="10" letter-spacing="0.12em" fill="#8a8f8a">森 · SPECTRUM</text>
+  <text x="40" y="88" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="11.5" letter-spacing="0.01em" fill="#4a5550">The value of governance inverts with the danger of the task.</text>
+  
+  <line x1="112" y1="168" x2="112" y2="460" stroke="rgba(0,0,0,0.4)" stroke-width="1"></line>
+  <line x1="104" y1="460" x2="832" y2="460" stroke="rgba(0,0,0,0.4)" stroke-width="1"></line>
+  <line x1="468" y1="176" x2="468" y2="452" stroke="#8a8f8a" stroke-width="0.7" stroke-dasharray="2 4" opacity="0.7"></line>
+  <line x1="112" y1="314" x2="824" y2="314" stroke="#8a8f8a" stroke-width="0.7" stroke-dasharray="2 4" opacity="0.7"></line>
+  <text transform="translate(60 314) rotate(-90)" text-anchor="middle" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="10" letter-spacing="0.14em" fill="#8a8f8a">ELIGIBILITY · MACHINE-CHECKABLE</text>
+  <text x="78" y="180" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" letter-spacing="0.08em" fill="#8a8f8a">HIGH</text>
+  <text x="78" y="456" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" letter-spacing="0.08em" fill="#8a8f8a">LOW</text>
+  <text x="468" y="482" text-anchor="middle" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="10" letter-spacing="0.14em" fill="#8a8f8a">BLAST RADIUS</text>
+  <text x="112" y="482" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" letter-spacing="0.08em" fill="#8a8f8a">LOW</text>
+  <text x="824" y="482" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" letter-spacing="0.08em" fill="#8a6420">CRITICAL</text>
+  
+    <rect x="112" y="176" width="335" height="121.2" rx="9" fill="#dfe2d6" stroke="#1a3a2a" stroke-width="1.4"></rect>
+    <rect x="112" y="176" width="3.5" height="121.2" rx="1.6" fill="#1a3a2a" opacity="1"></rect>
+    <text x="130" y="198" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8" letter-spacing="0.12em" fill="#8a8f8a">LOW BLAST · HIGH CHECKABILITY</text>
+    <text x="130" y="220" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="15" font-weight="600" letter-spacing="-0.01em" fill="#112418">Version bump</text>
+    <text x="130" y="237" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="10" fill="#4a5550">React 18 → 19</text>
+    <rect x="130" y="251" width="73.2" height="17" rx="8.5" fill="#1a3a2a"></rect><circle cx="141" cy="259.5" r="2.6" fill="#f3f0e8"></circle><text x="150" y="264" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="9" font-weight="600" letter-spacing="0.04em" fill="#f3f0e8">ELIGIBLE</text>
+    <text x="431" y="210" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="9.5" font-weight="500" fill="#1a3a2a">AUTHORITY</text>
+    <text x="431" y="225" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" fill="#8a8f8a">agent executes</text>
+    <line x1="305" y1="275.2" x2="421" y2="275.2" stroke="#8a8f8a" stroke-width="1" opacity="0.6"></line><line x1="305" y1="275.2" x2="314.3" y2="275.2" stroke="#1a3a2a" stroke-width="1.6"></line><circle cx="314.3" cy="275.2" r="3.4" fill="#1a3a2a"></circle><text x="303" y="288.2" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="7" letter-spacing="0.06em" fill="#8a8f8a">AUTH</text><text x="423" y="288.2" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="7" letter-spacing="0.06em" fill="#8a8f8a">ADVISOR</text>
+    <rect x="475" y="176" width="335" height="121.2" rx="9" fill="#dfe2d6" stroke="#1a3a2a" stroke-width="1.4"></rect>
+    <rect x="475" y="176" width="3.5" height="121.2" rx="1.6" fill="#1a3a2a" opacity="1"></rect>
+    <text x="493" y="198" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8" letter-spacing="0.12em" fill="#8a8f8a">HIGH BLAST · HIGH CHECKABILITY</text>
+    <text x="493" y="220" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="15" font-weight="600" letter-spacing="-0.01em" fill="#112418">OTel instrumentation</text>
+    <text x="493" y="237" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="10" fill="#4a5550">cross-service tracing</text>
+    <rect x="493" y="251" width="73.2" height="17" rx="8.5" fill="#1a3a2a"></rect><circle cx="504" cy="259.5" r="2.6" fill="#f3f0e8"></circle><text x="513" y="264" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="9" font-weight="600" letter-spacing="0.04em" fill="#f3f0e8">ELIGIBLE</text>
+    <text x="794" y="210" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="9.5" font-weight="500" fill="#1a3a2a">AUTHORITY</text>
+    <text x="794" y="225" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" fill="#8a8f8a">agent · richer playbook</text>
+    <line x1="668" y1="275.2" x2="784" y2="275.2" stroke="#8a8f8a" stroke-width="1" opacity="0.6"></line><line x1="668" y1="275.2" x2="702.8" y2="275.2" stroke="#1a3a2a" stroke-width="1.6"></line><circle cx="702.8" cy="275.2" r="3.4" fill="#1a3a2a"></circle><text x="666" y="288.2" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="7" letter-spacing="0.06em" fill="#8a8f8a">AUTH</text><text x="786" y="288.2" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="7" letter-spacing="0.06em" fill="#8a8f8a">ADVISOR</text>
+    <rect x="112" y="322.4" width="335" height="121.2" rx="9" fill="#dfe2d6" stroke="#9a9a92" stroke-width="1.1" stroke-dasharray="5 4"></rect>
+    <rect x="112" y="322.4" width="3.5" height="121.2" rx="1.6" fill="#9a9a92" opacity="0.55"></rect>
+    <text x="130" y="344.4" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8" letter-spacing="0.12em" fill="#8a8f8a">VARIABLE BLAST · LOW CHECKABILITY</text>
+    <text x="130" y="366.4" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="15" font-weight="600" letter-spacing="-0.01em" fill="#112418">Module refactor</text>
+    <text x="130" y="383.4" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="10" fill="#4a5550">internal restructuring</text>
+    <rect x="130" y="397.4" width="79.6" height="17" rx="8.5" fill="none" stroke="#9a9a92" stroke-width="1" stroke-dasharray="2.5 2.5"></rect><circle cx="141" cy="405.9" r="2.6" fill="none" stroke="#9a9a92" stroke-width="1.1"></circle><text x="150" y="410.4" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="9" font-weight="600" letter-spacing="0.04em" fill="#9a9a92">WEAK GATE</text>
+    <text x="431" y="356.4" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="9.5" font-weight="500" fill="#9a9a92">ADVISOR</text>
+    <text x="431" y="371.4" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" fill="#8a8f8a">advisory only</text>
+    <line x1="305" y1="421.59999999999997" x2="421" y2="421.59999999999997" stroke="#8a8f8a" stroke-width="1" opacity="0.6"></line><line x1="305" y1="421.59999999999997" x2="374.6" y2="421.59999999999997" stroke="#9a9a92" stroke-width="1.6"></line><circle cx="374.6" cy="421.59999999999997" r="3.4" fill="#9a9a92"></circle><text x="303" y="434.59999999999997" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="7" letter-spacing="0.06em" fill="#8a8f8a">AUTH</text><text x="423" y="434.59999999999997" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="7" letter-spacing="0.06em" fill="#8a8f8a">ADVISOR</text>
+    <rect x="475" y="322.4" width="335" height="121.2" rx="9" fill="#dfe2d6" stroke="#c89a3a" stroke-width="1.4"></rect>
+    <rect x="475" y="322.4" width="3.5" height="121.2" rx="1.6" fill="#c89a3a" opacity="1"></rect>
+    <text x="493" y="344.4" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8" letter-spacing="0.12em" fill="#8a8f8a">CRITICAL BLAST · PARTIAL CHECKABILITY</text>
+    <text x="493" y="366.4" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="15" font-weight="600" letter-spacing="-0.01em" fill="#112418">Mongo → Postgres</text>
+    <text x="493" y="383.4" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="10" fill="#4a5550">data-store migration</text>
+    <rect x="493" y="397.4" width="92.4" height="17" rx="8.5" fill="#c89a3a"></rect><circle cx="504" cy="405.9" r="2.6" fill="#f3f0e8"></circle><text x="513" y="410.4" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="9" font-weight="600" letter-spacing="0.04em" fill="#f3f0e8">NEEDS_HUMAN</text>
+    <text x="794" y="356.4" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="9.5" font-weight="500" fill="#c89a3a">ADVISOR</text>
+    <text x="794" y="371.4" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" fill="#8a8f8a">human-in-the-loop</text>
+    <text x="493" y="427.09999999999997" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" fill="#4a5550">agent</text><line x1="531" y1="423.59999999999997" x2="539" y2="423.59999999999997" stroke="#8a8f8a" stroke-width="1.1"></line><polygon points="539,420.59999999999997 539,426.59999999999997 543,423.59999999999997" fill="#8a8f8a"></polygon><rect x="543" y="413.59999999999997" width="130" height="20" rx="10" fill="#c89a3a"></rect><circle cx="558" cy="421.59999999999997" r="3.4" fill="none" stroke="#f3f0e8" stroke-width="1.2"></circle><path d="M 551 429.59999999999997 q 7 -8 14 0" fill="none" stroke="#f3f0e8" stroke-width="1.2"></path><text x="616" y="426.59999999999997" text-anchor="middle" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" font-weight="600" letter-spacing="0.04em" fill="#f3f0e8">TD AUTHORISES</text><line x1="675" y1="423.59999999999997" x2="693" y2="423.59999999999997" stroke="#8a8f8a" stroke-width="1.1"></line><polygon points="693,420.59999999999997 693,426.59999999999997 697,423.59999999999997" fill="#8a8f8a"></polygon><text x="703" y="427.09999999999997" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" fill="#4a5550">execute</text>
+  
+  <text x="450" y="502" text-anchor="middle" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="10" letter-spacing="0.14em" fill="#8a8f8a">RESOLVER ROLE</text>
+  <rect x="160" y="523" width="580" height="10" rx="5" fill="url(#dialL)"></rect>
+  <circle cx="160" cy="528" r="7" fill="#1a3a2a"></circle>
+  <circle cx="740" cy="528" r="7" fill="#c89a3a"></circle>
+  <text x="146" y="526" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="11" font-weight="600" fill="#1a3a2a">AUTHORITY</text>
+  <text x="146" y="539" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8" fill="#8a8f8a">binding gate</text>
+  <text x="754" y="526" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="11" font-weight="600" fill="#c89a3a">ADVISOR</text>
+  <text x="754" y="539" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8" fill="#8a8f8a">human authorises</text>
+  <text x="172" y="553" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" fill="rgba(26,58,42,0.5)">automation is most of the value</text>
+  <text x="728" y="553" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" fill="#8a6420">governance is most of the value</text>
+  
+  <line x1="40" y1="562" x2="860" y2="562" stroke="#8a8f8a" stroke-width="0.8" opacity="0.45"></line>
+  <rect x="40" y="571" width="3" height="20" fill="#8a6420"></rect>
+  <text x="54" y="583" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="11" fill="#4a5550"><tspan fill="#112418" font-weight="500">mori owns the governed registry</tspan> the builder pulls from — and proves what it did.</text>
+  <text x="860" y="583" text-anchor="end" font-family="&#39;JetBrains Mono&#39;, ui-monospace, &#39;SF Mono&#39;, Menlo, monospace" font-size="8.5" fill="#8a8f8a">Devin · Cursor · SWE-agent build · mori governs</text>
+</svg>
