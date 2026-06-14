@@ -1,11 +1,15 @@
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/565341369703026ecaf74377abf259223f7dcdaf/docs/assets/header-dark-v0_1_4.svg)
 
-Mori (森) is a **governed** shared-memory layer for AI coding agents. Automated
-pipelines *propose* durable knowledge from session activity; a human *promotes* it
-to canon. That gate — proposal vs promotion — is the whole product: in a cold-start
-benchmark it's the difference between a **~22%** and a **~51%** cut in an agent's
-re-exploration cost. One Mori, many agents — every session starts informed by what
-a human chose to keep.
+Mori (森) is a **governed** shared-memory layer for AI coding agents. Pipelines
+*propose* durable knowledge from session activity; a human *promotes* it to canon —
+and every memory is scoped to **where it's actually valid**. Why the gate? Because
+ungated memory isn't shared memory — it's **cross-contamination**: give an agent a
+memory from one repo while it works another and it'll confidently reach for APIs that
+don't exist there. In a cross-repo stress test (we seeded a prior repo's memory to
+compress what canon-drift does over months), unscoped memory made agents chase phantom
+APIs in **20/20 runs**; provenance-scoped memory cut it to **0/20**, across two
+frontier-class models. One Mori, many agents — every session starts with what a human
+chose to keep, and only what's valid here.
 
 Bring your own agent; the knowledge outlives it. Works with any OpenAI-compatible
 provider and any agent harness — no homelab, no Anthropic account, no LLM gateway
@@ -16,14 +20,25 @@ required, though those all work too.
 ## Why use mori?
 
 You're right to be sceptical of "memory systems" — most are a vector DB with a
-retrieval prompt bolted on, and in our own measurements the auto-extracted memory
-they produce is **no better than a `CLAUDE.md` you'd write by hand.** So we measured
-the thing that actually moves the needle, and we'll show you the number that doesn't
-flatter us first.
+retrieval prompt bolted on. So we ran the experiments, published the nulls, and lead
+with the result that held up.
 
-**The benchmark.** Cold-start *discovery cost* — how many files an agent reads,
-greps, and explores before its first edit (lower is better). One task, one repo,
-n≈10 runs:
+**The failure mode is cross-contamination.** Curation decides *what to keep*;
+**provenance** decides *where it's valid* — and across a team's many repos that's the
+line between a shared brain and a liability. A memory that's true in one repo, surfaced
+while you work another, makes the agent confidently reach for an API that doesn't exist
+here — *retrieval interference*. We reproduced it and the fix: with out-of-scope memory
+in the brief, agents chased phantom APIs in **20/20 runs**; with provenance-safe scoping
+(`MORI_BRIEF_SCOPE`, on by default), **0/20** — across two independent frontier-class
+models (Fisher *p* ≈ 0). The memory was deliberately seeded from a prior repo, so it's a
+stress test of what canon-drift does over months, not a natural-incidence rate — but the
+mechanism is clean and model-independent. **Ungated memory isn't shared memory — it's
+cross-contamination.** (A memory reaches another project's brief only via an explicit
+`scope:global` tag; type alone no longer auto-globalises.)
+
+**What we tested — including what failed.** We don't headline a speed number, because our
+own data wouldn't let us. A cold-start *discovery-cost* task (files an agent reads/greps
+before its first edit) hinted curated memory cuts re-exploration:
 
 | What the agent starts with | Discovery cost | vs cold start |
 |---|---|---|
@@ -32,28 +47,18 @@ n≈10 runs:
 | Hand-written `CLAUDE.md` | ~17–18 | ~22% better |
 | **Human-curated canon (mori)** | **11** | **~51% better** |
 
-Read the unflattering row first: **auto-extraction ties with a hand-written
-`CLAUDE.md`.** A pipeline that merely distils sessions into memories buys you about
-what a good static doc already does. The step change — ~22% to ~51% — comes from the
-**gate**: the pipeline proposes at high recall, and a *human promotes* the few
-load-bearing memories to canon. **The curation is the product; the pipeline is how
-you make curation cheap.**
-
-> *One repo, one task, n≈10 — directional. We've since run a second repo: the
-> pipeline ported with zero changes, but the curation win proved **task-relative** —
-> it pays when conventions must transfer, and *backfires* when the task is a near-clone
-> of an existing feature and the occurrence a blind curator dropped was the answer. We'd
-> rather show you where the number flips than a marketing curve.*
+— but a *pre-registered, powered* follow-up returned a **null**: the human gate did not
+make the compounding curve faster than keeping everything, and on a second repo the
+curation win flipped *negative* (the occurrence a blind curator dropped was the answer).
+So we don't sell mori as a speed-up — we publish the null. The robust result is
+provenance, above. *One finding from a memory-research program now past a thousand agent
+runs; full methodology and per-experiment breakdown in the [benchmark write-up](docs/benchmarks/README.md).*
 
 So mori doesn't replace your `CLAUDE.md` — keep it as your **unconditional floor**
 (static facts you hand-edit, always present: commands, conventions, hard rules).
 Mori is the **governed layer above it**: the decisions and patterns a human chose to
-keep, surfaced to every session, on any machine, any agent.
+keep, surfaced to every session — and only where they apply.
 ([the full distinction →](docs/concepts/claude-md-vs-mori.md))
-
-We expect that curated canon to **compound** as it grows — but that's a stated
-*design thesis*, not a proven claim. We're instrumenting it as an ongoing
-measurement (canon value at 200+ memories) rather than asserting it.
 
 And it's yours: self-hosted (your server, your data), open-source (AGPL-3.0),
 provider- and **agent-neutral**. No data leaves your infrastructure; the knowledge
@@ -436,6 +441,7 @@ Key environment variables:
 | `MORI_DREAM_MODEL` | falls back to `MORI_MODEL` | Dream + ingest distillation model |
 | `MORI_FAST_MODEL` | `deepseek/deepseek-v4-flash` | Contradiction scan + freshness checks |
 | `MORI_API_KEYS` | — | Named client API keys: `name:secret,name:secret,...` — see [Authentication](docs/reference/configuration.md#authentication) |
+| `MORI_BRIEF_SCOPE` | `safe` | `safe` = provenance-routed brief (cross-project origin-bound canon withheld; explicit `scope:global` only); `all` = legacy, no scoping |
 | `MORI_TRUSTED_DREAMERS` | — | Comma-separated trusted hostnames |
 | `MORI_DREAM_INTERVAL` | `60` | Dream cron interval (minutes) |
 | `MORI_STANDARDS_DIR` | — | Path to team standards `.md` files |

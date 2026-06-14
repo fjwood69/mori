@@ -77,6 +77,7 @@ Updated with each release.
 - Human-review gate (Full two-phase B): UNRELATED candidates are surfaced as mori pending_writes + bridge-owned `intake_promotion_tickets`; Trusted-Dreamer approve = a vote (`human_approved`); the bridge finalizer re-runs GOV-002 against the live candidate before writing canon + lineage. Default routing; unattended auto-promotion is opt-in behind the flag. Provenance carries only an opaque ticket_uuid (no trusted ids); three forgery guards + idempotency via `intake_promotion_map`.
 - Security hardening: AUTH-001 (file read via path traversal), PERF-003 (freshness thundering herd), PERF-004 (limit=0 full-table fetch)
 - `agent-working-practices.md` — injected at session start via `/brief`
+- Provenance scope routing (v2.2.22) — `MORI_BRIEF_SCOPE` (default `safe`): the brief withholds cross-project origin-bound canon (explicit `scope:global` only; `type` no longer auto-globalises) + zero-knowledge out-of-scope. Eliminates cross-repo retrieval interference: phantom-API attempts 0/20 (scoped) vs 20/20 (unscoped), replicated across two frontier-class models (Fisher p≈0). See [benchmarks](docs/benchmarks/README.md).
 
 ---
 
@@ -180,7 +181,7 @@ Decided on paper now. Open core stays thin.
 - **Distributed dream pipeline** — parallel dream pods, reconcile pod, `dream_jobs` coordination
 - **K8s operator** — HA, rolling updates, federation
 - **SSO / SAML / SCIM / LDAP** — via proxy-auth in open core; full IdP integration is commercial
-- **Memory namespacing + COIN identity scoping + row-level security** — multi-tenant isolation
+- **Team scope & identity model** — per-user memory ownership + `scope:user` privacy + tenant isolation, on a `Principal` seam (API-key identity today → SSO/SAML/OIDC) with store-enforced row-level security. Ownership is *orthogonal* to the open-core epistemic scoping (`project`/`global`): the open core routes *where a memory is valid*; the enterprise tier adds *who owns it and who may read it*. COIN identity scoping + namespacing + RLS for multi-tenant isolation. Specced; built to land enterprise deals, not on spec.
 - **Memory poisoning guardrails** — Lakera / NeMo on dream pipeline LLM calls
 
 ---
