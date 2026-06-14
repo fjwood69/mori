@@ -931,6 +931,12 @@ class PostgresStore(BaseStore):
             r = dict(row)
             raw = r.get("tags")
             r["tags"] = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
+            # asyncpg returns TIMESTAMPTZ as datetime; callers (e.g. the brief formatter)
+            # subscript updated_at[:10] as a string, and SQLite already returns str —
+            # normalise the contract at the store boundary (cf. _coerce_msg_row).
+            for k, v in r.items():
+                if isinstance(v, datetime):
+                    r[k] = v.isoformat()
             return r
 
         async with self.pool.acquire() as conn:
