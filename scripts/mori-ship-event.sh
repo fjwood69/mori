@@ -18,6 +18,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Auto-resolve key from secrets store when not passed explicitly.
+# Derives MORI_API_KEY_<CLIENT_UPPER> (e.g. MORI_API_KEY_UK_SMR_NUC15PRO) so
+# each device uses its own named key without putting the secret in settings.json.
+if [[ -z "$API_KEY" ]] && [[ -x "$HOME/bin/get-secret.sh" ]]; then
+  _key_name="MORI_API_KEY_$(echo "$CLIENT" | tr '[:lower:]-' '[:upper:]_')"
+  API_KEY="$("$HOME/bin/get-secret.sh" "$_key_name" 2>/dev/null)" || true
+fi
+
 body=$(cat)
 [[ -z "$body" ]] && exit 0
 

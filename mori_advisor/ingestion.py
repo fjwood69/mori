@@ -16,6 +16,7 @@ Content-based ingestion (v0.1.4):
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import inspect
@@ -266,7 +267,9 @@ class IngestionPipeline:
                     )
 
                 # Distill each chunk batch
-                batch_memories = self._distill_batch(chunks, focus_guidance, tier, all_tags)
+                batch_memories = await asyncio.to_thread(
+                    self._distill_batch, chunks, focus_guidance, tier, all_tags
+                )
                 total_written += len(batch_memories)
                 all_memories.extend(batch_memories)
 
@@ -504,7 +507,9 @@ class IngestionPipeline:
                     )
 
                 # Distill
-                batch_memories = self._distill_batch(chunks, focus_guidance, tier, tags)
+                batch_memories = await asyncio.to_thread(
+                    self._distill_batch, chunks, focus_guidance, tier, tags
+                )
                 total_written += len(batch_memories)
                 all_memories.extend(batch_memories)
 

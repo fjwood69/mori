@@ -7,6 +7,7 @@ entirely inside the container — no host filesystem access needed.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -86,6 +87,10 @@ class DreamPipeline:
         self.session_log = store._log if hasattr(store, "_log") else store
         self.memory_store = store._mem if hasattr(store, "_mem") else store
 
+        # Prevents concurrent dream runs from blocking the event loop simultaneously.
+        # Lazily initialised so __init__ can be called outside a running loop.
+        self._run_lock: asyncio.Lock | None = None
+
     # ── Public API ───────────────────────────────────────────────────────
 
     async def get_status(self) -> str:
@@ -133,6 +138,15 @@ class DreamPipeline:
         Returns:
             List of memory dicts that were (or would be) written.
         """
+        if self._run_lock is None:
+            self._run_lock = asyncio.Lock()
+        if self._run_lock.locked():
+            logger.info("Dream run already in progress; skipping concurrent invocation.")
+            return []
+        async with self._run_lock:
+            return await self._run_inner(dry_run=dry_run)
+
+    async def _run_inner(self, dry_run: bool = False) -> list[dict]:
         # B3 — intake promotion (flag-gated, Postgres-only, additive).
         # Runs FIRST so it fires on every invocation, regardless of whether
         # this dream run produces any distilled memories (it must not be
@@ -160,7 +174,7 @@ class DreamPipeline:
         events_text = self._format_events(events)
 
         logger.info("Calling dream model…")
-        response = self._call_dream_model(events_text)
+        response = await asyncio.to_thread(self._call_dream_model, events_text)
         logger.info("Dream model responded (%s chars)", len(response))
 
         memories = self._parse_response(response)
