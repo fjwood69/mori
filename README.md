@@ -2,9 +2,10 @@
 
 > **Mori provides deterministic boundaries for non-deterministic agents.**
 
-Mori (森) is a **governed** memory layer for AI coding agents. You cannot pick or
-predict a safe one. Across a multi-model, multi-harness stress test, the most capable
-coding model broke the build *every time*; the *same* model did the right thing, then
+Mori (森) is a **governed** memory layer for AI coding agents. **No coding agent is
+dependably safe — not even the most capable, and not even the same one twice.** Across
+a multi-model, multi-harness stress test, the most capable coding model broke the build
+*every time*; the *same* model did the right thing, then
 the wrong thing, on identical input; and an agent handed a tool that flagged its own
 change as build-breaking **read the warning and shipped the break anyway**. Capability
 doesn't fix this, and neither does better retrieval. What holds is **enforcement**:
