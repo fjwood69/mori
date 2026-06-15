@@ -38,6 +38,7 @@ from mori_advisor.metrics import (
     memories_gauge,
     metrics_content_type,
     pending_writes_gauge,
+    record_brief_injection,
 )
 from mori_advisor.policy import PermissionDenied, require_role
 from mori_advisor.store import get_store as _get_store
@@ -775,7 +776,13 @@ async def brief(
     from datetime import datetime, timezone
 
     if post_compact:
-        return await _post_compact_brief(project=project, since=since)
+        result = await _post_compact_brief(project=project, since=since)
+        # MCP-tool channel: the return value is delivered into the agent's transcript by the MCP transport,
+        # so delivery is CONFIRMED whenever we return substantive content.
+        record_brief_injection(
+            channel="mcp_tool", scope="post_compact", confirmed=bool(result and result.strip())
+        )
+        return result
 
     # Provenance scope resolution (default "safe"). safe_scope routes cross-project body
     # exposure: strict global lane + zero-knowledge out-of-scope. "all" = legacy.
@@ -979,7 +986,13 @@ async def brief(
     except Exception:
         pass
 
-    return "\n".join(parts)
+    result = "\n".join(parts)
+    record_brief_injection(
+        channel="mcp_tool",
+        scope=("project" if project else "unscoped"),
+        confirmed=bool(result and result.strip()),
+    )
+    return result
 
 
 # ── Consult tool ─────────────────────────────────────────────────────────

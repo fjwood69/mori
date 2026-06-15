@@ -22,6 +22,7 @@ from opentelemetry.sdk.resources import Resource
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
+    Counter,
     Gauge,
     Info,
     generate_latest,
@@ -205,6 +206,61 @@ _scrape_duration = Gauge(
     "mori_scrape_duration_seconds", "Time taken to collect metrics", registry=prom_registry
 )
 
+# ── Brief delivery telemetry — delivery-verification coverage ──
+# Answers "did the injected memory actually reach the agent?" — the prerequisite for trusting advisory memory
+# in production, where nothing stream-confirms each injection. Two CHANNELS with different delivery guarantees:
+#   - channel="mcp_tool": the agent CALLS the brief tool; the return value lands in its transcript by
+#     construction → delivery is CONFIRMED.
+#   - channel="hook": a fire-and-forget SessionStart hook emits additionalContext → delivery is UNCONFIRMED
+#     (a silently dropped injection is indistinguishable from one the model simply ignored).
+# Coverage = confirmed / served. NOTE (denominator growth): only the mcp_tool channel is instrumented in this
+# increment, so coverage reads ~1.0 today — correct, and the SHAPE is ready for the hook channel, whose
+# attempts grow the denominator and reveal the unverified fraction. ~1.0 here is NOT "done".
+_brief_served = Counter(
+    "mori_brief_served_total",
+    "Briefs served, by channel and scope",
+    ["channel", "scope"],
+    registry=prom_registry,
+)
+_brief_confirmed = Counter(
+    "mori_brief_delivery_confirmed_total",
+    "Briefs whose delivery into the agent transcript is confirmed",
+    ["channel"],
+    registry=prom_registry,
+)
+_brief_coverage = Gauge(
+    "mori_brief_delivery_coverage",
+    "Confirmed-delivery share of briefs served (production delivery-verification coverage)",
+    registry=prom_registry,
+)
+# Process-level accumulators for the coverage ratio (prom Counter internals aren't cleanly readable).
+_brief_counts = {"served": 0, "confirmed": 0}
+
+
+def record_brief_injection(channel: str, scope: str = "n/a", confirmed: bool = False) -> None:
+    """Record one brief injection attempt + whether its delivery is CONFIRMED. Fail-open: telemetry must
+    NEVER break a brief (the whole point is to make the brief observable, not fragile)."""
+    try:
+        _brief_served.labels(channel=channel, scope=scope).inc()
+        _brief_counts["served"] += 1
+        if confirmed:
+            _brief_confirmed.labels(channel=channel).inc()
+            _brief_counts["confirmed"] += 1
+    except Exception:
+        pass
+
+
+def brief_delivery_coverage() -> Optional[float]:
+    """confirmed / served over the process lifetime, or None if nothing has been served yet."""
+    s = _brief_counts["served"]
+    return round(_brief_counts["confirmed"] / s, 4) if s else None
+
+
+def reset_brief_counts() -> None:
+    """Test helper — zero the process accumulators (the prom Counters are append-only and not reset)."""
+    _brief_counts["served"] = 0
+    _brief_counts["confirmed"] = 0
+
 
 async def _a(val):
     """Await val if it's a coroutine, else return as-is."""
@@ -336,6 +392,14 @@ async def collect_metrics(store, nats_url: Optional[str] = None) -> bytes:
             total = g.get("td_total", 0)
             _td_reason_coverage.set(round(g.get("td_reasoned", 0) / total, 3) if total else 0.0)
             _net_canon_growth.set(g.get("net_canon_growth", 0))
+    except Exception:
+        pass
+
+    # Brief delivery coverage — process-level, set from the accumulators.
+    try:
+        cov = brief_delivery_coverage()
+        if cov is not None:
+            _brief_coverage.set(cov)
     except Exception:
         pass
 
