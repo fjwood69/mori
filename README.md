@@ -2,16 +2,16 @@
 
 > **Mori provides deterministic boundaries for non-deterministic agents.**
 
-Mori (森) is a **governed** shared-memory layer for AI coding agents. Pipelines
-*propose* durable knowledge from session activity; a human *promotes* it to canon —
-and every memory is scoped to **where it's actually valid**. Why the gate? Because
-ungated memory isn't shared memory — it's **cross-contamination**: give an agent a
-memory from one repo while it works another and it'll confidently reach for APIs that
-don't exist there. In a cross-repo stress test (we seeded a prior repo's memory to
-compress what canon-drift does over months), unscoped memory made agents chase phantom
-APIs in **20/20 runs**; provenance-scoped memory cut it to **0/20**, across two
-frontier-class models. One Mori, many agents — every session starts with what a human
-chose to keep, and only what's valid here.
+Mori (森) is a **governed** memory layer for AI coding agents. **No coding agent is
+dependably safe — not even the most capable, and not even the same one twice.** Across
+a multi-model, multi-harness stress test, the most capable coding model broke the build
+*every time*; the *same* model did the right thing, then
+the wrong thing, on identical input; and an agent handed a tool that flagged its own
+change as build-breaking **read the warning and shipped the break anyway**. Capability
+doesn't fix this, and neither does better retrieval. What holds is **enforcement**:
+pipelines *propose* what agents learn, a human *promotes* it to canon, and a binding
+gate keeps every agent inside the boundary — regardless of which model, which run, or
+whether it read the memory at all.
 
 Bring your own agent; the knowledge outlives it. Works with any OpenAI-compatible
 provider and any agent harness — no homelab, no Anthropic account, no LLM gateway
@@ -37,6 +37,23 @@ stress test of what canon-drift does over months, not a natural-incidence rate �
 mechanism is clean and model-independent. **Ungated memory isn't shared memory — it's
 cross-contamination.** (A memory reaches another project's brief only via an explicit
 `scope:global` tag; type alone no longer auto-globalises.)
+
+**The other failure mode is obedience — and it's the one that points where mori is
+going.** Provenance fixes what an agent *knows*; it doesn't fix what an agent *does*. In
+a pre-registered cross-repo benchmark, we gave frontier agents a tool to see downstream
+impact *and* a plain-language warning that a change would break a build — and they broke
+it anyway, **15/15**, across four models and three independent harnesses. One read
+*"WILL BREAK"* in the tool's output and shipped the change in the same breath. (Blind
+caution is no fallback either: told only to "be careful," the strongest model refused
+*safe* work 70% of the time.) *Information without enforcement is fatal — you cannot
+govern an enterprise in token-space.* That result is the thesis behind mori's next
+layer: **governed playbooks** — a deterministic, pre-compute gate that checks a repo's
+lockfiles against human-approved patterns and refuses an unsafe migration *before it
+runs*, independent of prompt wording, model obedience, or luck. Let the builder models
+commoditise the code-edit loop; mori is the institutional memory they pull from, the
+seatbelt that keeps them in-bounds, and the audit trail that proves what they did.
+*(Scope: pre-registered npm-dependency migrations; the gate is built and benchmarked,
+not yet a shipped product surface — we lead with what we proved, not what we hope.)*
 
 **What we tested — including what failed.** We don't headline a speed number, because our
 own data wouldn't let us. A cold-start *discovery-cost* task (files an agent reads/greps
