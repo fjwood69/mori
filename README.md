@@ -1,5 +1,7 @@
 ![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/565341369703026ecaf74377abf259223f7dcdaf/docs/assets/header-dark-v0_1_4.svg)
 
+> **Mori provides deterministic boundaries for non-deterministic agents.**
+
 Mori (森) is a **governed** shared-memory layer for AI coding agents. Pipelines
 *propose* durable knowledge from session activity; a human *promotes* it to canon —
 and every memory is scoped to **where it's actually valid**. Why the gate? Because
