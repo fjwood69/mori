@@ -1,43 +1,29 @@
 /**
- * mori-post-compact-hook-antigravity.mjs — Mori PostCompact hook for Antigravity (Node ESM)
+ * mori-post-compact-hook-antigravity.mjs — NOT IMPLEMENTED
  *
- * Fires on the Antigravity `PostCompact` event (after context compaction).
- * Returns:
- *   {
- *     "systemMessage": "Context compressed — running /brief --post-compact to re-ground.",
- *     "hookSpecificOutput": {
- *       "hookEventName": "PostCompact",
- *       "additionalContext": "Context was just compressed. Before doing anything else, run `/brief --post-compact` to re-ground — a lightweight delta of what changed in shared state since the last brief (new/superseded memories, pending mori-msg items, NATS traffic)."
- *     }
- *   }
+ * This file is a stub. The original implementation used `PostCompact` with
+ * `hookSpecificOutput.additionalContext` — neither exists in Antigravity 2.0's
+ * hook schema. The hook was silently doing nothing.
  *
- * Always exits 0 (fail-open). Any error → write nothing, exit 0.
+ * Antigravity 2.0 hook events: PreToolUse, PostToolUse, PreInvocation,
+ * PostInvocation, Stop. There is no PostCompact event.
+ *
+ * Context injection in AG uses PreInvocation → injectSteps → ephemeralMessage:
+ *   { "injectSteps": [{ "ephemeralMessage": "run /brief --post-compact..." }] }
+ *
+ * TODO: Implement as a PreInvocation hook that:
+ *   1. Reads the transcriptPath from stdin to detect whether compaction occurred
+ *      since the last invocation (look for a compaction marker in the JSONL).
+ *   2. If compaction detected: return injectSteps with an ephemeralMessage nudge
+ *      and write a session flag to avoid repeating the nudge.
+ *   3. Otherwise: return {}.
+ *
+ * Until this is implemented, post-compact re-grounding in Antigravity requires
+ * manually running /brief --post-compact after a compaction.
  *
  * Usage (wired by install-hooks-antigravity.mjs into ~/.gemini/config/hooks.json):
  *   node /abs/path/mori-post-compact-hook-antigravity.mjs
  */
 
-import { runFailOpen } from './lib/fail-open.mjs';
-
-function main() {
-  if (process.env.MORI_POST_COMPACT_BRIEF === 'false') {
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PostCompact',
-        additionalContext: '',
-      },
-    }) + '\n');
-    process.exit(0);
-  }
-
-  process.stdout.write(JSON.stringify({
-    systemMessage: "Context compressed — running /brief --post-compact to re-ground.",
-    hookSpecificOutput: {
-      hookEventName: "PostCompact",
-      additionalContext: "Context was just compressed. Before doing anything else, run `/brief --post-compact` to re-ground — a lightweight delta of what changed in shared state since the last brief (new/superseded memories, pending mori-msg items, NATS traffic)."
-    }
-  }) + '\n');
-  process.exit(0);
-}
-
-runFailOpen(main);
+// Stub — exits cleanly with no output so the hook doesn't error on install.
+process.exit(0);
