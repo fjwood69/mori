@@ -1,8 +1,8 @@
-![Mori — A shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/565341369703026ecaf74377abf259223f7dcdaf/docs/assets/header-dark-v0_1_4.svg)
+![mori — A governed shared memory layer for AI coding agents](https://raw.githubusercontent.com/fjwood69/mori/main/docs/assets/header-dark-v0_1_5.svg)
 
 > **Mori provides deterministic boundaries for non-deterministic agents.**
 
-Mori (森) is a **governed** memory layer for AI coding agents. **Because no coding agent is
+Mori (森) is a **governed shared memory layer** for AI coding agents. **Because no coding agent is
 dependably safe — not even the most capable, and not even the same one twice.** Across
 a multi-model, multi-harness stress test, the most capable coding model broke the build
 *every time*; the *same* model did the right thing, then
@@ -16,6 +16,9 @@ whether it read the memory at all.
 Bring your own agent; the knowledge outlives it. Works with any OpenAI-compatible
 provider and any agent harness — no homelab, no Anthropic account, no LLM gateway
 required, though those all work too.
+
+> **📄 The research behind this** — seven model families, the nulls we published, and every retraction:
+> **[read the whitepaper →](https://moriapp.dev/whitepaper)**
 
 ---
 
@@ -64,14 +67,18 @@ before its first edit) hinted curated memory cuts re-exploration:
 | Nothing (cold start) | 22.5 | — |
 | Auto-extracted memories | ~17–18 | ~22% better |
 | Hand-written `CLAUDE.md` | ~17–18 | ~22% better |
-| **Human-curated canon (mori)** | **11** | **~51% better** |
+| **Human-curated canon (mori)** | **11**\* | **~51% better**\* |
+
+\* One repo, **not replicated** — the pre-registered, powered follow-up below is a *null*. Shown for
+transparency, not as a headline.
 
 — but a *pre-registered, powered* follow-up returned a **null**: the human gate did not
 make the compounding curve faster than keeping everything, and on a second repo the
 curation win flipped *negative* (the occurrence a blind curator dropped was the answer).
 So we don't sell mori as a speed-up — we publish the null. The robust result is
 provenance, above. *One finding from a memory-research program now past a thousand agent
-runs; full methodology and per-experiment breakdown in the [benchmark write-up](docs/benchmarks/README.md).*
+runs; full methodology, every model, the null, and every retraction in the
+[whitepaper](https://moriapp.dev/whitepaper).*
 
 So mori doesn't replace your `CLAUDE.md` — keep it as your **unconditional floor**
 (static facts you hand-edit, always present: commands, conventions, hard rules).

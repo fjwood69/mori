@@ -133,6 +133,7 @@ Frozen with the unattended-promotion machinery above (opt-in only):
 ## Horizon 2 — Sharpen the "earned memory" core
 
 - **Generic `scope` metadata** — replaces "path-aware memory surfacing": JSONB scope map + client-side CWD→tags resolver kept out of core; index + inject on `/brief` in-context. Path-agnostic, more general.
+- **Mid-session provenance re-grounding** — on a context shift (compaction, repo/worktree crossing), re-surface scoped canon *through the existing provenance gate* so out-of-scope memory is dropped and in-scope canon refreshed mid-session, not only at SessionStart. Framed as **harm-avoidance** (the same cross-contamination mechanism the scope router addresses) and **measure-before-ship** — explicitly *not* the speculative "just-in-time productivity pull," which was cut for want of evidence.
 - **Event-log surface** — expose existing `/api/events` cleanly; webhook sidecar later, never outbound HTTP in core
 - **Plugin-registration hooks in core** — the seam future policy packs and connectors slot into
 - **`/reflect` command** — on-demand targeted dream; distil a specific topic now, not on the next cron cycle
