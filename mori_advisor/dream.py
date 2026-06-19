@@ -29,90 +29,43 @@ logger = logging.getLogger(__name__)
 # prompt. Bounds distillation cost when sessions have many turns; tune from data.
 _ASSISTANT_DREAM_CAP = 1500
 
-# Splits the transcript tail on any structural label, capturing the label word
-# so callers can decide whether to keep the following content.
-# Labels: Assistant (keeper), Tool / Stopped / Session (scaffolding → drop).
-_ALL_LABELS_RE = re.compile(
-    r"\b(Assistant|Tool|Stopped|Session)\s*:\s*",
-    re.IGNORECASE,
-)
-
-# ANSI escape sequences (e.g. \x1b[32m, \x1b[0m).
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-
-# Spinner / progress-indicator characters that appear on repeated lines.
-_SPINNER_RE = re.compile(r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷]")
+# Matches Tool: and Stopped: scaffolding lines in _format_events output.
+# Case-sensitive and line-anchored — avoids false-positives in prose inside
+# Assistant: segments (e.g. "I used Tool: Read to verify this").
+# Format produced by _format_events: "  Tool: Bash\n", "  Stopped: end_turn\n"
+_STRIP_LINE_RE = re.compile(r"^  (?:Tool|Stopped): ")
 
 
-def normalise_transcript_tail(text: str) -> str:
-    """Strip structural scaffolding tokens from a raw assistant_text transcript tail.
+def normalise_events_text(text: str) -> str:
+    """Strip Tool:/Stopped: scaffolding lines from _format_events output.
 
-    The transcript tail emitted by Stop events interleaves structural labels
-    (``Tool: <name>``, ``Stopped: <reason>``, ``Session: <id>``) with the
-    assistant's actual reasoning prose (``Assistant: <prose>``).  Only the prose
-    carries distillable signal; the framing is noise for the dreamer.
+    ``_format_events`` assembles a multi-session block for the dreamer's prompt.
+    Each PostToolUse event becomes a bare ``  Tool: <name>`` line — the name
+    alone, no args, no output.  Over a typical session these accumulate into
+    dozens of repetitions that consume tokens while contributing zero distillable
+    signal.  ``  Stopped: <reason>`` similarly adds framing noise.
 
     Design principle — capture = recall boundary:
-        This function sits at mori's capture boundary.  The volume lever is
-        *compression*, not censorship.  It strips only provably-inert noise:
-        timestamps, ANSI codes, tool-call boilerplate, and duplicate spinner
-        frames.  Relevance/dedup decisions belong to the dreamer.  When in
-        doubt, keep.
+        The volume lever is *compression*, not censorship.  This function strips
+        only provably-inert lines.  Everything else — ``Session:`` headers,
+        ``  Prompt:``, ``  FAILURE:``, ``  CWD:``, ``  Assistant:`` — is
+        preserved verbatim.  Relevance and dedup decisions belong to the dreamer,
+        not to this normaliser.
 
-    The function is idempotent: ``normalise(normalise(x)) == normalise(x)``.
+    The function is idempotent: normalise(normalise(x)) == normalise(x).
 
     Args:
-        text: Raw assistant_text blob, may be empty or whitespace.
+        text: ``_format_events`` output string.
 
     Returns:
-        Prose segments joined with a single space, or empty string when no
-        ``Assistant:`` segments are present.
+        The same text with ``Tool:`` and ``Stopped:`` lines removed.
+        Returns the input unchanged if it is empty or contains no such lines.
     """
     if not text or not text.strip():
-        return ""
-
-    # 1. Strip ANSI escape codes.
-    text = _ANSI_RE.sub("", text)
-
-    # 2. Fast-path: if no structural labels are present the text is already pure
-    #    prose (or the result of a previous normalisation pass).  Return it
-    #    directly — this guarantees idempotency: normalise(normalise(x)) == normalise(x).
-    if not _ALL_LABELS_RE.search(text):
-        return text.strip()
-
-    # 3. Split on ANY structural label to get segments.
-    #    We tag each segment with the label that preceded it so we can decide
-    #    whether to keep the content that follows.
-    #
-    #    Strategy: split on all four labels (Assistant, Tool, Stopped, Session),
-    #    then keep only the content that followed an "Assistant:" label.
-    parts = _ALL_LABELS_RE.split(text)
-    # split() with a capturing group returns:
-    #   [pre_text, label1, content1, label2, content2, ...]
-    # parts[0] is any text before the first label (untagged — drop it).
-    # parts[1::2] are the labels; parts[2::2] are the matching content.
-
-    keeper_segments: list[str] = []
-    labels = parts[1::2]
-    contents = parts[2::2]
-
-    for label, content in zip(labels, contents):
-        if label.lower() == "assistant":
-            # Keep this prose segment.  Strip leading/trailing whitespace and
-            # collapse internal repeated-spinner lines but do NOT alter the words.
-            prose = content.strip()
-            # Remove duplicate consecutive spinner characters (same char repeated
-            # with surrounding whitespace — a common TUI artefact).
-            prose = _SPINNER_RE.sub("", prose)
-            # Normalise multi-whitespace that results from spinner removal.
-            prose = re.sub(r"[ \t]{2,}", " ", prose)
-            prose = re.sub(r"\n{3,}", "\n\n", prose)
-            prose = prose.strip()
-            if prose:
-                keeper_segments.append(prose)
-        # All other labels (Tool, Stopped, Session) → drop their content.
-
-    return " ".join(keeper_segments)
+        return text
+    lines = text.splitlines(keepends=True)
+    filtered = [line for line in lines if not _STRIP_LINE_RE.match(line)]
+    return "".join(filtered)
 
 
 async def _a(val):
@@ -257,7 +210,7 @@ class DreamPipeline:
 
         logger.info("Found %s new events since event id %s", len(events), last_id)
 
-        events_text = self._format_events(events)
+        events_text = normalise_events_text(self._format_events(events))
 
         logger.info("Calling dream model…")
         response = await asyncio.to_thread(self._call_dream_model, events_text)
@@ -502,15 +455,13 @@ class DreamPipeline:
                     cwd = e.get("cwd", "?")
                     items.insert(0, f"  CWD: {cwd}")
                 elif name == "Stop":
+                    reason = e.get("stop_reason", "end_turn")
+                    items.append(f"  Stopped: {reason}")
                     # The turn's assistant reasoning (plans/decisions) captured from
-                    # the transcript at Stop. Normalised to strip scaffolding framing
-                    # (Tool:/Stopped:/Session: labels) before distillation; capped to
-                    # bound the distillation prompt cost.
+                    # the transcript at Stop. Capped to bound the distillation prompt.
                     assistant_text = e.get("assistant_text")
                     if assistant_text:
-                        a_text = normalise_transcript_tail(assistant_text)[
-                            :_ASSISTANT_DREAM_CAP
-                        ].replace("\n", " ")
+                        a_text = assistant_text[:_ASSISTANT_DREAM_CAP].replace("\n", " ")
                         items.append(f"  Assistant: {a_text}")
 
             session_block = f"Session: {sid} ({start_ts}, {client})"
