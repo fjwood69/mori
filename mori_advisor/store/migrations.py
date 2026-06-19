@@ -587,6 +587,22 @@ MIGRATIONS: tuple[Migration, ...] = (
         sqlite_sql=("ALTER TABLE write_audit ADD COLUMN reason_code TEXT",),
         postgres_sql="ALTER TABLE write_audit ADD COLUMN IF NOT EXISTS reason_code TEXT",
     ),
+    Migration(
+        id=15,
+        name="memory_scope_map",
+        # H2 scope router: a generic per-memory scope map {"tags":[...],"match":"any|all"}.
+        # Additive, nullable — absent ⇒ the filter derives effective scope from legacy
+        # tags (project:/scope:global), so existing rows route identically with NO backfill
+        # (backward-compat by construction; preserves the v2.2.22 phantom-API parity).
+        # Postgres GIN on the nested tags array serves the set-membership filter; SQLite
+        # parses the JSON text in Python (small corpus, no index needed).
+        sqlite_sql=("ALTER TABLE memories ADD COLUMN scope TEXT",),
+        postgres_sql=(
+            "ALTER TABLE memories ADD COLUMN IF NOT EXISTS scope JSONB; "
+            "CREATE INDEX IF NOT EXISTS idx_memories_scope_tags "
+            "ON memories USING GIN ((scope -> 'tags')) WHERE deleted_at IS NULL"
+        ),
+    ),
 )
 
 

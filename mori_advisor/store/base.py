@@ -117,6 +117,18 @@ class BaseStore(ABC):
     ) -> dict: ...
 
     @abstractmethod
+    def filter_by_scope(
+        self, project: str, include_global: bool = True, strict_global: bool = False
+    ) -> dict:
+        """H2 generic scope-filter drop-in for get_memories_by_project (Phase 4b).
+
+        Same signature + return shape; membership decided by the flat scope filter
+        so a per-memory scope map can govern routing. Byte-identical to the oracle
+        for legacy (NULL-scope) rows — the Phase 5 parity commitment.
+        """
+        ...
+
+    @abstractmethod
     def get_memories_changed_since(
         self,
         since: str,

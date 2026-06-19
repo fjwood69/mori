@@ -182,6 +182,13 @@ class SQLiteStore(BaseStore):
             project, include_global=include_global, strict_global=strict_global
         )
 
+    def filter_by_scope(
+        self, project: str, include_global: bool = True, strict_global: bool = False
+    ) -> dict:
+        return self._mem.filter_by_scope(
+            project, include_global=include_global, strict_global=strict_global
+        )
+
     def get_memories_changed_since(
         self,
         since: str,

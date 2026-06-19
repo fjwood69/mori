@@ -949,7 +949,8 @@ class PostgresStore(BaseStore):
                   AND deleted_at IS NULL
                 ORDER BY
                   CASE tier WHEN 'canonical' THEN 0 ELSE 1 END ASC,
-                  updated_at DESC
+                  updated_at DESC,
+                  id DESC
                 """,
                 json.dumps([tag_value]),
             )
@@ -972,7 +973,7 @@ class PostgresStore(BaseStore):
                     AND (superseded_by IS NULL OR superseded_by = '')
                     AND deleted_at IS NULL
                     AND NOT (tags @> $1::jsonb)
-                    ORDER BY tier DESC, updated_at DESC
+                    ORDER BY tier DESC, updated_at DESC, id DESC
                     """,
                     json.dumps([tag_value]),
                 )
@@ -996,6 +997,110 @@ class PostgresStore(BaseStore):
         global_memories = [_row_to_dict(r) for r in global_rows]
         # Brief surfaces these bodies to the agent → count as recall (the other-project
         # index is counts only, not bodies, so it is not bumped).
+        self._bump_retrieval_bg(
+            [m["name"] for m in project_memories] + [m["name"] for m in global_memories]
+        )
+
+        other_counts: dict[str, int] = {}
+        for row in other_raw:
+            raw = row["tags"]
+            tags = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
+            for tag in tags:
+                if isinstance(tag, str) and tag.startswith("project:") and tag != tag_value:
+                    proj_name = tag[len("project:") :]
+                    other_counts[proj_name] = other_counts.get(proj_name, 0) + 1
+        other_projects = sorted(other_counts.items(), key=lambda x: x[1], reverse=True)
+
+        return {
+            "project_memories": project_memories,
+            "global_memories": global_memories,
+            "other_projects": other_projects,
+        }
+
+    async def filter_by_scope(
+        self,
+        project: str,
+        include_global: bool = True,
+        strict_global: bool = False,
+    ) -> dict:
+        """Postgres twin of MemoryStore.filter_by_scope — the H2 subsumption shim.
+
+        Membership is decided generically (resolver.compile_memory_scope +
+        scope.in_scope); the legacy partition, tier asymmetry, ORDER BY and
+        other-project index are preserved verbatim so the brief output is
+        byte-identical to ``get_memories_by_project`` for legacy (NULL-scope) rows.
+        See the SQLite docstring for the full rationale.
+        """
+        from mori_advisor.resolver import compile_context_tags, compile_memory_scope
+        from mori_advisor.scope import in_scope
+
+        self._ensure_pool()
+        context = compile_context_tags(project, strict_global)
+        tag_value = f"project:{project}"
+
+        def _row_to_dict(row) -> dict:
+            r = dict(row)
+            raw = r.get("tags")
+            r["tags"] = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
+            for k, v in r.items():
+                if isinstance(v, datetime):
+                    r[k] = v.isoformat()
+            return r
+
+        async with self.pool.acquire() as conn:
+            # Project-lane candidates — legacy project query MINUS the tag filter.
+            project_rows = await conn.fetch(
+                """
+                SELECT * FROM memories
+                WHERE tier IN ('canonical', 'working')
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                  AND deleted_at IS NULL
+                ORDER BY
+                  CASE tier WHEN 'canonical' THEN 0 ELSE 1 END ASC,
+                  updated_at DESC,
+                  id DESC
+                """
+            )
+            global_rows: list = []
+            if include_global:
+                # Global-lane candidates — legacy global query MINUS the tag clauses,
+                # no tier filter (legacy global lane surfaces any tier).
+                global_rows = await conn.fetch(
+                    """
+                    SELECT * FROM memories
+                    WHERE (superseded_by IS NULL OR superseded_by = '')
+                      AND deleted_at IS NULL
+                    ORDER BY tier DESC, updated_at DESC, id DESC
+                    """
+                )
+            # Other-project index — identical query to the oracle.
+            other_raw = await conn.fetch(
+                """
+                SELECT tags FROM memories
+                WHERE EXISTS (
+                    SELECT 1 FROM jsonb_array_elements_text(tags) AS elem
+                    WHERE elem LIKE 'project:%'
+                )
+                AND NOT (tags @> $1::jsonb)
+                AND (superseded_by IS NULL OR superseded_by = '')
+                AND deleted_at IS NULL
+                """,
+                json.dumps([tag_value]),
+            )
+
+        def _kept(d: dict) -> bool:
+            return in_scope(compile_memory_scope(d), context)
+
+        project_memories = [
+            d
+            for d in (_row_to_dict(r) for r in project_rows)
+            if tag_value in d["tags"] and _kept(d)
+        ]
+        global_memories = [
+            d
+            for d in (_row_to_dict(r) for r in global_rows)
+            if tag_value not in d["tags"] and _kept(d)
+        ]
         self._bump_retrieval_bg(
             [m["name"] for m in project_memories] + [m["name"] for m in global_memories]
         )

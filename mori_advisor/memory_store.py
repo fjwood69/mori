@@ -498,6 +498,7 @@ class MemoryStore:
           10:origin_session_ids  11:origin_clients  12:protected  13:protected_domains
           14:tier  15:last_retrieved_at  16:retrieval_count
           17:freshness_status  18:freshness_checked_at  19:superseded_by
+          20:deleted_at  21:scope
         """
         return {
             "id": row[0],
@@ -520,6 +521,8 @@ class MemoryStore:
             "freshness_status": row[17] if len(row) > 17 else "unknown",
             "freshness_checked_at": row[18] if len(row) > 18 else None,
             "superseded_by": row[19] if len(row) > 19 else None,
+            # 20:deleted_at handled via WHERE clauses, not surfaced here.
+            "scope": row[21] if len(row) > 21 else None,  # H2 migration 15
         }
 
     def _memory_not_found(self, name: str) -> str:
@@ -1522,7 +1525,8 @@ class MemoryStore:
                   AND deleted_at IS NULL
                 ORDER BY
                   CASE tier WHEN 'canonical' THEN 0 ELSE 1 END ASC,
-                  updated_at DESC
+                  updated_at DESC,
+                  id DESC
                 """,
                 (f'%"{tag_value}"%',),
             )
@@ -1547,7 +1551,7 @@ class MemoryStore:
                     AND (superseded_by IS NULL OR superseded_by = '')
                     AND deleted_at IS NULL
                     AND tags NOT LIKE ?
-                    ORDER BY tier DESC, updated_at DESC
+                    ORDER BY tier DESC, updated_at DESC, id DESC
                     """,
                     (f'%"{tag_value}"%',),  # exclude already-included project memories
                 )
@@ -1584,6 +1588,128 @@ class MemoryStore:
         other_projects = sorted(other_counts.items(), key=lambda x: x[1], reverse=True)
 
         # Bump retrievals for loaded memories
+        for m in project_memories + global_memories:
+            self._bump_retrieval(m["name"])
+
+        return {
+            "project_memories": project_memories,
+            "global_memories": global_memories,
+            "other_projects": other_projects,
+        }
+
+    def filter_by_scope(
+        self,
+        project: str,
+        include_global: bool = True,
+        strict_global: bool = False,
+    ) -> dict:
+        """H2 subsumption shim — a drop-in for `get_memories_by_project` whose
+        *membership* is decided by the generic flat scope filter
+        (`resolver.compile_memory_scope` + `scope.in_scope`) instead of the
+        special-cased ``tags LIKE`` clauses.
+
+        Same signature, same return shape, byte-identical output for legacy rows
+        (NULL ``scope`` column) — that is the Phase 5 parity commitment. What it
+        adds: a per-memory ``scope`` map (migration 15) now governs routing, so a
+        memory can declare a richer home than a single ``project:`` tag.
+
+        How parity is held without copying the special-cased SQL:
+          * load the project-lane and global-lane *candidates* with the EXACT same
+            ``WHERE``/tier/``ORDER BY`` as the legacy queries — minus the
+            ``tags LIKE project:P`` membership clause;
+          * decide membership generically via ``in_scope`` against the context
+            compiled from ``(project, strict_global)``;
+          * preserve the legacy *partition* with a raw-tag check — project lane =
+            tagged ``project:P`` (tier-gated by the candidate query); global lane =
+            kept-and-NOT-tagged-``project:P`` (mirrors the legacy ``NOT LIKE``
+            exclusion). Dropping rows from an already-ordered candidate list keeps
+            the surviving order identical, so no Python re-sort is needed.
+
+        A project-tagged row whose *explicit* scope excludes the active project is
+        correctly surfaced nowhere — explicit scope wins (legacy rows can't hit
+        this; they have no scope column).
+        """
+        import sqlite3
+
+        from mori_advisor.resolver import compile_context_tags, compile_memory_scope
+        from mori_advisor.scope import in_scope
+
+        context = compile_context_tags(project, strict_global)
+        tag_value = f"project:{project}"
+        conn = self._get_conn()
+        try:
+            # Project-lane candidates — legacy project query MINUS the tags LIKE filter.
+            cur = conn.execute(
+                """
+                SELECT * FROM memories
+                WHERE tier IN ('canonical', 'working')
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                  AND deleted_at IS NULL
+                ORDER BY
+                  CASE tier WHEN 'canonical' THEN 0 ELSE 1 END ASC,
+                  updated_at DESC,
+                  id DESC
+                """
+            )
+            project_candidates = cur.fetchall()
+
+            global_candidates: list = []
+            if include_global:
+                # Global-lane candidates — legacy global query MINUS the tag clauses.
+                # No tier filter (legacy global lane surfaces any tier).
+                cur = conn.execute(
+                    """
+                    SELECT * FROM memories
+                    WHERE (superseded_by IS NULL OR superseded_by = '')
+                      AND deleted_at IS NULL
+                    ORDER BY tier DESC, updated_at DESC, id DESC
+                    """
+                )
+                global_candidates = cur.fetchall()
+
+            # Other-project index — identical query to the oracle.
+            cur = conn.execute(
+                """
+                SELECT tags FROM memories
+                WHERE tags LIKE '%"project:%"'
+                  AND tags NOT LIKE ?
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                  AND deleted_at IS NULL
+                """,
+                (f'%"{tag_value}"%',),
+            )
+            other_rows = cur.fetchall()
+        except sqlite3.Error as e:
+            logger.warning("filter_by_scope failed: %s", e)
+            return {"project_memories": [], "global_memories": [], "other_projects": []}
+        finally:
+            conn.close()
+
+        def _kept(d: dict) -> bool:
+            return in_scope(compile_memory_scope(d), context)
+
+        # Project lane: membership AND raw project:P tag (tier already gated by query).
+        project_memories = [
+            d
+            for d in (self._row_to_dict(r) for r in project_candidates)
+            if tag_value in d["tags"] and _kept(d)
+        ]
+        # Global lane: membership AND NOT raw project:P tag (mirrors legacy NOT LIKE).
+        global_memories = [
+            d
+            for d in (self._row_to_dict(r) for r in global_candidates)
+            if tag_value not in d["tags"] and _kept(d)
+        ]
+
+        # Other-project tag counts — identical to the oracle.
+        other_counts: dict[str, int] = {}
+        for (tags_raw,) in other_rows:
+            for tag in self._parse_tags(tags_raw):
+                if tag.startswith("project:") and tag != tag_value:
+                    proj_name = tag[len("project:") :]
+                    other_counts[proj_name] = other_counts.get(proj_name, 0) + 1
+        other_projects = sorted(other_counts.items(), key=lambda x: x[1], reverse=True)
+
         for m in project_memories + global_memories:
             self._bump_retrieval(m["name"])
 
