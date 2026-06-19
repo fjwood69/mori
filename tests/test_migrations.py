@@ -186,3 +186,40 @@ def test_pg_drift_fixes():
     notnull, has_delegate = asyncio.run(run())
     assert notnull is True  # 0005 — freshness_status now NOT NULL on Postgres
     assert has_delegate is True
+
+
+# ── 0015 scope map (H2 scope router) ─────────────────────────────────────────
+
+
+def test_scope_column_sqlite(tmp_path):
+    db = tmp_path / "memories.db"
+    apply_sqlite(db, MEMORIES_MIGS)
+    c = sqlite3.connect(str(db))
+    try:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(memories)")}
+        assert "scope" in cols  # 0015 — nullable scope map (JSON text on SQLite)
+    finally:
+        c.close()
+
+
+@requires_pg
+def test_pg_scope_column_and_gin():
+    from mori_advisor.store.postgres_store import PostgresStore
+
+    async def run():
+        store = PostgresStore(PG_URL)
+        await store.bootstrap()
+        async with store.pool.acquire() as conn:
+            coltype = await conn.fetchval(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name='memories' AND column_name='scope'"
+            )
+            has_gin = await conn.fetchval(
+                "SELECT to_regclass('idx_memories_scope_tags') IS NOT NULL"
+            )
+        await store.pool.close()
+        return coltype, has_gin
+
+    coltype, has_gin = asyncio.run(run())
+    assert coltype == "jsonb"  # 0015 — scope is JSONB on Postgres
+    assert has_gin is True  # GIN on (scope->'tags') serves the set-membership filter
