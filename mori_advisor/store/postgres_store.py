@@ -949,7 +949,8 @@ class PostgresStore(BaseStore):
                   AND deleted_at IS NULL
                 ORDER BY
                   CASE tier WHEN 'canonical' THEN 0 ELSE 1 END ASC,
-                  updated_at DESC
+                  updated_at DESC,
+                  id DESC
                 """,
                 json.dumps([tag_value]),
             )
@@ -972,7 +973,7 @@ class PostgresStore(BaseStore):
                     AND (superseded_by IS NULL OR superseded_by = '')
                     AND deleted_at IS NULL
                     AND NOT (tags @> $1::jsonb)
-                    ORDER BY tier DESC, updated_at DESC
+                    ORDER BY tier DESC, updated_at DESC, id DESC
                     """,
                     json.dumps([tag_value]),
                 )
@@ -1056,7 +1057,8 @@ class PostgresStore(BaseStore):
                   AND deleted_at IS NULL
                 ORDER BY
                   CASE tier WHEN 'canonical' THEN 0 ELSE 1 END ASC,
-                  updated_at DESC
+                  updated_at DESC,
+                  id DESC
                 """
             )
             global_rows: list = []
@@ -1068,7 +1070,7 @@ class PostgresStore(BaseStore):
                     SELECT * FROM memories
                     WHERE (superseded_by IS NULL OR superseded_by = '')
                       AND deleted_at IS NULL
-                    ORDER BY tier DESC, updated_at DESC
+                    ORDER BY tier DESC, updated_at DESC, id DESC
                     """
                 )
             # Other-project index — identical query to the oracle.

@@ -15,13 +15,12 @@ Both methods run on SEPARATE identically-seeded stores so the retrieval bump eac
 performs doesn't cross-contaminate; the two volatile fields are still stripped
 before comparison because their wall-clock timestamps can differ by a tick.
 
-Ordering note: the seed forces a DETERMINISTIC distinct (created_at, updated_at)
-per row so the (tier, updated_at) sort key is total. With genuine ties on that key
-SQLite's order is undefined and differs between the oracle's pre-filtered scan and
-the filter's load-then-filter scan — a tie order is NOT part of the routing
-contract. The manifest therefore proves byte-identical ordering under a well-defined
-key AND unconditional multiset membership; tie resolution is out of scope (a
-candidate deterministic tiebreaker for the cutover is logged for Fred).
+Ordering note: a `, id DESC` tiebreaker was added to BOTH the oracle and
+filter_by_scope ORDER BYs (Fred-approved), making the sort total — so order is now
+deterministic even on tied (tier, updated_at) keys. This manifest still seeds
+distinct timestamps for the main matrix; test_tiebreaker_makes_tied_order_deterministic
+exercises the all-tied case directly. Membership is also asserted unconditionally as
+a multiset.
 """
 
 import asyncio
@@ -119,7 +118,8 @@ def test_parity_manifest_byte_identical(tmp_path):
                     f"legacy={sorted(m['name'] for m in legacy[lane])} "
                     f"scope={sorted(m['name'] for m in scoped[lane])}"
                 )
-            # Byte-identical full body + order (valid: distinct sort keys, no ties).
+            # Byte-identical full body + order (the , id DESC tiebreaker makes the
+            # sort total, so order is deterministic even before the distinct timestamps).
             elif _strip(scoped[lane]) != _strip(legacy[lane]):
                 ln = [m["name"] for m in legacy[lane]]
                 sn = [m["name"] for m in scoped[lane]]
@@ -133,6 +133,37 @@ def test_parity_manifest_byte_identical(tmp_path):
                 f"legacy={legacy['other_projects']} scope={scoped['other_projects']}"
             )
     assert not mismatches, "parity broken:\n" + "\n".join(mismatches)
+
+
+def test_tiebreaker_makes_tied_order_deterministic(tmp_path):
+    """All rows share an identical (tier, updated_at), so the ONLY differentiator is
+    the `, id DESC` tiebreaker. Both the oracle and the filter must then produce the
+    same deterministic order (id-descending = reverse insertion) — this is the fix
+    for the tie divergence (oracle pre-filter scan vs filter load-then-filter, which
+    resolved equal sort keys differently before the tiebreaker)."""
+    legacy_store = _store(tmp_path, "legacy_tie.db")
+    scope_store = _store(tmp_path, "scope_tie.db")
+    for ms in (legacy_store, scope_store):
+        for k in range(1, 13):  # project lane, all tied
+            nm = f"t{k:02d}"
+            ms.write(
+                name=nm, title=nm, body="body", type="project", tier="working", tags=["project:foo"]
+            )
+            _force(ms, nm, updated_at="2026-06-19 00:00:00")
+        for k in range(1, 5):  # global lane (auto-global pattern), all tied
+            nm = f"g{k:02d}"
+            ms.write(name=nm, title=nm, body="body", type="pattern", tier="working", tags=[])
+            _force(ms, nm, updated_at="2026-06-19 00:00:00")
+
+    legacy = legacy_store.get_memories_by_project("foo", include_global=True, strict_global=False)
+    scoped = scope_store.filter_by_scope("foo", include_global=True, strict_global=False)
+    for lane in ("project_memories", "global_memories"):
+        assert [m["name"] for m in scoped[lane]] == [m["name"] for m in legacy[lane]], lane
+    # concretely deterministic: id DESC ⇒ reverse insertion order
+    assert [m["name"] for m in legacy["project_memories"]] == [
+        f"t{k:02d}" for k in range(12, 0, -1)
+    ]
+    assert [m["name"] for m in legacy["global_memories"]] == [f"g{k:02d}" for k in range(4, 0, -1)]
 
 
 # ── Postgres parity (gated on MORI_TEST_DATABASE_URL) ─────────────────────────

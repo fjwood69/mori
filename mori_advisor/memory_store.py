@@ -1525,7 +1525,8 @@ class MemoryStore:
                   AND deleted_at IS NULL
                 ORDER BY
                   CASE tier WHEN 'canonical' THEN 0 ELSE 1 END ASC,
-                  updated_at DESC
+                  updated_at DESC,
+                  id DESC
                 """,
                 (f'%"{tag_value}"%',),
             )
@@ -1550,7 +1551,7 @@ class MemoryStore:
                     AND (superseded_by IS NULL OR superseded_by = '')
                     AND deleted_at IS NULL
                     AND tags NOT LIKE ?
-                    ORDER BY tier DESC, updated_at DESC
+                    ORDER BY tier DESC, updated_at DESC, id DESC
                     """,
                     (f'%"{tag_value}"%',),  # exclude already-included project memories
                 )
@@ -1646,7 +1647,8 @@ class MemoryStore:
                   AND deleted_at IS NULL
                 ORDER BY
                   CASE tier WHEN 'canonical' THEN 0 ELSE 1 END ASC,
-                  updated_at DESC
+                  updated_at DESC,
+                  id DESC
                 """
             )
             project_candidates = cur.fetchall()
@@ -1660,7 +1662,7 @@ class MemoryStore:
                     SELECT * FROM memories
                     WHERE (superseded_by IS NULL OR superseded_by = '')
                       AND deleted_at IS NULL
-                    ORDER BY tier DESC, updated_at DESC
+                    ORDER BY tier DESC, updated_at DESC, id DESC
                     """
                 )
                 global_candidates = cur.fetchall()
