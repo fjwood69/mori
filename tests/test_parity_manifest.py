@@ -24,7 +24,14 @@ key AND unconditional multiset membership; tie resolution is out of scope (a
 candidate deterministic tiebreaker for the cutover is logged for Fred).
 """
 
+import asyncio
 import itertools
+import os
+
+import pytest
+
+PG_URL = os.environ.get("MORI_TEST_DATABASE_URL", "")
+requires_pg = pytest.mark.skipif(not PG_URL, reason="MORI_TEST_DATABASE_URL not set")
 
 # Routing dimensions.
 _PROJECT_TAGS = ([], ["project:foo"], ["project:bar"], ["project:foo", "project:bar"])
@@ -126,3 +133,85 @@ def test_parity_manifest_byte_identical(tmp_path):
                 f"legacy={legacy['other_projects']} scope={scoped['other_projects']}"
             )
     assert not mismatches, "parity broken:\n" + "\n".join(mismatches)
+
+
+# ── Postgres parity (gated on MORI_TEST_DATABASE_URL) ─────────────────────────
+
+
+@requires_pg
+def test_parity_manifest_pg():
+    """PG twin of the parity manifest on the live (possibly shared) test DB.
+
+    Runs on whatever rows already exist — both methods see the same foreign rows,
+    so legacy==filter parity holds regardless. Project tags are uniquely prefixed
+    so the project lane is isolated to this test's rows (ordered comparison valid);
+    the global lane may interleave foreign rows and tie on timestamps, so it is
+    asserted as a multiset (membership), consistent with the SQLite tie caveat.
+    Byte-identical ordering is proven backend-agnostically by the SQLite manifest;
+    here we prove the PG SQL paths reproduce the oracle's membership + partition.
+    """
+    from datetime import datetime, timezone
+
+    from mori_advisor.store.postgres_store import PostgresStore
+
+    pfx = "pgp_"
+    foo, bar = f"project:{pfx}foo", f"project:{pfx}bar"
+    proj_variants = ([], [foo], [bar], [foo, bar])
+
+    def _dt(i: int) -> datetime:
+        # asyncpg validates the Python type before the ::timestamptz cast, so bind a
+        # real tz-aware datetime (the string form _ts() works only for SQLite).
+        return datetime(2026, 6, 19, i // 3600, (i // 60) % 60, i % 60, tzinfo=timezone.utc)
+
+    async def run():
+        store = PostgresStore(PG_URL)
+        await store.bootstrap()
+        async with store.pool.acquire() as conn:
+            await conn.execute("DELETE FROM memories WHERE name LIKE $1", pfx + "%")
+        i = 0
+        updates = []
+        for ptags, gtag, mtype, tier in itertools.product(
+            proj_variants, _GLOBAL_TAGS, _TYPES, _TIERS
+        ):
+            i += 1
+            nm = f"{pfx}{i:03d}"
+            await store.write(
+                name=nm, title=nm, body="body", type=mtype, tier="working", tags=[*ptags, *gtag]
+            )
+            updates.append((nm, tier, _dt(i)))
+        async with store.pool.acquire() as conn:
+            await conn.executemany(
+                "UPDATE memories SET tier=$2, created_at=$3, updated_at=$3 WHERE name=$1",
+                updates,
+            )
+        out = []
+        for project, strict, incl in itertools.product(
+            (f"{pfx}foo", f"{pfx}bar", f"{pfx}absent"), (True, False), (True, False)
+        ):
+            legacy = await store.get_memories_by_project(
+                project, include_global=incl, strict_global=strict
+            )
+            scoped = await store.filter_by_scope(project, include_global=incl, strict_global=strict)
+            out.append((project, strict, incl, legacy, scoped))
+        async with store.pool.acquire() as conn:
+            await conn.execute("DELETE FROM memories WHERE name LIKE $1", pfx + "%")
+        await store.pool.close()
+        return out
+
+    rows = asyncio.run(run())
+    mismatches = []
+    for project, strict, incl, legacy, scoped in rows:
+        ctx = f"project={project} strict={strict} incl={incl}"
+        # Project lane — isolated to this test's rows: ordered names must match.
+        if [m["name"] for m in scoped["project_memories"]] != [
+            m["name"] for m in legacy["project_memories"]
+        ]:
+            mismatches.append(f"{ctx} project lane order")
+        # Global lane — may interleave foreign rows / tie: multiset membership.
+        if sorted(m["name"] for m in scoped["global_memories"]) != sorted(
+            m["name"] for m in legacy["global_memories"]
+        ):
+            mismatches.append(f"{ctx} global lane membership")
+        if dict(scoped["other_projects"]) != dict(legacy["other_projects"]):
+            mismatches.append(f"{ctx} other_projects")
+    assert not mismatches, "PG parity broken:\n" + "\n".join(mismatches)
