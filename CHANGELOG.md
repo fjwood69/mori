@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.2.23 — pre-dream events normaliser
+
+**feat: strip provably-inert scaffolding from the dream prompt before the LLM sees it.**
+`_format_events()` emits one `  Tool: <name>` line per `PostToolUse` event and one `  Stopped: <reason>`
+line per `Stop` event — these are structural labels, not reasoning signal. At scale (a real session
+with hundreds of tool calls) they inflate the prompt materially without adding anything the dreamer
+can extract. The normaliser removes them; everything else is preserved verbatim.
+
+- **`normalise_events_text(text)`** in `mori_advisor/dream.py` — deterministic, lossless-on-signal,
+  line-anchored filter. The regex (`^  (?:Tool|Stopped): `) is case-sensitive and anchored at the
+  line start, so prose that *mentions* `"Tool: Read"` inside an `  Assistant:` line is never stripped.
+  Idempotent: `normalise(normalise(x)) == normalise(x)`.
+- **`_run_inner()` wire-up** — `events_text = normalise_events_text(self._format_events(events))`.
+  The normaliser sits at the capture=recall boundary: volume lever is compression, not censorship.
+  `FAILURE (Tool):` lines, `  CWD:`, `  Prompt:`, `  Assistant:` prose, and `Session:` headers
+  are all preserved.
+- **8 unit tests** (`tests/test_transcript_normaliser.py`) — strip, keep, no-signal,
+  idempotency, token-reduction, mixed-interleave, FAILURE preservation, prose-Tool-reference safety.
+- **UAT probe** (`dotfiles/mori-uat/uat-normaliser-probe.sh`) — seeds 4 synthetic sessions
+  above `max_real_id`, sets the dream watermark, calls `dream_run` on the Postgres UAT backend,
+  verifies `memories` count present, no errors, dream model called, and cleans up on exit.
+  5/5 checks pass: 25 `Tool:` lines and 4 `Stopped:` lines stripped per probe run.
+
 ## v2.2.22 — provenance scope routing for `/brief` (`MORI_BRIEF_SCOPE`)
 
 **feat: scope-aware retrieval so one project's origin-bound canon can't leak into another
