@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.2.24 — H2 scope router (`filter_by_scope`) + NATS replay default
+
+**feat: the generic provenance scope filter goes live on `/brief`.** H2 replaces the special-cased
+`get_memories_by_project` routing with a flat, deterministic per-memory scope filter, proven
+byte-identical to the legacy oracle for all existing rows — so the cutover is provably subtractive.
+
+- **Migration 15 (`memory_scope_map`)** — nullable `scope` column (JSONB+GIN on Postgres, JSON-text on
+  SQLite), additive, no backfill. Absent ⇒ effective scope derived from legacy tags (zero behaviour change).
+- **`mori_advisor/scope.py`** — `ScopeMap{tags,match}` + flat `in_scope()` set-membership (no graph, no
+  model). **`mori_advisor/resolver.py`** — compiles legacy tags/type into an effective scope; the whole
+  `MORI_BRIEF_SCOPE` safe/all flag collapses to the presence of one context tag (`legacy:type-global`).
+- **`filter_by_scope`** (both backends) — generic membership, legacy partition/ordering preserved.
+  **`brief()` cutover** to it (both call sites). `get_memories_by_project` retained as the parity oracle.
+- **Determinism** — a `, id DESC` tiebreaker on both routing ORDER BYs makes brief ordering total and
+  parity exact even on tied `(tier, updated_at)` keys.
+- **Parity gate** — `test_parity_manifest` asserts byte-identical output across the full routing-dimension
+  product, on SQLite and real Postgres. **UAT green both backends.**
+
+**fix(nats): `nats_sub` defaults to `replay=True`.** Non-replay live-tail silently misses messages
+published between polls; replay (7-day window) is reliable for coordination. Hardened the docstring.
+
 ## v2.2.23 — pre-dream events normaliser
 
 **feat: strip provably-inert scaffolding from the dream prompt before the LLM sees it.**
