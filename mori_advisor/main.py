@@ -1502,14 +1502,20 @@ async def nats_pub(message: str, subject: str = "") -> str:
 
 
 @mcp.tool()
-async def nats_sub(replay: bool = False, wait: int = 2) -> str:
+async def nats_sub(replay: bool = True, wait: int = 2) -> str:
     """Check the NATS message bus for recent cross-device messages.
 
-    Shows messages from all devices. Use --replay to show messages
-    from the last 7 days (useful for catching up after being offline).
+    Defaults to ``replay=True`` — the RELIABLE JetStream tail of recent
+    messages. A non-replay sub is **live-tail-only**: it opens a subscription,
+    waits ``wait`` seconds, and returns ONLY what arrives in that window — it
+    SILENTLY MISSES anything published between polls. Always leave
+    ``replay=True`` for coordination / "did I miss something?" polling; pass
+    ``replay=False`` only to block-wait for a message arriving live right now.
 
     Args:
-        replay: If true, replay messages from the last 7 days.
+        replay: Reliable JetStream tail of recent messages (default True).
+                False = live-tail-only (misses between-poll messages — do not
+                use for catch-up polling).
         wait: Seconds to wait for new messages (default 2, max 10).
     """
     try:
