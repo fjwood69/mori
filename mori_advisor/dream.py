@@ -12,6 +12,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 from contextlib import asynccontextmanager
@@ -27,6 +28,44 @@ logger = logging.getLogger(__name__)
 # Max chars of captured assistant reasoning surfaced per Stop event in the dream
 # prompt. Bounds distillation cost when sessions have many turns; tune from data.
 _ASSISTANT_DREAM_CAP = 1500
+
+# Matches Tool: and Stopped: scaffolding lines in _format_events output.
+# Case-sensitive and line-anchored — avoids false-positives in prose inside
+# Assistant: segments (e.g. "I used Tool: Read to verify this").
+# Format produced by _format_events: "  Tool: Bash\n", "  Stopped: end_turn\n"
+_STRIP_LINE_RE = re.compile(r"^  (?:Tool|Stopped): ")
+
+
+def normalise_events_text(text: str) -> str:
+    """Strip Tool:/Stopped: scaffolding lines from _format_events output.
+
+    ``_format_events`` assembles a multi-session block for the dreamer's prompt.
+    Each PostToolUse event becomes a bare ``  Tool: <name>`` line — the name
+    alone, no args, no output.  Over a typical session these accumulate into
+    dozens of repetitions that consume tokens while contributing zero distillable
+    signal.  ``  Stopped: <reason>`` similarly adds framing noise.
+
+    Design principle — capture = recall boundary:
+        The volume lever is *compression*, not censorship.  This function strips
+        only provably-inert lines.  Everything else — ``Session:`` headers,
+        ``  Prompt:``, ``  FAILURE:``, ``  CWD:``, ``  Assistant:`` — is
+        preserved verbatim.  Relevance and dedup decisions belong to the dreamer,
+        not to this normaliser.
+
+    The function is idempotent: normalise(normalise(x)) == normalise(x).
+
+    Args:
+        text: ``_format_events`` output string.
+
+    Returns:
+        The same text with ``Tool:`` and ``Stopped:`` lines removed.
+        Returns the input unchanged if it is empty or contains no such lines.
+    """
+    if not text or not text.strip():
+        return text
+    lines = text.splitlines(keepends=True)
+    filtered = [line for line in lines if not _STRIP_LINE_RE.match(line)]
+    return "".join(filtered)
 
 
 async def _a(val):
@@ -171,7 +210,7 @@ class DreamPipeline:
 
         logger.info("Found %s new events since event id %s", len(events), last_id)
 
-        events_text = self._format_events(events)
+        events_text = normalise_events_text(self._format_events(events))
 
         logger.info("Calling dream model…")
         response = await asyncio.to_thread(self._call_dream_model, events_text)

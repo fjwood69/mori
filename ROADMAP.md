@@ -78,6 +78,7 @@ Updated with each release.
 - Security hardening: AUTH-001 (file read via path traversal), PERF-003 (freshness thundering herd), PERF-004 (limit=0 full-table fetch)
 - `agent-working-practices.md` — injected at session start via `/brief`
 - Provenance scope routing (v2.2.22) — `MORI_BRIEF_SCOPE` (default `safe`): the brief withholds cross-project origin-bound canon (explicit `scope:global` only; `type` no longer auto-globalises) + zero-knowledge out-of-scope. Eliminates cross-repo retrieval interference: phantom-API attempts 0/20 (scoped) vs 20/20 (unscoped), replicated across two frontier-class models (Fisher p≈0). See [benchmarks](docs/benchmarks/README.md).
+- Pre-dream events normaliser (v2.2.23) — `normalise_events_text()` strips `Tool:` and `Stopped:` scaffolding lines before the dream LLM sees `events_text`. Line-anchored, case-sensitive, lossless-on-signal (FAILURE, Assistant prose, CWD, Prompt, Session headers preserved). Idempotent. Volume lever is compression, not censorship.
 
 ---
 
