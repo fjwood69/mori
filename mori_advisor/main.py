@@ -794,8 +794,12 @@ async def brief(
     # ── Scoped loading ─────────────────────────────────────────────────
     if project:
         try:
+            # H2 cutover: the generic scope filter replaces the special-cased oracle.
+            # Proven byte-identical for legacy (NULL-scope) rows (test_parity_manifest);
+            # a per-memory scope map now governs routing where present. get_memories_by_project
+            # is retained as the parity oracle.
             scoped = await _a(
-                memory_store.get_memories_by_project(
+                memory_store.filter_by_scope(
                     project, include_global=include_global, strict_global=safe_scope
                 )
             )
@@ -878,7 +882,7 @@ async def brief(
                 # (provenance-safe). Project-bound memories are withheld — there is no
                 # project to scope to, and surfacing everything is the unscoped leak.
                 gl = await _a(
-                    memory_store.get_memories_by_project(
+                    memory_store.filter_by_scope(  # H2 cutover (unscoped global lane)
                         "", include_global=True, strict_global=True
                     )
                 )
