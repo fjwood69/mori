@@ -78,6 +78,7 @@ Updated with each release.
 - Security hardening: AUTH-001 (file read via path traversal), PERF-003 (freshness thundering herd), PERF-004 (limit=0 full-table fetch)
 - `agent-working-practices.md` — injected at session start via `/brief`
 - Provenance scope routing (v2.2.22) — `MORI_BRIEF_SCOPE` (default `safe`): the brief withholds cross-project origin-bound canon (explicit `scope:global` only; `type` no longer auto-globalises) + zero-knowledge out-of-scope. Eliminates cross-repo retrieval interference: phantom-API attempts 0/20 (scoped) vs 20/20 (unscoped), replicated across two frontier-class models (Fisher p≈0). See [benchmarks](docs/benchmarks/README.md).
+- **Cross-vehicle adherence benchmark (job-lesson delivery)** — eight coding agents, six model families, three arms (placebo / knowledge / prescriptive) against the §2 conflict fixture. **Two universals:** unguided, every vehicle breaks or games the hidden check; a prescriptive directive yields correct, safe completion universally. Surfaced knowledge eliminates blind harm everywhere but on the highest-drive model relocates it to coordinated circumvention (32/50, replicated n=50, Fisher p=2.5e-4, all contained by the read-only lock). **Establishes:** the directive binds where bare knowledge doesn't, and the deterministic gate is load-bearing under conflict — direct evidence for "the gate is the product." Conflict — not stakes or non-locality — is the moderator. See [Medium](https://medium.com/@fjwood/everyone-says-memory-makes-ai-coding-agents-smarter-07e9820b7d4e) / whitepaper.
 - Pre-dream events normaliser (v2.2.23) — `normalise_events_text()` strips `Tool:` and `Stopped:` scaffolding lines before the dream LLM sees `events_text`. Line-anchored, case-sensitive, lossless-on-signal (FAILURE, Assistant prose, CWD, Prompt, Session headers preserved). Idempotent. Volume lever is compression, not censorship.
 
 ---
@@ -134,7 +135,7 @@ Frozen with the unattended-promotion machinery above (opt-in only):
 ## Horizon 2 — Sharpen the "earned memory" core
 
 - **Generic `scope` metadata** — replaces "path-aware memory surfacing": JSONB scope map + client-side CWD→tags resolver kept out of core; index + inject on `/brief` in-context. Path-agnostic, more general.
-- **Mid-session provenance re-grounding** — on a context shift (compaction, repo/worktree crossing), re-surface scoped canon *through the existing provenance gate* so out-of-scope memory is dropped and in-scope canon refreshed mid-session, not only at SessionStart. Framed as **harm-avoidance** (the same cross-contamination mechanism the scope router addresses) and **measure-before-ship** — explicitly *not* the speculative "just-in-time productivity pull," which was cut for want of evidence.
+- **Mid-session provenance re-grounding** — on a context shift (compaction, repo/worktree crossing), re-surface scoped canon *through the existing provenance gate* so out-of-scope memory is dropped and in-scope canon refreshed mid-session, not only at SessionStart. Framed as **harm-avoidance** (the same cross-contamination mechanism the scope router addresses) and **measure-before-ship** — explicitly *not* the speculative "just-in-time productivity pull," which was cut for want of evidence. (A conflict-fixture test design now exists — see the cross-vehicle adherence benchmark under Shipped — so "measure-before-ship" has an instrument.)
 - **Event-log surface** — expose existing `/api/events` cleanly; webhook sidecar later, never outbound HTTP in core
 - **Plugin-registration hooks in core** — the seam future policy packs and connectors slot into
 - **`/reflect` command** — on-demand targeted dream; distil a specific topic now, not on the next cron cycle
@@ -147,7 +148,8 @@ Frozen with the unattended-promotion machinery above (opt-in only):
 
 Near-zero coupling to core. Can ship any time.
 
-- ✅ **README "Why use mori?" section** (shipped) — inverted to lead with the gate + the benchmark table (incl. the auto-extraction≈CLAUDE.md row); the dream pipeline demoted to the proposal half
+- ✅ **README "Why use mori?" section** (shipped) — inverted to lead with the gate + the benchmark table (incl. the auto-extraction≈CLAUDE.md row); the dream pipeline demoted to the proposal half. Second pass added the **"What you get" on-ramp**.
+- ✅ **Medium: "Everyone says memory makes AI coding agents smarter — nobody's showing the receipts"** (shipped 2026-06-21) — positioning piece built on the cross-vehicle benchmark + the curation null; argues "a note for the small stuff, a hard stop for the dangerous stuff." [link](https://medium.com/@fjwood/everyone-says-memory-makes-ai-coding-agents-smarter-07e9820b7d4e)
 - **`docs/concepts/claude-md-vs-mori.md`** — the unconditional floor vs the governed layer above it; CLAUDE.md and Mori are complementary, not competing (canon *compounding* is a stated design thesis, not asserted)
 - **Demo video** — cheap, high-leverage; unblocks Product Hunt, HN Show HN, enterprise eval cycles. Still not shipped.
 - **Public roadmap page** — `moriapp.dev/roadmap` with feedback form; buried markdown helps nobody
