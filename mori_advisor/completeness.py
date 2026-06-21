@@ -78,3 +78,34 @@ def validate_anatomy(candidate):
             return {"valid": False, "layer": "anatomy", "reason": code, "severity": _SEVERITY[code]}
 
     return {"valid": True, "layer": "anatomy", "reason": "ok", "severity": "ok"}
+
+
+def audit_completeness(body, description, *, seam, name="", log=None):
+    """AUDIT-mode wrapper around :func:`validate_anatomy` for the ``store.write`` chokepoint.
+
+    The completeness gate had no call site (built + tested 2026-06-12, never wired): the
+    dreamer's own ``_write_memory`` and the direct MCP write both reach ``store.write`` with
+    ``_skip_protection=True``, so anatomy was never enforced on the bulk of canon. This puts a
+    single check at the one door every writer passes through — but in **audit mode only**: it
+    emits a structured ``COMPLETENESS-AUDIT`` log line for non-conforming writes and **never
+    blocks**. The block/withhold disposition is a later, deliberate flip once the audit window
+    quantifies how much existing canon would fail (see RESUME-completeness-chokepoint).
+
+    Field mapping mirrors the dreamer's call: ``body`` is the memory body; ``description`` is the
+    warrant (the dreamer passes ``description=mem.get("reason")``). ``memory_type`` is intentionally
+    NOT derived from the store's ``type`` taxonomy (project/decision/pattern/profile) — that is a
+    different axis from the directive flag the conditional rule keys on — so only the universal
+    rules (empty-body / empty-warrant) fire here. This degrades safely until the dreamer self-tags.
+
+    Returns the :func:`validate_anatomy` verdict dict (callers in audit mode ignore it).
+    """
+    verdict = validate_anatomy({"body": body, "reason": description})
+    if not verdict["valid"] and log is not None:
+        log.warning(
+            "COMPLETENESS-AUDIT seam=%s name=%s reason=%s severity=%s",
+            seam,
+            name or "?",
+            verdict["reason"],
+            verdict["severity"],
+        )
+    return verdict

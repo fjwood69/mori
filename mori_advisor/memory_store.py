@@ -696,6 +696,15 @@ class MemoryStore:
             tags_list = tags or []
             tags_json = self._format_tags(tags_list)
 
+            # Completeness chokepoint (AUDIT mode — logs, never blocks). Every writer
+            # (dreamer _write_memory, direct MCP write, governed promotion) passes through
+            # here; this is the single anatomy check the gate was missing a call site for.
+            from mori_advisor.completeness import audit_completeness
+
+            audit_completeness(
+                body, description, seam="store.write:sqlite", name=effective_name, log=logger
+            )
+
             # Check if existing memory exists and is protected
             try:
                 existing_cur = conn.execute(

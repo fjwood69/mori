@@ -1,6 +1,8 @@
 """Tests for the structural completeness check (mori_advisor.completeness.validate_anatomy)."""
 
-from mori_advisor.completeness import validate_anatomy
+import logging
+
+from mori_advisor.completeness import audit_completeness, validate_anatomy
 
 
 def _c(**kw):
@@ -96,3 +98,65 @@ def test_governed_vs_unjustified_mirrors_the_finding():
     )
     unjustified = validate_anatomy(_c(memory_type="directive", reason="register at 250"))
     assert governed["valid"] and not unjustified["valid"]
+
+
+# --- audit_completeness: the AUDIT-mode wrapper used at the store.write chokepoint ---
+
+
+def test_audit_logs_on_invalid_anatomy(caplog):
+    log = logging.getLogger("mori_advisor.test")
+    with caplog.at_level(logging.WARNING, logger="mori_advisor.test"):
+        r = audit_completeness("a body", "", seam="store.write:test", name="bad-mem", log=log)
+    assert not r["valid"] and r["reason"] == "empty-warrant"
+    assert "COMPLETENESS-AUDIT" in caplog.text
+    assert "seam=store.write:test" in caplog.text and "name=bad-mem" in caplog.text
+
+
+def test_audit_silent_on_valid_anatomy(caplog):
+    log = logging.getLogger("mori_advisor.test")
+    with caplog.at_level(logging.WARNING, logger="mori_advisor.test"):
+        r = audit_completeness(
+            "a body", "a perfectly good warrant", seam="store.write:test", name="ok-mem", log=log
+        )
+    assert r["valid"]
+    assert "COMPLETENESS-AUDIT" not in caplog.text
+
+
+def test_audit_never_raises_without_logger():
+    # no logger passed → still returns a verdict, never blocks/raises (audit is non-fatal)
+    r = audit_completeness("", "", seam="store.write:test")
+    assert not r["valid"] and r["reason"] == "empty-body"
+
+
+# --- the chokepoint contract: MemoryStore.write invokes the audit, but NEVER blocks ---
+
+
+def test_sqlite_write_invokes_audit_and_does_not_block(tmp_path, monkeypatch):
+    from mori_advisor.memory_store import MemoryStore
+    from mori_advisor.store.migrations import MIGRATIONS, apply_sqlite
+
+    db = tmp_path / "memories.db"
+    MemoryStore.bootstrap_schema(db)
+    apply_sqlite(db, tuple(mig for mig in MIGRATIONS if mig.target == "memories"))
+    st = MemoryStore(db)
+
+    calls = []
+    import mori_advisor.completeness as comp
+
+    real = comp.validate_anatomy
+
+    def _spy(candidate):
+        calls.append(candidate)
+        return real(candidate)
+
+    monkeypatch.setattr(comp, "validate_anatomy", _spy)
+
+    # a warrantless write (description empty) — would FAIL anatomy, but audit mode must not block it
+    result = st.write(
+        name="ungated-mem", title="t", body="a body with no warrant", type="project", tier="working"
+    )
+    assert "written" in result.lower()  # write succeeded — audit did not block
+    assert calls, "store.write must invoke validate_anatomy (the chokepoint contract)"
+    assert calls[0]["body"] == "a body with no warrant"
+    # and the row is really there
+    assert "a body with no warrant" in st.read("ungated-mem")

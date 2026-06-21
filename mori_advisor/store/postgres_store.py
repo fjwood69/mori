@@ -393,6 +393,12 @@ class PostgresStore(BaseStore):
 
             name = f"memory-{int(time.time())}"
 
+        # Completeness chokepoint (AUDIT mode — logs, never blocks). Mirrors the SQLite
+        # seam in memory_store.write so both backends enforce one anatomy contract.
+        from mori_advisor.completeness import audit_completeness
+
+        audit_completeness(body, description, seam="store.write:postgres", name=name, log=logger)
+
         tags_v = _tags_json(tags)
         sess_ids = _tags_json(origin_session_ids)
         clients = _tags_json(origin_clients or ([client] if client else []))

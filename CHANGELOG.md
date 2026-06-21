@@ -1,5 +1,43 @@
 # Changelog
 
+## v2.2.25 — completeness gate wired at the `store.write` chokepoint (audit-mode)
+
+**The candid bit first:** mori shipped a completeness/anatomy check (`validate_anatomy`, built + 10
+green tests on 2026-06-12) that **never had a call site.** GitNexus confirmed it: 0 callers, 0 of 191
+execution flows. So canon had **no single admission chokepoint** — the governed intake lane enforced
+GOV-002, but the dreamer's own `_write_memory` and the direct MCP write both reach `store.write` with
+`_skip_protection=True` and bypassed anatomy entirely. The gate that was supposed to be the product had
+a hole in it. We're fixing it in the open rather than quietly, because "the gate is the moat" only
+survives a hole in your own gate if you log it loudly.
+
+**feat: one anatomy check at the one door every writer passes through — in AUDIT mode.**
+
+- **`completeness.audit_completeness(body, description, *, seam, name, log)`** — thin AUDIT-mode wrapper
+  over `validate_anatomy`. Emits a structured `COMPLETENESS-AUDIT seam=… name=… reason=… severity=…`
+  WARNING for non-conforming writes and **never blocks.** Field mapping mirrors the dreamer's call
+  (`description` carries the warrant); `memory_type` is deliberately not derived from the store `type`
+  taxonomy, so only the universal rules (empty-body / empty-warrant) fire — degrades safely until the
+  dreamer self-tags directives.
+- **Wired at both chokepoints** — `MemoryStore.write` (SQLite, the seam `SQLiteStore` delegates to) and
+  `PostgresStore.write` (the live prod path). One seam per backend; the next new writer inherits the
+  check for free instead of re-baking per-caller drift.
+- **Quantified the existing exposure** (`scripts/audit_canon_anatomy.py`, read-only): on live canon,
+  **151/2772 (5.4%) would fail anatomy** if the gate ever enforced — *all* `empty-warrant`, 150 of them
+  in the `working` tier; the `canonical` tier is essentially clean (1/470). The failures are dominated by
+  machine-generated `consult-*`/`commit-*` rows. This is *why* audit-first, not enforce-now: the measure
+  comes before the lever.
+- **Contract test** — `test_sqlite_write_invokes_audit_and_does_not_block` asserts `store.write` invokes
+  the anatomy check (the chokepoint contract that stops the next writer drifting) **and** that a
+  warrantless write still succeeds (audit ≠ block). Plus direct `audit_completeness` log/silence tests.
+- **UAT green both backends** — deployment contract PASS on 8970+8972; `dream_run` PG write path wrote 4
+  memories; `COMPLETENESS-AUDIT` lines fired on the warrantless deployment probes on *both* seams while
+  those writes still committed. Audit-mode contract proven on a real server boot.
+- **Not touched:** `MORI_INTAKE_PROMOTION_ENABLED` (correctly OFF — it governs agent-intake auto-promotion,
+  an unrelated axis; flipping it would *reduce* governance). The completeness fix is a call site, not a flag.
+
+**Next (deliberately a separate change):** flip a configurable subset (start: `empty-body` →
+withhold) from audit to enforce, once the audit window confirms the 5.4% doesn't hide a false-positive class.
+
 ## v2.2.24 — H2 scope router (`filter_by_scope`) + NATS replay default
 
 **feat: the generic provenance scope filter goes live on `/brief`.** H2 replaces the special-cased
