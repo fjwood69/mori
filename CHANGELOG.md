@@ -26,6 +26,12 @@ survives a hole in your own gate if you log it loudly.
   in the `working` tier; the `canonical` tier is essentially clean (1/470). The failures are dominated by
   machine-generated `consult-*`/`commit-*` rows. This is *why* audit-first, not enforce-now: the measure
   comes before the lever.
+- **The honest good news inside the bug:** the leak was real but it **pooled in the low-stakes layer.**
+  150 of the 151 warrantless writes are *working*-tier machine churn; the *canonical* tier — the memories a
+  human actually promoted, the ones that compound — is **1/470 clean.** The promoted canon was effectively
+  gated by the human promotion step all along; the un-wired chokepoint only let working-tier churn through,
+  the tier where it matters least. So "the gate is the product" survives intact: this is a footnote (an
+  unreviewed trusted-writer path in the churn layer), not a crisis (load-bearing canon entering unchecked).
 - **Contract test** — `test_sqlite_write_invokes_audit_and_does_not_block` asserts `store.write` invokes
   the anatomy check (the chokepoint contract that stops the next writer drifting) **and** that a
   warrantless write still succeeds (audit ≠ block). Plus direct `audit_completeness` log/silence tests.
