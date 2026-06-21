@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mori-advisor"
-version = "2.2.24"
+version = "2.2.25"
 description = "Shared memory layer for AI coding agents — self-hosted"
 requires-python = ">=3.12"
 license = {text = "AGPL-3.0-only"}
