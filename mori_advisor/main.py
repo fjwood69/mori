@@ -43,6 +43,7 @@ from mori_advisor.metrics import (
     record_brief_injection,
 )
 from mori_advisor.policy import PermissionDenied, current_actor, require_role
+from mori_advisor.provenance import INIT, Provenance, request_provenance
 from mori_advisor.store import get_store as _get_store
 from mori_advisor.store.async_store import AsyncStore
 from mori_advisor.throttle import (
@@ -1094,6 +1095,9 @@ async def _capture_consult(
                 tier="working",
                 tags=tags,
                 origin_clients=[client],
+                provenance=Provenance(
+                    actor="system", source="main.py:_capture_consult", op="consult_capture"
+                ),
             )
         )
         logger.debug("consult captured: %s", name)
@@ -1223,6 +1227,7 @@ async def import_standards(standards_dir: str | None = None) -> str:
                     body=body.strip(),
                     tags=tags,
                     client="init",
+                    provenance=INIT,
                     _skip_protection=True,
                 )
             )
@@ -1234,8 +1239,8 @@ async def import_standards(standards_dir: str | None = None) -> str:
     msg = f"Imported {imported} standards from {src}"
     if errors:
         msg += f" ({errors} errors)"
-    if imported:
-        await _write_audit("import", "init", "standards-batch", msg, detail=str(src_path))
+    # Per-file writes are now audited at the store.write chokepoint (actor=init, op=import);
+    # the batch summary audit is redundant and removed (identity-aware chokepoint, B+C).
     return msg
 
 
@@ -2027,9 +2032,10 @@ async def memory_write(
             origin_session_id=origin_session_id,
             origin_session_ids=origin_session_ids,
             origin_clients=origin_clients,
+            provenance=request_provenance("mcp", actor_name, "main.py:memory_write"),
         )
     )
-    await _write_audit("mcp_write", actor_name, name or title or "", body)
+    # Audited universally at the store.write chokepoint (actor_detail=actor_name, op=write).
     return result
 
 
@@ -3239,6 +3245,12 @@ async def ingest_git(request: Request) -> JSONResponse:
                 tier="working",
                 tags=["commit", f"project:{repo}", f"pusher:{pusher}"],
                 origin_clients=[pusher],
+                provenance=Provenance(
+                    actor="system",
+                    actor_detail=pusher,
+                    source="main.py:git_ingest",
+                    op="git_commit",
+                ),
             )
         )
         await _a(
@@ -3432,9 +3444,12 @@ async def post_memory(request: Request) -> JSONResponse:
                         tags=tags,
                         origin_clients=origin_clients,
                         client=actor_name,
+                        provenance=request_provenance(
+                            "rest", actor_name, "main.py:rest_write", op="propose_new"
+                        ),
                     )
                 )
-                await _write_audit("propose_new", actor_name, name, body)
+                # Audited at the store.write chokepoint (op=propose_new, actor_detail=actor_name).
                 return JSONResponse(
                     {"status": "created", "name": name, "detail": result},
                     status_code=201,
@@ -3481,9 +3496,12 @@ async def post_memory(request: Request) -> JSONResponse:
                         tags=tags,
                         origin_clients=origin_clients,
                         client=actor_name,
+                        provenance=request_provenance(
+                            "rest", actor_name, "main.py:rest_write", op="update_working"
+                        ),
                     )
                 )
-                await _write_audit("update_working", actor_name, name, body)
+                # Audited at the store.write chokepoint (op=update_working, actor_detail=actor_name).
                 return JSONResponse(
                     {"status": "updated", "name": name, "detail": result},
                     status_code=200,

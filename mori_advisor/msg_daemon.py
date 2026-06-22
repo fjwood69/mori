@@ -26,6 +26,8 @@ from nats.errors import TimeoutError as JsTimeout
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 from nats.js.errors import NotFoundError
 
+from mori_advisor.provenance import Provenance
+
 from .memory_store import MemoryStore
 from .msg import (
     STREAM_NAME,
@@ -104,6 +106,9 @@ async def _dispatch(
             tier="working",
             client=m.from_agent,
             origin_clients=[m.from_agent],
+            provenance=Provenance(
+                actor="msg", actor_detail=m.from_agent, source="msg_daemon", op="write"
+            ),
         )
         logger.info("Decision from %s written to memory_store", m.from_agent)
 

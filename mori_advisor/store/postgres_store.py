@@ -493,8 +493,8 @@ class PostgresStore(BaseStore):
                     "INSERT INTO write_audit "
                     "(actor_key_name, op, memory_name, content_hash, detail) "
                     "VALUES ($1, $2, $3, $4, $5)",
-                    provenance.actor,
-                    "write",
+                    provenance.ledger_actor,
+                    provenance.op,
                     name,
                     content_hash(body),
                     provenance.source,
@@ -944,6 +944,7 @@ class PostgresStore(BaseStore):
                 tier=meta.get("tier", "working"),
                 tags=meta.get("tags", []),
                 body=body,
+                provenance=Provenance(actor="import", source="store:import_memories", op="import"),
             )
             imported += 1
         return f"Imported {imported} memories from {source_dir}"
@@ -1567,6 +1568,9 @@ class PostgresStore(BaseStore):
                     tier=row.get("tier", "working"),
                     body=row["body"],
                     tags=json.loads(row["tags"] or "[]"),
+                    provenance=Provenance(
+                        actor="governed-promotion", source="store:approve", op="approve"
+                    ),
                     _skip_protection=True,
                     _conn=conn,
                 )

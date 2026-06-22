@@ -39,6 +39,7 @@ from mori_advisor.parsers.exceptions import (
 )
 from mori_advisor.parsers.text_parser import parse_directory as parse_text_directory
 from mori_advisor.prompt_loader import OUTPUT_REMINDER, load_prompt
+from mori_advisor.provenance import Provenance
 from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
 
 logger = logging.getLogger(__name__)
@@ -878,6 +879,9 @@ class IngestionPipeline:
                         tier=effective_tier,
                         body=mem.get("body", ""),
                         tags=mem_tags,
+                        provenance=Provenance(
+                            actor="ingestion", source="ingestion.py:ingest", op="ingest"
+                        ),
                     )
                 )
 

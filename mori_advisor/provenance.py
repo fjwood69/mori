@@ -68,16 +68,34 @@ ACTOR_TIER_CAPS: dict[str, frozenset[str]] = {
 
 @dataclass(frozen=True)
 class Provenance:
-    """Identity + origin of a single write, threaded to ``store.write``.
+    """Identity + origin + disposition of a single write, threaded to ``store.write``.
 
-    actor:      a KNOWN_ACTORS key (validated at the chokepoint).
-    source:     stable ``module:function`` origin (no prose / PII — it lands in the audit log).
-    request_id: optional idempotency / correlation id (request-bound writes).
+    Two axes, board-ratified (B + C, 2026-06-22):
+      actor:        the CLASS (a KNOWN_ACTORS key) — drives capability / tier authorization
+                    (Phase 2). A small, stable table; the audit never keys on it.
+      actor_detail: the SPECIFIC principal for the audit ledger (WHO — e.g. ``nuc15pro``,
+                    ``hermes``, a device/session key). REQUIRED for machine-scoped actors
+                    (``mcp``/``rest``/``import``/device-bound); MAY be "" for singleton writers
+                    (``dreamer``/``governed-promotion``/``init``) — the ledger then falls back to
+                    ``actor`` so queries stay uniform without inventing fake specificity (GP).
+      source:       stable ``module:function`` origin (no prose / PII — it lands in the log).
+      op:           caller DISPOSITION recorded verbatim in the ledger ``op`` column
+                    (``write`` | ``propose_new`` | ``propose_pending`` | ``update_working`` |
+                    ``import`` | …). The store records it; it does NOT interpret it — the caller
+                    supplies the semantic, the one door logs it universally (no second home).
+      request_id:   optional idempotency / correlation id.
     """
 
     actor: str
+    actor_detail: str = ""
     source: str = ""
+    op: str = "write"
     request_id: str | None = None
+
+    @property
+    def ledger_actor(self) -> str:
+        """Principal recorded in the audit ledger — the specific key if known, else the class."""
+        return self.actor_detail or self.actor
 
     def is_known(self) -> bool:
         return self.actor in KNOWN_ACTORS
@@ -87,23 +105,30 @@ class Provenance:
         return tier in ACTOR_TIER_CAPS.get(self.actor, frozenset())
 
 
-# Convenience constants for the common internal (non-request) writers.
+# Convenience constants for the common internal singleton writers (actor_detail falls back
+# to actor in the ledger — GP's "may equal actor for singletons" invariant).
 DREAMER = Provenance(actor="dreamer", source="dream.py:_write_memory")
 GOVERNED_PROMOTION = Provenance(actor="governed-promotion", source="canon_writer")
-INIT = Provenance(actor="init", source="bootstrap")
+INIT = Provenance(actor="init", source="import_standards", op="import")
 SYSTEM = Provenance(actor="system", source="internal")
 LEGACY = Provenance(actor="legacy", source="unmigrated-caller")
 
 
-def from_actor_name(
-    actor_name: str | None, source: str, request_id: str | None = None
+def request_provenance(
+    actor_class: str,
+    actor_name: str | None,
+    source: str,
+    op: str = "write",
+    request_id: str | None = None,
 ) -> Provenance:
-    """Build a Provenance at the request boundary from a resolved actor key name.
+    """Build a Provenance at the request boundary (MCP / REST handler).
 
-    ``actor_name`` is the policy actor's ``key_name`` (or None for an unauthenticated /
-    stdio call). Unknown / None names map to ``mcp`` by default for request writes — they
-    are still audited; tier authorization (Phase 2) is what gates canonical, not this.
+    actor_class: the capability CLASS — ``mcp`` for MCP tools, ``rest`` for REST endpoints.
+    actor_name:  the resolved specific key (``current_actor.key_name``) for the ledger (WHO).
+    op:          the caller's disposition (``write``/``propose_new``/``update_working``/…).
     """
-    name = (actor_name or "").strip().lower()
-    actor = name if name in KNOWN_ACTORS else "mcp"
-    return Provenance(actor=actor, source=source, request_id=request_id)
+    cls = actor_class if actor_class in KNOWN_ACTORS else "mcp"
+    name = (actor_name or "").strip()
+    return Provenance(
+        actor=cls, actor_detail=name or cls, source=source, op=op, request_id=request_id
+    )

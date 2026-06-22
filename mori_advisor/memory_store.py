@@ -839,8 +839,8 @@ class MemoryStore:
                         "(actor_key_name, op, memory_name, content_hash, detail) "
                         "VALUES (?, ?, ?, ?, ?)",
                         (
-                            provenance.actor,
-                            "write",
+                            provenance.ledger_actor,
+                            provenance.op,
                             effective_name,
                             content_hash(body),
                             provenance.source,
@@ -1898,7 +1898,12 @@ class MemoryStore:
                 if not parsed:
                     errors += 1
                     continue
-                result = self.write(**parsed)
+                result = self.write(
+                    **parsed,
+                    provenance=Provenance(
+                        actor="import", source="store:import_memories", op="import"
+                    ),
+                )
                 if "written" in result:
                     imported += 1
                 else:
@@ -2294,6 +2299,9 @@ class MemoryStore:
                 origin_session_ids=pw["origin_session_ids"],
                 origin_clients=pw["origin_clients"],
                 client=reviewer or "trusted-dreamer",
+                provenance=Provenance(
+                    actor="governed-promotion", source="store:approve", op="approve"
+                ),
                 _conn=conn,
             )
 
