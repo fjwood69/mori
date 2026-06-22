@@ -1,5 +1,39 @@
 # Changelog
 
+## v2.2.26 — serving robustness: off-loop LLM calls + infra housekeeping
+
+**fix(serving): the dream/MCP "pear-shaped" bug — a synchronous LLM call froze the whole server.**
+`bifrost.consult()` is the *synchronous* OpenAI client; `consult_advisor` and the dream's
+contradiction scan called it directly inside async handlers, freezing the single-worker uvicorn
+event loop for the entire 30–90s generation. mori-advisor went unavailable to *every* session (one
+shared loop) and the MCP connection dropped — reproducible by triggering an in-server `dream_run`
++ a `/consult` concurrently.
+
+- **`consult_advisor`** now runs the blocking call on a **dedicated `llm_executor`** (lifespan-managed)
+  + an `asyncio.Semaphore(6)` (backpressure) + a `wait_for` timeout backstop. The **default executor
+  is left untouched** so short `to_thread` tasks aren't starved by long LLM calls — a global default-pool
+  bump would only trade loop-freeze for thread-pool exhaustion (caught in `/consult` review).
+- **`run_contradiction_scan`** offloads its `consult_fn` calls via `asyncio.to_thread`.
+- **`smoke_test`** wraps the blocking `urllib.urlopen()` ingestion probe in `to_thread`.
+- The dream's main distill was already offloaded; this closes the remaining serving-loop blockers.
+- **A/B validated on a real UAT server:** broken — a deep `/consult` froze `/health` for 85s (15s
+  timeouts ×5); fixed — `/consult` *during* a `/dream` held `/health` at ≤9 ms across 200+ samples,
+  both completed. Regression test `test_consult_nonblocking`.
+
+**fix(infra): wire the orphan-scan lifecycle (built-but-not-running) + close write-audit gaps.**
+- **Orphan scan** — `_orphan_scan_loop()` added to the lifespan: `scan_orphans(days=30, dry_run=True)`
+  on a cadence (`MORI_ORPHAN_SCAN_INTERVAL_SEC`, default daily; `MORI_ORPHAN_SCAN_DRY_RUN=false` to
+  enable eviction-queue writes). The documented working-tier lifecycle now actually runs.
+- **Postgres bugfix** — `scan_orphans` had `INTERVAL '$1 days'` with the `$1` *inside* a string literal
+  (zero params reached the server); replaced with a Python-computed `now() - timedelta(days=days)` cutoff.
+  The scan never functioned on Postgres before.
+- **Write audit** — the `memory_write` MCP tool and `import_standards` wrote to canon with no
+  `_write_audit`; both now emit an audit record (MCP write tagged with the calling actor).
+
+Validation: full suite **596 passed**; ruff clean; UAT green both backends (combined lifespan boots
+clean, the loop-fix A/B holds, `scan_orphans` lists stale rows). Infra housekeeping co-authored with
+Claude Sonnet 4.6.
+
 ## v2.2.25 — completeness gate wired at the `store.write` chokepoint (audit-mode)
 
 **The candid bit first:** mori shipped a completeness/anatomy check (`validate_anatomy`, built + 10

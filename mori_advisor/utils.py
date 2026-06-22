@@ -7,6 +7,7 @@ Functions that are shared between the dream pipeline and ingestion pipeline:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -141,7 +142,8 @@ async def run_contradiction_scan(
                             existing_title=cand_title,
                             existing_body=cand_body[:2000],
                         )
-                        response = consult_fn(
+                        response = await asyncio.to_thread(
+                            consult_fn,
                             system=prompt,
                             user=f"new: {name}\nexisting: {cand_name}",
                             vk="fast",
@@ -230,7 +232,8 @@ async def run_contradiction_scan(
                         existing_title=cand_title,
                         existing_body=cand_body[:2000],
                     )
-                    response = consult_fn(
+                    response = await asyncio.to_thread(
+                        consult_fn,
                         system=prompt,
                         user=f"new: {name}\nexisting: {cand_name}",
                         vk="fast",
