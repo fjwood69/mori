@@ -65,6 +65,7 @@ class BaseStore(ABC):
         origin_session_ids=None,
         origin_clients=None,
         client=None,
+        provenance=None,
         _skip_protection=False,
         _conn=None,
     ) -> str: ...

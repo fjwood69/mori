@@ -21,6 +21,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from mori_advisor.provenance import LEGACY, Provenance, content_hash
+
 logger = logging.getLogger(__name__)
 
 # ── Freshness cache ───────────────────────────────────────────────────────
@@ -661,6 +663,7 @@ class MemoryStore:
         origin_session_ids: list[str] | None = None,
         origin_clients: list[str] | None = None,
         client: str | None = None,
+        provenance: Provenance = LEGACY,
         _skip_protection: bool = False,
         _conn: sqlite3.Connection | None = None,
     ) -> str:
@@ -822,6 +825,30 @@ class MemoryStore:
                         protected_domains_val,
                     ),
                 )
+                # Universal, in-transaction audit (identity-aware chokepoint, Phase 1).
+                # Every write through this door is logged with its provenance — the dreamer
+                # included. Same conn = atomic with the write (no write without its audit row).
+                if provenance.actor == "legacy":
+                    logger.warning(
+                        "WRITE-AUDIT actor=legacy (unmigrated caller) name=%s — thread Provenance",
+                        effective_name,
+                    )
+                try:
+                    conn.execute(
+                        "INSERT INTO write_audit "
+                        "(actor_key_name, op, memory_name, content_hash, detail) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (
+                            provenance.actor,
+                            "write",
+                            effective_name,
+                            content_hash(body),
+                            provenance.source,
+                        ),
+                    )
+                except sqlite3.OperationalError as ae:
+                    if "no such table" not in str(ae).lower():
+                        raise  # pre-migration schema (tests) → skip; real errors propagate
                 if close_conn:
                     conn.commit()
                 return f"Memory '{effective_name}' written."

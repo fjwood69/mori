@@ -30,6 +30,7 @@ from mori_advisor.memory_store import (
     _freshness_cache,
     _freshness_cache_lock,
 )
+from mori_advisor.provenance import LEGACY, Provenance, content_hash
 
 from .base import BaseStore
 
@@ -380,6 +381,7 @@ class PostgresStore(BaseStore):
         origin_session_ids=None,
         origin_clients=None,
         client=None,
+        provenance: Provenance = LEGACY,
         _skip_protection=False,
         _conn=None,
     ) -> str:
@@ -479,6 +481,27 @@ class PostgresStore(BaseStore):
                 protect_domains_raw,
                 now,
             )
+            # Universal, in-transaction audit (identity-aware chokepoint, Phase 1):
+            # same conn as the upsert = atomic; covers every writer incl. the dreamer.
+            if provenance.actor == "legacy":
+                logger.warning(
+                    "WRITE-AUDIT actor=legacy (unmigrated caller) name=%s — thread Provenance",
+                    name,
+                )
+            try:
+                await conn.execute(
+                    "INSERT INTO write_audit "
+                    "(actor_key_name, op, memory_name, content_hash, detail) "
+                    "VALUES ($1, $2, $3, $4, $5)",
+                    provenance.actor,
+                    "write",
+                    name,
+                    content_hash(body),
+                    provenance.source,
+                )
+            except Exception as ae:  # pre-migration test DB may lack write_audit
+                if "does not exist" not in str(ae).lower():
+                    raise
             return f"Memory '{name}' written"
 
         if _conn:

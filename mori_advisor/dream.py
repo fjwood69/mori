@@ -21,6 +21,7 @@ from pathlib import Path
 
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.prompt_loader import OUTPUT_REMINDER, load_prompt
+from mori_advisor.provenance import DREAMER
 from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
 
 logger = logging.getLogger(__name__)
@@ -570,6 +571,7 @@ class DreamPipeline:
                 tags=tags,
                 origin_session_ids=batch_session_ids,
                 origin_clients=batch_clients,
+                provenance=DREAMER,
                 _skip_protection=True,
                 _conn=_conn,
             )
