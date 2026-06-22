@@ -42,7 +42,7 @@ from mori_advisor.metrics import (
     pending_writes_gauge,
     record_brief_injection,
 )
-from mori_advisor.policy import PermissionDenied, require_role
+from mori_advisor.policy import PermissionDenied, current_actor, require_role
 from mori_advisor.store import get_store as _get_store
 from mori_advisor.throttle import (
     IdempotencyState,
@@ -392,6 +392,25 @@ async def _throttle_cleanup_loop():
             logger.debug("throttle cleanup failed: %s", exc)
 
 
+async def _orphan_scan_loop():
+    """Periodically scan for stale working-tier memories and surface them for human review.
+
+    Runs dry_run=True (flag only, no eviction queue writes) by default — the eviction
+    queue is human-reviewed, so silently enqueueing rows on every scan would be
+    surprising.  Set MORI_ORPHAN_SCAN_DRY_RUN=false to enable queue writes.
+    Interval controlled by MORI_ORPHAN_SCAN_INTERVAL_SEC (default: daily).
+    """
+    interval = int(os.environ.get("MORI_ORPHAN_SCAN_INTERVAL_SEC", "86400"))
+    dry_run = os.environ.get("MORI_ORPHAN_SCAN_DRY_RUN", "true").lower() != "false"
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            result = await _a(memory_store.scan_orphans(days=30, dry_run=dry_run))
+            logger.info("orphan scan (dry_run=%s): %s", dry_run, result)
+        except Exception as exc:  # never let scan failure crash the loop
+            logger.warning("orphan scan failed: %s", exc)
+
+
 # ── Off-loop LLM execution ────────────────────────────────────────────────
 # bifrost.consult() is the SYNCHRONOUS OpenAI client. Calling it directly in an
 # async handler freezes the single-worker event loop for the whole 30-90s
@@ -437,10 +456,12 @@ async def _lifespan(server):
             Path.cwd(),
         )
     cleanup_task = asyncio.create_task(_throttle_cleanup_loop())
+    orphan_task = asyncio.create_task(_orphan_scan_loop())
     try:
         yield
     finally:
         cleanup_task.cancel()
+        orphan_task.cancel()
         if _llm_executor is not None:
             _llm_executor.shutdown(wait=False)
 
@@ -1204,6 +1225,8 @@ async def import_standards(standards_dir: str | None = None) -> str:
     msg = f"Imported {imported} standards from {src}"
     if errors:
         msg += f" ({errors} errors)"
+    if imported:
+        await _write_audit("import", "init", "standards-batch", msg, detail=str(src_path))
     return msg
 
 
@@ -1981,7 +2004,9 @@ async def memory_write(
         require_role("write")
     except PermissionDenied as exc:
         return str(exc)
-    return await _a(
+    actor = current_actor.get()
+    actor_name = actor.key_name if actor else "mcp"
+    result = await _a(
         memory_store.write(
             name=name,
             title=title,
@@ -1995,6 +2020,8 @@ async def memory_write(
             origin_clients=origin_clients,
         )
     )
+    await _write_audit("mcp_write", actor_name, name or title or "", body)
+    return result
 
 
 @mcp.tool()
@@ -2997,7 +3024,7 @@ async def smoke_test(request: Request) -> JSONResponse:
 
     # 7. Ingestion pod — degraded only
     try:
-        _urllib.urlopen("http://localhost:8969/health", timeout=3)
+        await asyncio.to_thread(_urllib.urlopen, "http://localhost:8969/health", None, 3)
         checks["ingestion"] = {"status": "ok"}
     except Exception as e:
         checks["ingestion"] = {"status": "failed", "error": str(e)}

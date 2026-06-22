@@ -18,7 +18,7 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1741,12 +1741,13 @@ class PostgresStore(BaseStore):
 
     async def scan_orphans(self, days: int = 30, dry_run: bool = True) -> str:
         self._ensure_pool()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT name, title, last_retrieved_at FROM memories "
                 "WHERE tier = 'working' AND protected = FALSE AND deleted_at IS NULL "
-                "AND (last_retrieved_at IS NULL OR last_retrieved_at < NOW() - INTERVAL '$1 days')",
-                days,
+                "AND (last_retrieved_at IS NULL OR last_retrieved_at < $1)",
+                cutoff,
             )
         if not rows:
             return f"No orphan memories older than {days} days."
