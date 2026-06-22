@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import inspect
 import json
@@ -17,6 +18,7 @@ import logging
 import os
 import re
 import socket
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -390,9 +392,34 @@ async def _throttle_cleanup_loop():
             logger.debug("throttle cleanup failed: %s", exc)
 
 
+# ── Off-loop LLM execution ────────────────────────────────────────────────
+# bifrost.consult() is the SYNCHRONOUS OpenAI client. Calling it directly in an
+# async handler freezes the single-worker event loop for the whole 30-90s
+# generation, taking the WHOLE server down (every session) → MCP connections drop.
+# Run blocking consults off the loop, on a DEDICATED pool (so a slow /consult can't
+# starve short to_thread tasks on the default pool), bounded by a semaphore
+# (backpressure) and a timeout backstop. The default executor is left untouched.
+_llm_executor: ThreadPoolExecutor | None = None
+_llm_sem = asyncio.Semaphore(6)
+
+
+async def _run_llm(fn, **kwargs):
+    """Run a blocking bifrost call off the event loop, bounded by a semaphore and a
+    timeout backstop. Falls back to the default executor if the lifespan never ran
+    (e.g. in unit tests)."""
+    loop = asyncio.get_running_loop()
+    async with _llm_sem:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_llm_executor, functools.partial(fn, **kwargs)),
+            timeout=330,
+        )
+
+
 @asynccontextmanager
 async def _lifespan(server):
     """Bootstrap the store on startup (async-safe for both SQLite and Postgres)."""
+    global _llm_executor
+    _llm_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mori-llm")
     result = store.bootstrap()
     if inspect.isawaitable(result):
         await result
@@ -414,6 +441,8 @@ async def _lifespan(server):
         yield
     finally:
         cleanup_task.cancel()
+        if _llm_executor is not None:
+            _llm_executor.shutdown(wait=False)
 
 
 mcp = FastMCP(MCP_SERVER_NAME, lifespan=_lifespan)
@@ -1083,7 +1112,8 @@ async def consult_advisor(
     max_tokens = {"quick": 2048, "balanced": 8192, "deep": 16384}.get(depth, 8192)
 
     try:
-        advice = bifrost.consult(
+        advice = await _run_llm(
+            bifrost.consult,
             system=system,
             user=user_prompt,
             vk="advisor",
