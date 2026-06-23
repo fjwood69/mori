@@ -25,6 +25,8 @@
 | `MORI_TD_MODE` | `host` | Trusted-dreamer mode switch. `host` (default): existing hostname-based trust, no key-role enforcement — existing deployments unchanged. `api`: API key role is the sole authority for write/approve operations. |
 | `MORI_LOCAL_FULL_ACCESS` | `false` | When `true`, a missing actor (e.g. stdio transport without an ASGI request) is treated as having dreamer access. Only set on fully-trusted single-user deployments. |
 | `MORI_TRUSTED_DREAMERS` | — | Comma-separated hostnames for write approval bypass (host mode only) |
+| `MORI_TIER_ENFORCE` | `audit` | Tier-capability enforcement at `store.write`. `audit` (default): log + count would-blocks, never block. `enforce`: reject a write to a tier the actor isn't authorised for (e.g. a direct agent write to `canonical`). `enforce:mcp,rest`: per-actor allow-list. See [Write chokepoint](#write-chokepoint--audit--tieranatomy-enforcement). |
+| `MORI_ANATOMY_ENFORCE` | `audit` | Completeness/anatomy enforcement at `store.write`. `audit` (default): log + count incomplete writes (empty body / missing warrant). `enforce`: route incomplete writes to the pending review queue. Same `audit \| enforce \| enforce:actor` grammar. |
 | `MORI_STANDARDS_DIR` | — | Path to team standards .md directory |
 | `MORI_SKILLS_DIR` | — | Path to slash command skill files (for /update) |
 | `MORI_PROMPTS_DIR` | packaged | Directory of distillation prompt files (`dreamer.txt`, `archivist.txt`). Overrides the packaged defaults — see [Distillation prompts](#distillation-prompts). |
@@ -140,6 +142,54 @@ opt-in that takes effect immediately on restart.
 The write REST API (#14) is implemented and uses the same `require_role` check, so
 "write/approve features require `api` mode" is automatic — they fail closed in `host` mode
 until the operator opts in.
+
+## Write chokepoint — audit + tier/anatomy enforcement
+
+Every write passes one audited authorization chokepoint (`store.write`). Two enforcement controls
+layer on top of the [capability roles](#capability-roles) above — both ship **audit-mode by
+default**, so enabling them is a deliberate, measurable opt-in (a zero-behaviour-change default).
+
+### Universal write audit (always on)
+
+Every write — agent, REST, the dreamer, imports — lands a row in the `write_audit` table in the
+**same transaction** as the write: who (actor class + the specific key), what (`op`), the memory
+name, a content hash, and the source. Nothing reaches memory unaudited. Read it via `GET /api/audit`.
+
+### Tier-capability enforcement — `MORI_TIER_ENFORCE`
+
+Roles (`read`/`write`/`dreamer`) govern *which operations* a key may call. Tier caps govern *which
+tier* an actor may write — a separate axis. The `canonical` tier is reserved for the trusted
+promotion path:
+
+| Actor class | May target |
+|-------------|-----------|
+| `governed-promotion`, `init`, `import`, `system` | `working`, `canonical`, `ephemeral` |
+| `dreamer`, `mcp`, `rest`, `ingestion`, `msg`, `legacy` | `working`, `ephemeral` |
+| (unknown actor) | nothing — fail-closed |
+
+- `MORI_TIER_ENFORCE=audit` (default) — a write to a tier the actor can't target is **logged and
+  counted** (`mori_tier_decisions_total{...,decision="would_block",mode="audit"}`) but still
+  proceeds. Run this for a soak to see what *would* be blocked before flipping.
+- `MORI_TIER_ENFORCE=enforce` — those writes are **rejected** (e.g. a direct MCP/REST write to
+  `canonical` by an agent → the agent must use the governed intake/promotion path instead).
+- `MORI_TIER_ENFORCE=enforce:mcp,rest` — enforce only for the listed actor classes (flip the riskiest
+  paths first). Unrecognised values fail safe to `audit`.
+
+### Anatomy/completeness enforcement — `MORI_ANATOMY_ENFORCE`
+
+A deterministic structural check: a memory needs a non-empty body and a real warrant (the
+description/reason), and a directive needs an anchor (file path / symbol / URL).
+
+- `audit` (default) — incomplete writes are logged + counted
+  (`mori_anatomy_decisions_total{...,mode="audit"}`); the write proceeds.
+- `enforce` — incomplete writes are **downgraded to the pending review queue** instead of saved.
+  Same `enforce:actor` grammar.
+
+### Recommended rollout
+
+Ship `audit` (the default), watch `mori_tier_decisions_total` / `mori_anatomy_decisions_total` for
+≥1 week to learn the real would-block rate per actor, then flip enforcement **per-actor** before
+going global. The metrics are the go/no-go — not a guess.
 
 ## Write REST API (#14)
 
