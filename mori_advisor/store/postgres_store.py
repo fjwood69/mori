@@ -30,7 +30,13 @@ from mori_advisor.memory_store import (
     _freshness_cache,
     _freshness_cache_lock,
 )
-from mori_advisor.provenance import LEGACY, Provenance, content_hash
+from mori_advisor.provenance import (
+    LEGACY,
+    Provenance,
+    authorize_tier,
+    content_hash,
+    validate_provenance,
+)
 from mori_advisor.write_result import Disposition, WriteResult, accepted
 
 from .base import BaseStore
@@ -402,6 +408,18 @@ class PostgresStore(BaseStore):
 
         audit_completeness(body, description, seam="store.write:postgres", name=name, log=logger)
 
+        # Phase 2 authorization pipeline (AUDIT-MODE — observe, never block in this step).
+        # stage 1: validate provenance · stage 2: tier-target authorization (may_target).
+        # Same single policy authority as SQLite; enforcement lands behind MORI_TIER_ENFORCE.
+        validate_provenance(provenance, name, logger)
+        _tier_ok, _tier_reason = authorize_tier(provenance, tier)
+        if not _tier_ok:
+            logger.warning(
+                "TIER-AUDIT would-block name=%s: %s (audit-mode — not enforced)",
+                name,
+                _tier_reason,
+            )
+
         tags_v = _tags_json(tags)
         sess_ids = _tags_json(origin_session_ids)
         clients = _tags_json(origin_clients or ([client] if client else []))
@@ -490,11 +508,7 @@ class PostgresStore(BaseStore):
             )
             # Universal, in-transaction audit (identity-aware chokepoint, Phase 1):
             # same conn as the upsert = atomic; covers every writer incl. the dreamer.
-            if provenance.actor == "legacy":
-                logger.warning(
-                    "WRITE-AUDIT actor=legacy (unmigrated caller) name=%s — thread Provenance",
-                    name,
-                )
+            # (legacy/unknown-actor warnings fire earlier in validate_provenance.)
             try:
                 await conn.execute(
                     "INSERT INTO write_audit "

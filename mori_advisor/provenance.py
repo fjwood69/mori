@@ -132,3 +132,39 @@ def request_provenance(
     return Provenance(
         actor=cls, actor_detail=name or cls, source=source, op=op, request_id=request_id
     )
+
+
+# --- The write-authorization pipeline stages (Phase 2) -----------------------
+# Pure policy, the SINGLE authority both backends consume — SQLite (memory_store)
+# and Postgres (postgres_store) are sinks that call these; the decision lives here.
+
+
+def validate_provenance(provenance: Provenance, name: str, log) -> None:
+    """Stage 1 — provenance validation (audit-only, never blocks).
+
+    Logs unmigrated (``legacy``) and unknown actors so the migration tail stays visible.
+    Sentinel actors are tolerated until every caller threads a real Provenance.
+    """
+    if provenance.actor == "legacy":
+        log.warning(
+            "WRITE-AUDIT actor=legacy (unmigrated caller) name=%s — thread Provenance", name
+        )
+    elif not provenance.is_known():
+        log.warning(
+            "WRITE-AUDIT actor=%r is UNKNOWN (not in KNOWN_ACTORS) name=%s", provenance.actor, name
+        )
+
+
+def authorize_tier(provenance: Provenance, intended_tier: str) -> tuple[bool, str]:
+    """Stage 2 — tier-target authorization. Returns ``(authorized, reason)``.
+
+    The cap is inferred from the *actor* (``may_target``), never trusting a handler-supplied
+    tier blindly (GLM#4) — the #5 fix. Callers in AUDIT-MODE log the reason but do not act;
+    enforcement lands behind ``MORI_TIER_ENFORCE`` (step 3).
+    """
+    if provenance.may_target(intended_tier):
+        return True, ""
+    caps = sorted(ACTOR_TIER_CAPS.get(provenance.actor, frozenset()))
+    return False, (
+        f"actor '{provenance.actor}' may not target tier '{intended_tier}' (caps: {caps})"
+    )

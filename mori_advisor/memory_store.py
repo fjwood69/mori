@@ -21,7 +21,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from mori_advisor.provenance import LEGACY, Provenance, content_hash
+from mori_advisor.provenance import (
+    LEGACY,
+    Provenance,
+    authorize_tier,
+    content_hash,
+    validate_provenance,
+)
 from mori_advisor.write_result import Disposition, WriteResult, accepted
 
 logger = logging.getLogger(__name__)
@@ -651,6 +657,24 @@ class MemoryStore:
 
     # ── CRUD methods ───────────────────────────────────────────────────
 
+    def _validate_provenance(self, provenance: Provenance, name: str) -> None:
+        """Phase 2 pipeline stage 1 — provenance validation (audit-only, never blocks).
+
+        Thin delegate to the single policy authority :func:`provenance.validate_provenance`
+        so SQLite and Postgres share one contract.
+        """
+        validate_provenance(provenance, name, logger)
+
+    def _authorize_tier(self, provenance: Provenance, intended_tier: str) -> tuple[bool, str]:
+        """Phase 2 pipeline stage 2 — tier-target authorization (``may_target``).
+
+        Thin delegate to :func:`provenance.authorize_tier` (the #5 fix; GLM#4 — infer the cap
+        from the actor, don't trust a handler-supplied tier). AUDIT-MODE in this step: the
+        caller LOGS the returned reason but does not act; enforcement lands behind
+        ``MORI_TIER_ENFORCE`` (step 3), shadow-canaried in a savepoint first.
+        """
+        return authorize_tier(provenance, intended_tier)
+
     def _write(
         self,
         name: str | None = None,
@@ -700,6 +724,18 @@ class MemoryStore:
             effective_tier = self._ensure_tier(tier)
             tags_list = tags or []
             tags_json = self._format_tags(tags_list)
+
+            # Phase 2 authorization pipeline (AUDIT-MODE — observe, never block in this step).
+            # stage 1: validate provenance · stage 2: tier-target authorization (may_target).
+            # The would-block is logged; enforcement lands behind MORI_TIER_ENFORCE (step 3).
+            self._validate_provenance(provenance, effective_name)
+            tier_ok, tier_reason = self._authorize_tier(provenance, effective_tier)
+            if not tier_ok:
+                logger.warning(
+                    "TIER-AUDIT would-block name=%s: %s (audit-mode — not enforced)",
+                    effective_name,
+                    tier_reason,
+                )
 
             # Completeness chokepoint (AUDIT mode — logs, never blocks). Every writer
             # (dreamer _write_memory, direct MCP write, governed promotion) passes through
@@ -837,11 +873,7 @@ class MemoryStore:
                 # Universal, in-transaction audit (identity-aware chokepoint, Phase 1).
                 # Every write through this door is logged with its provenance — the dreamer
                 # included. Same conn = atomic with the write (no write without its audit row).
-                if provenance.actor == "legacy":
-                    logger.warning(
-                        "WRITE-AUDIT actor=legacy (unmigrated caller) name=%s — thread Provenance",
-                        effective_name,
-                    )
+                # (legacy/unknown-actor warnings fire earlier in _validate_provenance.)
                 try:
                     conn.execute(
                         "INSERT INTO write_audit "
