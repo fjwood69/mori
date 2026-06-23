@@ -44,6 +44,7 @@ from mori_advisor.metrics import (
 )
 from mori_advisor.policy import PermissionDenied, current_actor, require_role
 from mori_advisor.store import get_store as _get_store
+from mori_advisor.store.async_store import AsyncStore
 from mori_advisor.throttle import (
     IdempotencyState,
     idempotency_ttls,
@@ -373,7 +374,12 @@ def _is_safe_skill_name(sk: str) -> bool:
 
 # ── Global state ─────────────────────────────────────────────────────────
 
-store = _get_store(DATA_DIR / "memories.db")
+# Issue #59 — `store` is an async facade that off-loads sync SQLite work onto a dedicated
+# single-thread executor so the API path never blocks the event loop. `_backend` is the raw
+# store, used by the sync paths (bootstrap, helpers) and the dream pipeline (which owns its
+# own transactions). On Postgres the facade awaits the already-async methods directly.
+_backend = _get_store(DATA_DIR / "memories.db")
+store = AsyncStore(_backend)
 
 # Initialise OpenTelemetry metrics
 init_metrics()
@@ -464,12 +470,15 @@ async def _lifespan(server):
         orphan_task.cancel()
         if _llm_executor is not None:
             _llm_executor.shutdown(wait=False)
+        # Issue #59 — drain in-flight DB work (wait=True), do NOT drop committed writes.
+        if hasattr(store, "aclose"):
+            store.aclose()
 
 
 mcp = FastMCP(MCP_SERVER_NAME, lifespan=_lifespan)
 bifrost = BifrostClient(base_url=BIFROST_BASE_URL, timeout=BIFROST_TIMEOUT)
-session_log = store._log if hasattr(store, "_log") else store
-memory_store = store._mem if hasattr(store, "_mem") else store
+session_log = _backend._log if hasattr(_backend, "_log") else _backend
+memory_store = _backend._mem if hasattr(_backend, "_mem") else _backend
 
 # Idempotency store for POST /api/memories (#23 C) — in-memory by default
 # (single-instance). See throttle.make_idempotency_store for the scale-out path.
@@ -520,14 +529,14 @@ dream_pipeline = DreamPipeline(
     bifrost_client=bifrost,
     trusted_dreamers=TRUSTED_DREAMERS,
     nats_url=NATS_URL,
-    store=store,
+    store=_backend,  # #59 — dream owns its own transactions; uses the raw (sync) backend
 )
 
 ingestion_pipeline = IngestionPipeline(
     db_path=DATA_DIR / "memories.db",
     bifrost_client=bifrost,
     memory_store=memory_store,
-    store=store,
+    store=_backend,  # #59 — ingestion writes via the raw (sync) backend, like the dream
 )
 
 
@@ -770,7 +779,7 @@ async def _post_compact_brief(project: str | None = None, since: str | None = No
     try:
         from mori_advisor.dream import DreamPipeline
 
-        dp = DreamPipeline(db_path=DATA_DIR / "memories.db", bifrost_client=bifrost, store=store)
+        dp = DreamPipeline(db_path=DATA_DIR / "memories.db", bifrost_client=bifrost, store=_backend)
         status = await dp.get_status()
         parts.append(f"\n**Dream state:** {status}")
     except Exception:
@@ -1034,7 +1043,7 @@ async def brief(
     try:
         from mori_advisor.dream import DreamPipeline
 
-        dp = DreamPipeline(db_path=DATA_DIR / "memories.db", bifrost_client=bifrost, store=store)
+        dp = DreamPipeline(db_path=DATA_DIR / "memories.db", bifrost_client=bifrost, store=_backend)
         status = await dp.get_status()
         parts.append(f"**Dream state:** {status}")
     except Exception:
