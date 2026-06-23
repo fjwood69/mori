@@ -171,17 +171,13 @@ def authorize_tier(provenance: Provenance, intended_tier: str) -> tuple[bool, st
     )
 
 
-def tier_enforce_mode(actor: str) -> str:
-    """Resolve the tier-enforcement mode for *actor* from ``$MORI_TIER_ENFORCE``.
+def _resolve_enforce_mode(raw: str, actor: str) -> str:
+    """Shared resolver for the ``audit`` | ``enforce`` | ``enforce:a,b`` (per-actor) grammar.
 
     Read ONCE per write (the store snapshots it at txn-start — never re-read mid-write; GLM).
-      unset / ``audit``     -> ``audit``   (observe only; the default — zero behaviour change)
-      ``enforce``           -> ``enforce``  (all actors)
-      ``enforce:mcp,rest``  -> ``enforce`` for the listed actors, ``audit`` for the rest
-                               (the board's per-actor flip — flip mcp/rest first, ingestion later)
     Unrecognised values fail SAFE to ``audit``.
     """
-    raw = (os.environ.get("MORI_TIER_ENFORCE") or "").strip().lower()
+    raw = (raw or "").strip().lower()
     if not raw or raw == "audit":
         return "audit"
     if raw == "enforce":
@@ -190,6 +186,26 @@ def tier_enforce_mode(actor: str) -> str:
         allow = {a.strip() for a in raw[len("enforce:") :].split(",") if a.strip()}
         return "enforce" if actor in allow else "audit"
     return "audit"
+
+
+def tier_enforce_mode(actor: str) -> str:
+    """Tier-enforcement mode for *actor* from ``$MORI_TIER_ENFORCE``.
+
+    unset/``audit`` (default, zero behaviour change) | ``enforce`` (all) | ``enforce:mcp,rest``
+    (per-actor flip — mcp/rest first, ingestion later).
+    """
+    return _resolve_enforce_mode(os.environ.get("MORI_TIER_ENFORCE", ""), actor)
+
+
+def anatomy_enforce_mode(actor: str) -> str:
+    """Anatomy/completeness + protection-bypass enforcement mode from ``$MORI_ANATOMY_ENFORCE``.
+
+    Same grammar as :func:`tier_enforce_mode`, SEPARATE flag (the board decoupled this — it bundles
+    a second behaviour change: anatomy + the ``_skip_protection`` trapdoor now bite the dreamer's
+    bulk writes, which the tier metric does not measure). Default ``audit`` — zero behaviour change.
+    Flip only after the audit soak shows the would-fail rate (dominated by ``empty-warrant``).
+    """
+    return _resolve_enforce_mode(os.environ.get("MORI_ANATOMY_ENFORCE", ""), actor)
 
 
 def tier_decision(provenance: Provenance, intended_tier: str) -> tuple[bool, str, str, str]:

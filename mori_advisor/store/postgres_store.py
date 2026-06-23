@@ -33,6 +33,7 @@ from mori_advisor.memory_store import (
 from mori_advisor.provenance import (
     LEGACY,
     Provenance,
+    anatomy_enforce_mode,
     content_hash,
     tier_decision,
     validate_provenance,
@@ -402,11 +403,41 @@ class PostgresStore(BaseStore):
 
             name = f"memory-{int(time.time())}"
 
-        # Completeness chokepoint (AUDIT mode — logs, never blocks). Mirrors the SQLite
-        # seam in memory_store.write so both backends enforce one anatomy contract.
+        # Completeness/anatomy chokepoint. Mirrors the SQLite seam: audit (default) logs +
+        # counts the failed verdict and proceeds; enforce (MORI_ANATOMY_ENFORCE) DOWNGRADES to
+        # pending review (board-chosen over hard-reject). `description` is the warrant.
         from mori_advisor.completeness import audit_completeness
 
-        audit_completeness(body, description, seam="store.write:postgres", name=name, log=logger)
+        verdict = audit_completeness(
+            body, description, seam="store.write:postgres", name=name, log=logger
+        )
+        anatomy_mode = anatomy_enforce_mode(provenance.actor)
+        if not verdict["valid"]:
+            from mori_advisor.metrics import record_anatomy_decision
+
+            record_anatomy_decision(provenance.actor, verdict["reason"], anatomy_mode)
+            if anatomy_mode == "enforce":
+                await self.queue_pending_write(
+                    name=name,
+                    title=title,
+                    description=description,
+                    type=type,
+                    body=body,
+                    tags=tags,
+                    origin_clients=origin_clients,
+                    proposed_by=provenance.ledger_actor,
+                )
+                return WriteResult(
+                    memory_name=name,
+                    intended_tier=tier if tier in VALID_TIERS else "working",
+                    stored_tier="pending",
+                    disposition=Disposition.DOWNGRADED_TO_PENDING,
+                    reason=f"incomplete anatomy ({verdict['reason']}) — queued for review",
+                )
+
+        # Step 6: the `_skip_protection` trapdoor is honoured ONLY in anatomy-audit mode; under
+        # MORI_ANATOMY_ENFORCE the bypass closes so protection bites the dreamer too.
+        effective_skip = _skip_protection and anatomy_mode != "enforce"
 
         # Defensive coalesce: mirror SQLite's _ensure_tier — a None or unrecognised tier must
         # never reach the DB as NULL (violates NOT NULL). Done BEFORE the decision so the tier
@@ -451,7 +482,7 @@ class PostgresStore(BaseStore):
                 "SELECT id, protected, protected_domains, tier, origin_session_ids, origin_clients FROM memories WHERE name = $1 AND deleted_at IS NULL",
                 name,
             )
-            if existing and existing["protected"] and not _skip_protection:
+            if existing and existing["protected"] and not effective_skip:
                 return WriteResult(
                     memory_name=name,
                     intended_tier=tier,

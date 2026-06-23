@@ -255,6 +255,27 @@ def record_tier_decision(actor: str, intended_tier: str, decision: str, mode: st
         logger.debug("record_tier_decision failed", exc_info=True)
 
 
+# Phase 2 step 6: anatomy/completeness failures at store.write. Emitted only on a FAILED verdict
+# (code != ok); `mode` disambiguates the action — audit = would-fail (logged, proceeds), enforce =
+# downgraded-to-pending. The count over the soak sizes the MORI_ANATOMY_ENFORCE flip (empty-warrant
+# is expected to dominate). `code` is bounded (empty-body|empty-warrant|unwarranted-directive).
+_anatomy_decisions = Counter(
+    "mori_anatomy_decisions_total",
+    "Anatomy/completeness failures at store.write",
+    ["actor", "code", "mode"],
+    registry=prom_registry,
+)
+
+
+def record_anatomy_decision(actor: str, code: str, mode: str) -> None:
+    """Record one FAILED anatomy verdict (empty-body | empty-warrant | unwarranted-directive).
+    Fail-open — telemetry must NEVER break a write."""
+    try:
+        _anatomy_decisions.labels(actor=actor, code=code, mode=mode).inc()
+    except Exception:
+        logger.debug("record_anatomy_decision failed", exc_info=True)
+
+
 # Process-level accumulators for the coverage ratio (prom Counter internals aren't cleanly readable).
 _brief_counts = {"served": 0, "confirmed": 0}
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from mori_advisor.provenance import (
     LEGACY,
     Provenance,
+    anatomy_enforce_mode,
     authorize_tier,
     content_hash,
     tier_decision,
@@ -666,6 +667,55 @@ class MemoryStore:
         """
         validate_provenance(provenance, name, logger)
 
+    def _downgrade_to_pending(
+        self,
+        conn,
+        close_conn: bool,
+        *,
+        name: str,
+        title: str,
+        description: str,
+        type: str,
+        body: str,
+        tags_json: str,
+        origin_session_ids,
+        origin_clients,
+        client,
+        intended_tier: str,
+        reason: str,
+    ) -> WriteResult:
+        """The pending SINK (split from the gate; never re-enters store.write). Used by BOTH the
+        protection lane and the step-6 anatomy-enforce downgrade — one insert, one disposition."""
+        _pcur = conn.execute(
+            """
+            INSERT INTO pending_writes
+                (memory_name, title, description, type, body, tags,
+                 origin_session_ids, origin_clients, proposed_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                title,
+                description,
+                type,
+                body,
+                tags_json,
+                json.dumps(origin_session_ids or []),
+                json.dumps(origin_clients or []),
+                client or "unknown",
+            ),
+        )
+        if close_conn:
+            conn.commit()
+        return WriteResult(
+            memory_name=name,
+            intended_tier=intended_tier,
+            stored_tier="pending",
+            disposition=Disposition.DOWNGRADED_TO_PENDING,
+            pending_id=_pcur.lastrowid,
+            reason=reason,
+        )
+
     def _authorize_tier(self, provenance: Provenance, intended_tier: str) -> tuple[bool, str]:
         """Phase 2 pipeline stage 2 — tier-target authorization (``may_target``).
 
@@ -754,14 +804,36 @@ class MemoryStore:
                     reason=tier_reason,
                 )
 
-            # Completeness chokepoint (AUDIT mode — logs, never blocks). Every writer
-            # (dreamer _write_memory, direct MCP write, governed promotion) passes through
-            # here; this is the single anatomy check the gate was missing a call site for.
+            # Completeness/anatomy chokepoint. audit_completeness logs a COMPLETENESS-AUDIT line
+            # for a non-conforming verdict; step 6 makes that verdict ACT behind MORI_ANATOMY_ENFORCE
+            # — audit (default) counts the failure and proceeds; enforce DOWNGRADES to pending review
+            # (board-chosen over hard-reject). `description` is the warrant; empty -> empty-warrant.
             from mori_advisor.completeness import audit_completeness
 
-            audit_completeness(
+            verdict = audit_completeness(
                 body, description, seam="store.write:sqlite", name=effective_name, log=logger
             )
+            anatomy_mode = anatomy_enforce_mode(provenance.actor)
+            if not verdict["valid"]:
+                from mori_advisor.metrics import record_anatomy_decision
+
+                record_anatomy_decision(provenance.actor, verdict["reason"], anatomy_mode)
+                if anatomy_mode == "enforce":
+                    return self._downgrade_to_pending(
+                        conn,
+                        close_conn,
+                        name=effective_name,
+                        title=title,
+                        description=description,
+                        type=effective_type,
+                        body=body,
+                        tags_json=tags_json,
+                        origin_session_ids=origin_session_ids,
+                        origin_clients=origin_clients,
+                        client=client,
+                        intended_tier=effective_tier,
+                        reason=f"incomplete anatomy ({verdict['reason']}) — queued for review",
+                    )
 
             # Check if existing memory exists and is protected
             try:
@@ -773,36 +845,25 @@ class MemoryStore:
             except sqlite3.Error:
                 existing_row = None
 
-            if not _skip_protection and self._is_protected(effective_name, tags_list, existing_row):
+            # Step 6: the `_skip_protection` trapdoor is honoured ONLY in anatomy-audit mode;
+            # under MORI_ANATOMY_ENFORCE the bypass closes so protection bites the dreamer too.
+            effective_skip = _skip_protection and anatomy_mode != "enforce"
+            if not effective_skip and self._is_protected(effective_name, tags_list, existing_row):
                 if not self._is_trusted_client(client):
-                    # Queue as pending write instead
-                    _pcur = conn.execute(
-                        """
-                        INSERT INTO pending_writes
-                            (memory_name, title, description, type, body, tags,
-                             origin_session_ids, origin_clients, proposed_by)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            effective_name,
-                            title,
-                            description,
-                            effective_type,
-                            body,
-                            tags_json,
-                            json.dumps(origin_session_ids or []),
-                            json.dumps(origin_clients or []),
-                            client or "unknown",
-                        ),
-                    )
-                    if close_conn:
-                        conn.commit()
-                    return WriteResult(
-                        memory_name=effective_name,
+                    # Queue as pending write instead (shared sink).
+                    return self._downgrade_to_pending(
+                        conn,
+                        close_conn,
+                        name=effective_name,
+                        title=title,
+                        description=description,
+                        type=effective_type,
+                        body=body,
+                        tags_json=tags_json,
+                        origin_session_ids=origin_session_ids,
+                        origin_clients=origin_clients,
+                        client=client,
                         intended_tier=effective_tier,
-                        stored_tier="pending",
-                        disposition=Disposition.DOWNGRADED_TO_PENDING,
-                        pending_id=_pcur.lastrowid,
                         reason=(
                             f"Memory '{effective_name}' is protected — "
                             f"change queued as pending write (trusted dreamer review required)."
