@@ -219,14 +219,41 @@ class DreamPipeline:
 
         memories = self._parse_response(response)
         if memories is None:
+            # Parse FAILURE (malformed/garbled model output) — do NOT advance the watermark; the
+            # batch retries next run. Distinct from a valid, empty result handled below.
             logger.error("Failed to parse dream model response as JSON")
-            return []
-        if not memories:
-            logger.info("No new memories to write.")
             return []
 
         if dry_run:
+            # Strictly read-only — never advance the watermark or prune, empty or not.
             return memories
+
+        max_id = max(e["id"] for e in events)
+
+        if not memories:
+            # The model SUCCESSFULLY judged this batch unmemorable (a valid empty result, NOT a
+            # parse failure). ADVANCE past it so a low-signal batch cannot permanently stall the
+            # queue — the bug was that the watermark advanced ONLY on a non-empty batch, so the
+            # oldest empty batch was re-read every run forever (backlog grows unbounded). Audited
+            # (id range + response size) so a wrongly-empty response is detectable + recoverable
+            # within event retention. Same crash-safe _begin_txn pattern as the write path.
+            async with _begin_txn(self.store) as txn_conn:
+                await self._set_watermark(max_id, _conn=txn_conn)
+                pruned = await _a(
+                    self.store.prune_events(max(0, max_id - self.retention_buffer), _conn=txn_conn)
+                )
+            logger.info(
+                "EMPTY-BATCH-ADVANCE: 0 memories from %s events (ids %s..%s, resp %s chars) — "
+                "watermark %s→%s, pruned %s",
+                len(events),
+                events[0]["id"],
+                max_id,
+                len(response),
+                last_id,
+                max_id,
+                pruned,
+            )
+            return []
 
         batch_session_ids = list(
             dict.fromkeys(e.get("session_id") for e in events if e.get("session_id"))
@@ -284,8 +311,9 @@ class DreamPipeline:
                     logger.error("  ✗ %s %s — %s", action, name, e)
                     errors += 1
 
-            max_id = max(e["id"] for e in events)
-            await self._set_watermark(max_id, _conn=txn_conn)
+            await self._set_watermark(
+                max_id, _conn=txn_conn
+            )  # max_id computed above (pre-empty-check)
 
             pruned = await _a(
                 self.store.prune_events(max(0, max_id - self.retention_buffer), _conn=txn_conn)
