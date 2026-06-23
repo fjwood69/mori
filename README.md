@@ -212,7 +212,7 @@ powershell -File scripts/legacy/install-mori-claude.ps1   # Windows
 | **Universal ingestion** | Feed PDFs, images, git, transcripts into the memory store | `/ingest` |
 | **Strategic review** | LLM guidance with focus areas and auto-injected standards | `/consult` |
 | **Requirements tracking** | Lightweight project checklist surfaced via `/brief` | `/req` |
-| **Governance** | Capability-scoped API keys (read/write/dreamer roles), versioning, trusted dreamers, rollback, attribution | — |
+| **Governance** | Capability-scoped API keys (read/write/dreamer roles), versioning, trusted dreamers, rollback, attribution; a universal in-transaction write-audit + tier-capability & anatomy enforcement at the `store.write` chokepoint (flag-gated, audit-mode by default) | — |
 | **Curation queue** | Ingestion's canonical/standard proposals await trusted-dreamer sign-off in a review UI (`/review`, with source/diff/approve-reject) before becoming canonical — memory that's *curated*, not just accumulated | — |
 | **One-click deploy** | Stand up your own server on Render / Railway / Fly / Cloud Run (or free managed Postgres + any stateless host) | — |
 | **NATS messaging** | Real-time cross-device awareness | `/nats` |
@@ -292,6 +292,11 @@ and the autonomous-agent intake path (other agents) write to a **review queue**,
 to canon. A **trusted dreamer** — a human — reviews candidates and promotes the
 load-bearing ones; every promotion is versioned and `write_audit`-logged. Agents
 *read* canon; they never silently write it.
+
+Underneath, **every** write — the dreamer's included — passes one audited authorization
+chokepoint: a structured provenance lands a `write_audit` row in the same transaction as the
+write, and tier-capability + anatomy enforcement gate *who* may write *what* (both ship
+audit-mode by default, so the policy is measured before it bites).
 
 To keep that review cheap, mori **rolls up near-duplicate candidates** so the
 reviewer disposes of a *convention* once instead of many times. The proposal side

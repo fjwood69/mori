@@ -81,6 +81,14 @@ Updated with each release.
 - **Cross-vehicle adherence benchmark (job-lesson delivery)** — eight coding agents, six model families, three arms (placebo / knowledge / prescriptive) against the §2 conflict fixture. **Two universals:** unguided, every vehicle breaks or games the hidden check; a prescriptive directive yields correct, safe completion universally. Surfaced knowledge eliminates blind harm everywhere but on the highest-drive model relocates it to coordinated circumvention (32/50, replicated n=50, Fisher p=2.5e-4, all contained by the read-only lock). **Establishes:** the directive binds where bare knowledge doesn't, and the deterministic gate is load-bearing under conflict — direct evidence for "the gate is the product." Conflict — not stakes or non-locality — is the moderator. See [Medium](https://medium.com/@fjwood/everyone-says-memory-makes-ai-coding-agents-smarter-07e9820b7d4e) / whitepaper.
 - Pre-dream events normaliser (v2.2.23) — `normalise_events_text()` strips `Tool:` and `Stopped:` scaffolding lines before the dream LLM sees `events_text`. Line-anchored, case-sensitive, lossless-on-signal (FAILURE, Assistant prose, CWD, Prompt, Session headers preserved). Idempotent. Volume lever is compression, not censorship.
 
+### v2.3.0 — identity-aware chokepoint: universal audit + tier/anatomy enforcement
+The `store.write` chokepoint becomes a single audited authorization pipeline. **All enforcement ships default-OFF (audit-mode)** — a zero-behaviour-change deploy that starts the soak; the flip is per-actor, metric-gated, and later.
+- **Universal in-transaction audit (Phase 1)** — every write carries structured `Provenance` (actor + actor_detail + source + op) and lands one `write_audit` row atomically with the write, the dreamer included. Closes per-caller audit drift.
+- **Tier-capability enforcement (Phase 2)** — `MORI_TIER_ENFORCE` (audit | enforce | enforce:actor): an unauthorised tier target is rejected on both backends (canonical restricted to governed-promotion/init/import/system). `mori_tier_decisions_total{actor,intended_tier,decision,mode}` sizes the flip.
+- **Anatomy enforcement** — `MORI_ANATOMY_ENFORCE`: a failed completeness verdict downgrades to pending; the `_skip_protection` trapdoor closes under enforce. `mori_anatomy_decisions_total{actor,code,mode}`.
+- **SQLite off the event loop** — `AsyncStore` facade off-loads synchronous SQLite work to a dedicated single-thread executor (`run_in_txn`), removing the single-worker self-host stall.
+- **Dream watermark fix** — a valid-empty batch now advances the watermark, so a low-signal batch can't permanently stall the dreamer.
+
 ---
 
 ## Horizon 1 — Governance: the human gate is the product
@@ -99,8 +107,10 @@ Unattended promotion stays opt-in behind `MORI_INTAKE_PROMOTION_ENABLED`; these 
 - Dream-concurrency guard OPS-002 — dream lease vs B3 promotion worker on the canon write connection
 - E2E A→B1→B2→B3 test — full unattended round-trip before enabling auto-promotion
 
-### Policy-as-config seam
+### Policy-as-config seam — 🚧 seam built + parity-tested, cutover pending
 Simple declarative ruleset + tiny evaluator now. OPA/Rego as the enterprise evolution of the same seam — embedded in mori, not a separate engine. The pitch: regulated industries already maintain policy definitions; Mori makes those policies agent-aware without a separate governance committee. Roadmap OPA explicitly; build the seam, not the engine.
+
+In progress: a `PolicyEvaluator` interface (`TinyEvaluator` now, `OpaEvaluator` later) over declarative rule-sets, with the tier-capability matrix and the GOV-001 eligibility pipeline expressed as config and **parity-tested against the live code** (config-eval ≡ code-eval across the full matrix). Predicates are a closed structured vocabulary dispatched to native Python — no `eval`, no free-form regex. The **cutover** — routing the live decisions through the evaluator instead of hardcoded Python — is a separate, post-soak, board-gated step (the parity test is its safety guard).
 
 ### TD review roll-up — ✅ shipped v2.2.18
 Near-duplicate review candidates are grouped by convention (deterministic, embedding-free

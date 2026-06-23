@@ -11,7 +11,7 @@ import asyncio
 from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock
 
-from tests.test_dream_intake_promotion import _make_mock_store, _make_pipeline
+from test_dream_intake_promotion import _make_mock_store, _make_pipeline
 
 EVENTS = [
     {"id": 100, "session_id": "s1", "client": "c1"},
