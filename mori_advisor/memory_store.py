@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from mori_advisor.provenance import LEGACY, Provenance, content_hash
+from mori_advisor.write_result import Disposition, WriteResult, accepted
 
 logger = logging.getLogger(__name__)
 
@@ -650,7 +651,7 @@ class MemoryStore:
 
     # ── CRUD methods ───────────────────────────────────────────────────
 
-    def write(
+    def _write(
         self,
         name: str | None = None,
         title: str = "",
@@ -666,8 +667,9 @@ class MemoryStore:
         provenance: Provenance = LEGACY,
         _skip_protection: bool = False,
         _conn: sqlite3.Connection | None = None,
-    ) -> str:
-        """Create or update a memory entry (upsert by name).
+    ) -> WriteResult:
+        """Create or update a memory entry (upsert by name). Returns a WriteResult — the
+        chokepoint outcome. The public ``write()`` adapter formats the legacy message string.
 
         If name is omitted, auto-derive from title.
 
@@ -721,7 +723,7 @@ class MemoryStore:
             if not _skip_protection and self._is_protected(effective_name, tags_list, existing_row):
                 if not self._is_trusted_client(client):
                     # Queue as pending write instead
-                    conn.execute(
+                    _pcur = conn.execute(
                         """
                         INSERT INTO pending_writes
                             (memory_name, title, description, type, body, tags,
@@ -742,9 +744,16 @@ class MemoryStore:
                     )
                     if close_conn:
                         conn.commit()
-                    return (
-                        f"Memory '{effective_name}' is protected — "
-                        f"change queued as pending write (trusted dreamer review required)."
+                    return WriteResult(
+                        memory_name=effective_name,
+                        intended_tier=effective_tier,
+                        stored_tier="pending",
+                        disposition=Disposition.DOWNGRADED_TO_PENDING,
+                        pending_id=_pcur.lastrowid,
+                        reason=(
+                            f"Memory '{effective_name}' is protected — "
+                            f"change queued as pending write (trusted dreamer review required)."
+                        ),
                     )
 
             # Snapshot current state before upsert
@@ -851,12 +860,62 @@ class MemoryStore:
                         raise  # pre-migration schema (tests) → skip; real errors propagate
                 if close_conn:
                     conn.commit()
-                return f"Memory '{effective_name}' written."
+                return accepted(effective_name, effective_tier)
             except sqlite3.Error as e:
-                return f"Database error writing memory: {e}"
+                return WriteResult(
+                    memory_name=effective_name,
+                    intended_tier=effective_tier,
+                    stored_tier="",
+                    disposition=Disposition.REJECTED,
+                    reason=f"Database error writing memory: {e}",
+                )
         finally:
             if close_conn:
                 conn.close()
+
+    def write(
+        self,
+        name: str | None = None,
+        title: str = "",
+        description: str = "",
+        type: str = "project",
+        tier: str = "working",
+        body: str = "",
+        tags: list[str] | None = None,
+        origin_session_id: str | None = None,
+        origin_session_ids: list[str] | None = None,
+        origin_clients: list[str] | None = None,
+        client: str | None = None,
+        provenance: Provenance = LEGACY,
+        _skip_protection: bool = False,
+        _conn: sqlite3.Connection | None = None,
+    ) -> str:
+        """Legacy string-returning adapter over :meth:`_write` (behaviour-preserving).
+
+        Returns the same status message the chokepoint has always returned — ``Memory 'X'
+        written.`` on ACCEPTED, the queued/error reason otherwise. Callers that need the
+        structured outcome (disposition / pending_id, e.g. tier-enforcement reactions) call
+        :meth:`_write` directly and inspect the :class:`WriteResult`.
+        """
+        r = self._write(
+            name=name,
+            title=title,
+            description=description,
+            type=type,
+            tier=tier,
+            body=body,
+            tags=tags,
+            origin_session_id=origin_session_id,
+            origin_session_ids=origin_session_ids,
+            origin_clients=origin_clients,
+            client=client,
+            provenance=provenance,
+            _skip_protection=_skip_protection,
+            _conn=_conn,
+        )
+        if r.disposition is Disposition.ACCEPTED:
+            return f"Memory '{r.memory_name}' written."
+        return r.reason
 
     def read(self, name: str) -> str:
         """Read a memory entry and return a formatted block."""
