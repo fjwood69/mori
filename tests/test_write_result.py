@@ -62,3 +62,15 @@ def test_disposition_survives_serialization():
 def test_disposition_is_str_enum_for_comparisons():
     assert Disposition.ACCEPTED == "accepted"
     assert accepted("m", "working").disposition == "accepted"
+
+
+def test_bool_is_true_only_when_accepted():
+    # GLM bool-coercion: a handler that does `if result:` must NOT treat a downgrade/reject
+    # as success. ACCEPTED is truthy; everything else is falsy.
+    assert bool(accepted("m", "working")) is True
+    downgraded = WriteResult(
+        "m", "canonical", "pending", Disposition.DOWNGRADED_TO_PENDING, pending_id=1
+    )
+    rejected = WriteResult("m", "canonical", "", Disposition.REJECTED, reason="nope")
+    assert bool(downgraded) is False
+    assert bool(rejected) is False

@@ -52,6 +52,7 @@ from mori_advisor.throttle import (
     make_idempotency_store,
     throttle_safety_warning,
 )
+from mori_advisor.write_result import Disposition
 
 logger = logging.getLogger(__name__)
 
@@ -2020,8 +2021,11 @@ async def memory_write(
         return str(exc)
     actor = current_actor.get()
     actor_name = actor.key_name if actor else "mcp"
-    result = await _a(
-        memory_store.write(
+    # E.0: consume the structured WriteResult and reckon with its disposition. In audit-mode
+    # every write is ACCEPTED so this returns the same "Memory 'X' written." string as before;
+    # once step-3 enforces, a downgraded/rejected write returns its reason (not a false success).
+    r = await _a(
+        memory_store._write(
             name=name,
             title=title,
             description=description,
@@ -2036,7 +2040,7 @@ async def memory_write(
         )
     )
     # Audited universally at the store.write chokepoint (actor_detail=actor_name, op=write).
-    return result
+    return f"Memory '{r.memory_name}' written." if r.accepted else r.reason
 
 
 @mcp.tool()
@@ -3339,6 +3343,27 @@ async def _write_audit(
         logger.warning("audit insert failed (op=%s name=%s): %s", op, name, exc)
 
 
+def _write_response(r, *, ok_status: str, ok_code: int, name: str) -> JSONResponse:
+    """Map a :class:`WriteResult` to the REST response (E.0 — handlers consume ``.disposition``).
+
+    In audit-mode every write is ACCEPTED so this returns the caller's ok_status/ok_code,
+    byte-identical to the pre-E.0 behaviour. Once the step-3 enforce flip lands, a downgraded
+    canonical write returns 202/pending and a rejected one 422 — with NO handler change. This is
+    the inherited E.0 sub-task: the handler must reckon with disposition, not assume "created".
+    """
+    if r.disposition is Disposition.ACCEPTED:
+        return JSONResponse(
+            {"status": ok_status, "name": name, "detail": f"Memory '{r.memory_name}' written."},
+            status_code=ok_code,
+        )
+    if r.disposition is Disposition.DOWNGRADED_TO_PENDING:
+        return JSONResponse(
+            {"status": "pending", "name": name, "pending_id": r.pending_id, "detail": r.reason},
+            status_code=202,
+        )
+    return JSONResponse({"status": "rejected", "name": name, "error": r.reason}, status_code=422)
+
+
 def _validate_write_payload(payload: dict) -> tuple[str | None, int]:
     """Validate a POST /api/memories payload.
 
@@ -3433,8 +3458,8 @@ async def post_memory(request: Request) -> JSONResponse:
 
             if existing is None:
                 # New name — insert as working directly.
-                result = await _a(
-                    memory_store.write(
+                r = await _a(
+                    memory_store._write(
                         name=name,
                         title=title,
                         description=description,
@@ -3450,10 +3475,8 @@ async def post_memory(request: Request) -> JSONResponse:
                     )
                 )
                 # Audited at the store.write chokepoint (op=propose_new, actor_detail=actor_name).
-                return JSONResponse(
-                    {"status": "created", "name": name, "detail": result},
-                    status_code=201,
-                )
+                # E.0: response derived from disposition (created/pending/rejected), not assumed.
+                return _write_response(r, ok_status="created", ok_code=201, name=name)
 
             existing_tier = existing.get("tier", "working")
             existing_protected = existing.get("protected", False)
@@ -3485,8 +3508,8 @@ async def post_memory(request: Request) -> JSONResponse:
             # Working, non-protected — idempotent update if same actor owns it.
             existing_clients: list[str] = existing.get("origin_clients") or []
             if actor_name in existing_clients or not existing_clients:
-                result = await _a(
-                    memory_store.write(
+                r = await _a(
+                    memory_store._write(
                         name=name,
                         title=title,
                         description=description,
@@ -3502,10 +3525,8 @@ async def post_memory(request: Request) -> JSONResponse:
                     )
                 )
                 # Audited at the store.write chokepoint (op=update_working, actor_detail=actor_name).
-                return JSONResponse(
-                    {"status": "updated", "name": name, "detail": result},
-                    status_code=200,
-                )
+                # E.0: response derived from disposition (updated/pending/rejected), not assumed.
+                return _write_response(r, ok_status="updated", ok_code=200, name=name)
 
             # Working memory owned by a different actor — queue as pending.
             result = await _a(

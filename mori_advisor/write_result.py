@@ -42,6 +42,12 @@ class WriteResult:
     def accepted(self) -> bool:
         return self.disposition is Disposition.ACCEPTED
 
+    def __bool__(self) -> bool:
+        """Truthy ONLY when ACCEPTED (GLM bool-coercion). Stops a handler from treating a
+        downgraded/rejected write as success via a bare ``if result:`` — the exact silent-pass
+        the structured result exists to prevent."""
+        return self.accepted
+
     def require_accepted(self) -> str:
         """Return the name if ACCEPTED; otherwise raise — for callers that need the row to exist
         at the intended tier (read-after-write integrity)."""
