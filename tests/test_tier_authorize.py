@@ -48,7 +48,7 @@ def test_authorize_tier_blocks_dreamer_targeting_canonical(tmp_path):
 
 def test_authorize_tier_blocks_request_actor_targeting_canonical(tmp_path):
     s = _store(tmp_path)
-    mcp = Provenance(actor="mcp", actor_detail="nuc15pro", source="main:memory_write")
+    mcp = Provenance(actor="mcp", actor_detail="dev-host", source="main:memory_write")
     ok, reason = s._authorize_tier(mcp, "canonical")
     assert ok is False
 
@@ -68,7 +68,7 @@ def test_audit_mode_unauthorized_canonical_still_accepted(tmp_path):
     # canonical is a would-block, but step 2 only logs it — the write is ACCEPTED
     # and stored as canonical. Step 3's MORI_TIER_ENFORCE is what downgrades it.
     s = _store(tmp_path)
-    mcp = Provenance(actor="mcp", actor_detail="nuc15pro", source="main:memory_write")
+    mcp = Provenance(actor="mcp", actor_detail="dev-host", source="main:memory_write")
     r = s._write(name="seam1", title="t", body="b", tier="canonical", provenance=mcp)
     assert r.disposition is Disposition.ACCEPTED
     assert r.stored_tier == "canonical"
@@ -103,7 +103,7 @@ def test_pg_audit_mode_unauthorized_canonical_still_accepted():
         async with s.pool.acquire() as conn:
             await conn.execute("TRUNCATE memories CASCADE")
         try:
-            mcp = Provenance(actor="mcp", actor_detail="nuc15pro", source="main:memory_write")
+            mcp = Provenance(actor="mcp", actor_detail="dev-host", source="main:memory_write")
             r = await s._write(
                 name="pg-seam1", title="t", body="b", tier="canonical", provenance=mcp
             )

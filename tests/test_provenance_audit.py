@@ -41,9 +41,9 @@ def test_request_write_records_specific_actor_and_op(tmp_path):
         name="m2",
         body="b",
         tier="working",
-        provenance=request_provenance("mcp", "nuc15pro", "rest.write", op="propose_new"),
+        provenance=request_provenance("mcp", "dev-host", "rest.write", op="propose_new"),
     )
-    assert ("nuc15pro", "propose_new", "m2") in _audit_rows(db)
+    assert ("dev-host", "propose_new", "m2") in _audit_rows(db)
 
 
 def test_unmigrated_caller_still_audits_as_legacy(tmp_path):

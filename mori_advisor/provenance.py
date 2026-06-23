@@ -74,7 +74,7 @@ class Provenance:
     Two axes, board-ratified (B + C, 2026-06-22):
       actor:        the CLASS (a KNOWN_ACTORS key) — drives capability / tier authorization
                     (Phase 2). A small, stable table; the audit never keys on it.
-      actor_detail: the SPECIFIC principal for the audit ledger (WHO — e.g. ``nuc15pro``,
+      actor_detail: the SPECIFIC principal for the audit ledger (WHO — e.g. ``dev-host``,
                     ``hermes``, a device/session key). REQUIRED for machine-scoped actors
                     (``mcp``/``rest``/``import``/device-bound); MAY be "" for singleton writers
                     (``dreamer``/``governed-promotion``/``init``) — the ledger then falls back to

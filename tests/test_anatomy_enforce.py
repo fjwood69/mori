@@ -24,7 +24,7 @@ from mori_advisor.write_result import Disposition
 PG_URL = os.environ.get("MORI_TEST_DATABASE_URL", "")
 requires_pg = pytest.mark.skipif(not PG_URL, reason="MORI_TEST_DATABASE_URL not set")
 
-MCP = Provenance(actor="mcp", actor_detail="nuc15pro", source="main:memory_write")
+MCP = Provenance(actor="mcp", actor_detail="dev-host", source="main:memory_write")
 WARRANT = "a sufficiently long warrant to pass the anatomy check"  # >= 10 chars
 
 
