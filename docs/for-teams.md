@@ -104,6 +104,13 @@ Apply the same judgement you use in a team Slack channel: do not run sessions co
 
 Per-user namespacing ships in v2.1.
 
+**Governed writes (v2.3.0).** Every write passes one audited chokepoint — a `write_audit` row is
+recorded in the same transaction, so you always know who wrote what. On top of that, two opt-in
+controls (`MORI_TIER_ENFORCE`, `MORI_ANATOMY_ENFORCE`) let you restrict who may write the protected
+`canonical` tier and require new memories to carry a real warrant. Both default to *audit-mode* —
+they observe and count before they ever block — so you can measure the impact, then flip enforcement
+per-actor. See the [Write chokepoint](reference/configuration.md#write-chokepoint--audit--tieranatomy-enforcement).
+
 ---
 
 ## Cost

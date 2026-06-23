@@ -166,6 +166,15 @@ an agent's summary straight to canon, ungated; a phantom-bug memory was deleted)
 review/promotion path the single gate for anything an agent originates (Hermes's writes *and*
 the dream's agent-distillations).
 
+> **Update (v2.3.0):** `store.write` is now a single audited authorization chokepoint. Every write
+> — agent, REST, the dreamer, imports — lands a `write_audit` row in the same transaction (the
+> audit half of this principle, always on). **Tier-capability enforcement** (`MORI_TIER_ENFORCE`)
+> can then reject a direct agent/dreamer write to `canonical`, forcing it through the governed
+> intake/promotion path; a **completeness gate** (`MORI_ANATOMY_ENFORCE`) downgrades warrant-less
+> writes to review. Both ship **audit-mode (default-OFF)** with `mori_tier_decisions_total` /
+> `mori_anatomy_decisions_total` to size the flip. See
+> [Write chokepoint](reference/configuration.md#write-chokepoint--audit--tieranatomy-enforcement).
+
 ## DB / storage layer (from /consult, 2026-06-06)
 
 **Topology:** intake is a **physically separate Postgres** (own cluster/DB, pools, WAL,
