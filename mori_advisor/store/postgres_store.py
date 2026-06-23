@@ -31,6 +31,7 @@ from mori_advisor.memory_store import (
     _freshness_cache_lock,
 )
 from mori_advisor.provenance import LEGACY, Provenance, content_hash
+from mori_advisor.write_result import Disposition, WriteResult, accepted
 
 from .base import BaseStore
 
@@ -368,7 +369,7 @@ class PostgresStore(BaseStore):
 
     # ── Memory CRUD ────────────────────────────────────────────────────────
 
-    async def write(
+    async def _write(
         self,
         name=None,
         title="",
@@ -384,7 +385,7 @@ class PostgresStore(BaseStore):
         provenance: Provenance = LEGACY,
         _skip_protection=False,
         _conn=None,
-    ) -> str:
+    ) -> WriteResult:
         self._ensure_pool()
         from mori_advisor.memory_store import _slugify
 
@@ -415,7 +416,13 @@ class PostgresStore(BaseStore):
                 name,
             )
             if existing and existing["protected"] and not _skip_protection:
-                return f"Memory '{name}' is protected — use _skip_protection=True to override"
+                return WriteResult(
+                    memory_name=name,
+                    intended_tier=tier,
+                    stored_tier="",
+                    disposition=Disposition.REJECTED,
+                    reason=f"Memory '{name}' is protected — use _skip_protection=True to override",
+                )
 
             # Compute merged origin arrays for upsert (mirrors SQLite's memory_store.py)
             if existing:
@@ -502,12 +509,52 @@ class PostgresStore(BaseStore):
             except Exception as ae:  # pre-migration test DB may lack write_audit
                 if "does not exist" not in str(ae).lower():
                     raise
-            return f"Memory '{name}' written"
+            return accepted(name, result_tier)
 
         if _conn:
             return await _retry(_do, _conn)
         async with self.pool.acquire() as conn:
             return await _retry(_do, conn)
+
+    async def write(
+        self,
+        name=None,
+        title="",
+        description="",
+        type="project",
+        tier="working",
+        body="",
+        tags=None,
+        origin_session_id=None,
+        origin_session_ids=None,
+        origin_clients=None,
+        client=None,
+        provenance: Provenance = LEGACY,
+        _skip_protection=False,
+        _conn=None,
+    ) -> str:
+        """Legacy string-returning adapter over :meth:`_write` (behaviour-preserving) — the
+        same status message as before the split. Callers needing the structured outcome call
+        :meth:`_write` and inspect the :class:`WriteResult`."""
+        r = await self._write(
+            name=name,
+            title=title,
+            description=description,
+            type=type,
+            tier=tier,
+            body=body,
+            tags=tags,
+            origin_session_id=origin_session_id,
+            origin_session_ids=origin_session_ids,
+            origin_clients=origin_clients,
+            client=client,
+            provenance=provenance,
+            _skip_protection=_skip_protection,
+            _conn=_conn,
+        )
+        if r.disposition is Disposition.ACCEPTED:
+            return f"Memory '{r.memory_name}' written"
+        return r.reason
 
     async def read(self, name: str) -> str:
         self._ensure_pool()
