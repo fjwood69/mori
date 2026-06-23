@@ -271,19 +271,19 @@ deep `/consult` (architecture focus) that hardened the plan; the decisions are b
 `deploy/gcp/provision-intake.sh` and `quadlet/mori-intake.container`.
 
 ### Topology
-- **Intake service**: GCE VM (`ca-gcp-mori-advisor`, Tailscale `100.90.219.111`), rootless
+- **Intake service**: GCE VM (`mori-vm`, Tailscale `<vm-host>`), rootless
   Quadlet `mori-intake.service`, port **8971**, image `ghcr.io/fjwood69/mori:latest`.
 - **Postgres**: shared `mori-pg` container. Separate `intake` database owned by a
   least-privilege `intake_app` role; `CONNECT ON DATABASE mori` revoked from `PUBLIC` so
   `intake_app` is **kernel-blocked** from canon (`mori` is a superuser and is unaffected).
-- **Hermes**: NUC container `hermes`; provider v0.3.0 with
-  `MORI_INTAKE_URL=http://100.90.219.111:8971` + the `intake-hermes` write key. Fails closed
+- **Hermes**: host container `hermes`; provider v0.3.0 with
+  `MORI_INTAKE_URL=http://<vm-host>:8971` + the `intake-hermes` write key. Fails closed
   (queues, never writes canon) if the URL is unset/unreachable.
 
 ### Provision (first time, or after a fresh data disk)
 ```bash
 # As the mori user on the VM. Idempotent; verifies the boundary before starting.
-ssh mori@100.90.219.111 'bash -s' < deploy/gcp/provision-intake.sh
+ssh mori@<vm-host> 'bash -s' < deploy/gcp/provision-intake.sh
 ```
 It creates the role + `intake` DB, writes `/data/mori-intake/.env` (secrets), installs the
 quadlet, starts the unit, and asserts `intake_app` is REFUSED on `mori` but accepted on
@@ -291,8 +291,8 @@ quadlet, starts the unit, and asserts `intake_app` is REFUSED on `mori` but acce
 
 ### Verify
 ```bash
-ssh mori@100.90.219.111 'curl -s localhost:8971/ready'           # {"status":"ok",...}
-ssh mori@100.90.219.111 'curl -s -H "X-Api-Key: <write-key>" \
+ssh mori@<vm-host> 'curl -s localhost:8971/ready'           # {"status":"ok",...}
+ssh mori@<vm-host> 'curl -s -H "X-Api-Key: <write-key>" \
     "localhost:8971/intake/candidates?status=pending&limit=20"'  # operator view
 ```
 

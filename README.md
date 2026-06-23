@@ -397,16 +397,16 @@ server-side: `decision` messages are written directly to the memory store
 without any human session on the receiving end.
 
 ```bash
-# From UX3405, delegate a task to the NUC:
+# From your laptop, delegate a task to a workstation:
 /msg send workstation task "Refactor auth middleware — extract rate limiting into its own module"
 
-# NUC picks it up at next /brief and acks:
+# The workstation picks it up at next /brief and acks:
 /msg ack a3f9c2b1 "on it"
 
-# Back on UX3405, check the reply:
+# Back on your laptop, check the reply:
 /msg inbox
 
-# NUC marks it done when finished:
+# The workstation marks it done when finished:
 /msg done a3f9c2b1
 ```
 

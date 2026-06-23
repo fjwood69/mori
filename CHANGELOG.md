@@ -37,7 +37,7 @@ Claude Sonnet 4.6.
 ## v2.2.25 — completeness gate wired at the `store.write` chokepoint (audit-mode)
 
 **The candid bit first:** mori shipped a completeness/anatomy check (`validate_anatomy`, built + 10
-green tests on 2026-06-12) that **never had a call site.** GitNexus confirmed it: 0 callers, 0 of 191
+green tests on 2026-06-12) that **never had a call site.** Call-graph analysis confirmed it: 0 callers, 0 of 191
 execution flows. So canon had **no single admission chokepoint** — the governed intake lane enforced
 GOV-002, but the dreamer's own `_write_memory` and the direct MCP write both reach `store.write` with
 `_skip_protection=True` and bypassed anatomy entirely. The gate that was supposed to be the product had
@@ -117,7 +117,7 @@ can extract. The normaliser removes them; everything else is preserved verbatim.
   are all preserved.
 - **8 unit tests** (`tests/test_transcript_normaliser.py`) — strip, keep, no-signal,
   idempotency, token-reduction, mixed-interleave, FAILURE preservation, prose-Tool-reference safety.
-- **UAT probe** (`dotfiles/mori-uat/uat-normaliser-probe.sh`) — seeds 4 synthetic sessions
+- **UAT probe** — seeds 4 synthetic sessions
   above `max_real_id`, sets the dream watermark, calls `dream_run` on the Postgres UAT backend,
   verifies `memories` count present, no errors, dream model called, and cleans up on exit.
   5/5 checks pass: 25 `Tool:` lines and 4 `Stopped:` lines stripped per probe run.

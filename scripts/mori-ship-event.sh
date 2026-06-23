@@ -19,7 +19,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Auto-resolve key from secrets store when not passed explicitly.
-# Derives MORI_API_KEY_<CLIENT_UPPER> (e.g. MORI_API_KEY_UK_SMR_NUC15PRO) so
+# Derives MORI_API_KEY_<CLIENT_UPPER> (e.g. MORI_API_KEY_LAPTOP) so
 # each device uses its own named key without putting the secret in settings.json.
 if [[ -z "$API_KEY" ]] && [[ -x "$HOME/bin/get-secret.sh" ]]; then
   _key_name="MORI_API_KEY_$(echo "$CLIENT" | tr '[:lower:]-' '[:upper:]_')"

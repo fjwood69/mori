@@ -2,7 +2,7 @@
 
 All policy is enforced server-side.  Never trust agent-supplied classification.
 
-Namespace policy (from consult-b1000adc9f89)
+Namespace policy
 ---------------------------------------------
 target == "memory":
     allow  stable_key prefix: learned-*, fact-*

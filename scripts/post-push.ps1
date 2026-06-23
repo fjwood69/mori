@@ -13,7 +13,7 @@ if (-not $ApiKey) {
         $SecretsFile = Join-Path $env:USERPROFILE ".claude/.secrets"
     }
     if (Test-Path $SecretsFile) {
-        # Derive key name from COMPUTERNAME (e.g. UK-SMR-TWIGGY → MORI_API_KEY_TWIGGY)
+        # Derive key name from COMPUTERNAME (e.g. MY-PC → MORI_API_KEY_PC)
         $HostUpper = ($env:COMPUTERNAME -replace '^[^-]+-[^-]+-', '' -replace '-','_').ToUpper()
         $KeyName = "MORI_API_KEY_$HostUpper"
         $Line = Get-Content $SecretsFile | Where-Object { $_ -match "^$KeyName=" } | Select-Object -First 1

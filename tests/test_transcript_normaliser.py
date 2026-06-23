@@ -22,7 +22,7 @@ from mori_advisor.dream import normalise_events_text
 
 # Matches the real example shown in the spec (10+ tool calls, one assistant block)
 SESSION_A = """\
-Session: a50e2377-968e-4442-b8bc-dca49cdebc1f (2026-06-13T16:07:24, uk-smr-nuc15pro)
+Session: 11111111-1111-4111-8111-111111111111 (2026-06-13T16:07:24, dev-host)
   Tool: Bash
   Tool: Bash
   Tool: Bash
@@ -40,7 +40,7 @@ Session: a50e2377-968e-4442-b8bc-dca49cdebc1f (2026-06-13T16:07:24, uk-smr-nuc15
 
 # Session with no Assistant: block — pure tool scaffolding
 SESSION_B = """\
-Session: 636c51c4-9120-4a43-ba5a-8e54c372c01f (2026-06-13T16:07:28, uk-smr-nuc15pro)
+Session: 22222222-2222-4222-8222-222222222222 (2026-06-13T16:07:28, dev-host)
   Tool: Bash
   Tool: Bash
   Tool: Bash
@@ -55,8 +55,8 @@ Session: 636c51c4-9120-4a43-ba5a-8e54c372c01f (2026-06-13T16:07:28, uk-smr-nuc15
 
 # Session with FAILURE and CWD (must survive)
 SESSION_C = """\
-Session: cd05be71-0cec-4e54-8f4a-3a0b9a5ecc11 (2026-06-13T16:07:24, uk-smr-nuc15pro)
-  CWD: /home/nucadmin/mori
+Session: 33333333-3333-4333-8333-333333333333 (2026-06-13T16:07:24, dev-host)
+  CWD: /home/dev/project
   Prompt: You are a software engineer working in the current directory.
   Tool: Bash
   Tool: Read
@@ -91,11 +91,11 @@ def test_strip_tool_and_stopped_lines():
 def test_keep_session_headers_and_signal():
     """Session headers, Prompt, CWD, FAILURE, and Assistant prose must survive."""
     result = normalise_events_text(EXAMPLE_BATCH)
-    assert "Session: a50e2377" in result, "Session header A missing"
-    assert "Session: 636c51c4" in result, "Session header B missing"
-    assert "Session: cd05be71" in result, "Session header C missing"
+    assert "Session: 11111111" in result, "Session header A missing"
+    assert "Session: 22222222" in result, "Session header B missing"
+    assert "Session: 33333333" in result, "Session header C missing"
     assert "Prompt: You are a software engineer" in result, "Prompt line missing"
-    assert "CWD: /home/nucadmin/mori" in result, "CWD line missing"
+    assert "CWD: /home/dev/project" in result, "CWD line missing"
     assert "All 7 subtests pass" in result, "Assistant prose missing"
     assert "the external chroma dependency" in result, "Prose fragment missing"
     assert "Almost there" in result, "Session C assistant prose missing"
@@ -110,7 +110,7 @@ def test_all_scaffolding_removes_tool_stopped():
     """An all-scaffolding session (no Assistant:) loses only Tool:/Stopped: lines."""
     result = normalise_events_text(SESSION_B)
     # The Session: header must still be present
-    assert "Session: 636c51c4" in result, "Session header stripped — should be kept"
+    assert "Session: 22222222" in result, "Session header stripped — should be kept"
     # No Tool: or Stopped: lines
     for line in result.splitlines():
         stripped = line.strip()

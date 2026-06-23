@@ -39,7 +39,7 @@ Updated with each release.
 - Dual-backend store layer — SQLite (solo) or PostgreSQL (team), `MORI_DATABASE_URL`
 - `BaseStore` ABC, `SQLiteStore` delegation wrapper, `PostgresStore` (asyncpg pool)
 - `mori export` / `mori import` CLI tools — idempotent SQLite → Postgres migration
-- NUC streaming replica via Tailscale — `mori-pg-replica` on port 5435, lag=0
+- Streaming read replica — `mori-pg-replica`, lag=0
 - Daily pg_dump to GCS, 14-day lifecycle, GCS metadata server auth
 - `deploy/solo/` (SQLite) and `deploy/team/` (Postgres + pgBouncer + WAL-G)
 
