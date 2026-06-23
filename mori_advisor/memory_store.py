@@ -26,6 +26,7 @@ from mori_advisor.provenance import (
     Provenance,
     authorize_tier,
     content_hash,
+    tier_decision,
     validate_provenance,
 )
 from mori_advisor.write_result import Disposition, WriteResult, accepted
@@ -725,16 +726,32 @@ class MemoryStore:
             tags_list = tags or []
             tags_json = self._format_tags(tags_list)
 
-            # Phase 2 authorization pipeline (AUDIT-MODE — observe, never block in this step).
-            # stage 1: validate provenance · stage 2: tier-target authorization (may_target).
-            # The would-block is logged; enforcement lands behind MORI_TIER_ENFORCE (step 3).
+            # Phase 2 authorization pipeline: stage 1 validate provenance, stage 2 tier-target
+            # decision (snapshot ONCE here — never re-read mid-write; GLM). audit-mode logs a
+            # would-block and proceeds; enforce-mode HARD-REJECTS (R2 — both backends, no pending).
+            from mori_advisor.metrics import record_tier_decision
+
             self._validate_provenance(provenance, effective_name)
-            tier_ok, tier_reason = self._authorize_tier(provenance, effective_tier)
-            if not tier_ok:
+            _reject, _decision, _mode, tier_reason = tier_decision(provenance, effective_tier)
+            record_tier_decision(provenance.actor, effective_tier, _decision, _mode)
+            if _decision != "allowed":
                 logger.warning(
-                    "TIER-AUDIT would-block name=%s: %s (audit-mode — not enforced)",
+                    "TIER-%s name=%s actor=%s op=%s src=%s mode=%s: %s",
+                    _decision.upper(),
                     effective_name,
+                    provenance.actor,
+                    provenance.op,
+                    provenance.source,
+                    _mode,
                     tier_reason,
+                )
+            if _reject:
+                return WriteResult(
+                    memory_name=effective_name,
+                    intended_tier=effective_tier,
+                    stored_tier="",
+                    disposition=Disposition.REJECTED,
+                    reason=tier_reason,
                 )
 
             # Completeness chokepoint (AUDIT mode — logs, never blocks). Every writer

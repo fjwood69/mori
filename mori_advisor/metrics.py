@@ -233,6 +233,28 @@ _brief_coverage = Gauge(
     "Confirmed-delivery share of briefs served (production delivery-verification coverage)",
     registry=prom_registry,
 )
+# Phase 2 step 3: tier-authorization decisions at store.write. The `would_block` count over
+# the audit-mode soak SIZES the enforce flip (GLM#7 exit criteria). Labels are bounded —
+# source/op/reason live in the structured log (joined via actor+name), not as labels.
+_tier_decisions = Counter(
+    "mori_tier_decisions_total",
+    "Tier-authorization decisions at store.write",
+    ["actor", "intended_tier", "decision", "mode"],
+    registry=prom_registry,
+)
+
+
+def record_tier_decision(actor: str, intended_tier: str, decision: str, mode: str) -> None:
+    """Record one tier-authorization decision (allowed | would_block | rejected). Fail-open —
+    telemetry must NEVER break a write (the point is to make the decision observable, not fragile)."""
+    try:
+        _tier_decisions.labels(
+            actor=actor, intended_tier=intended_tier, decision=decision, mode=mode
+        ).inc()
+    except Exception:
+        logger.debug("record_tier_decision failed", exc_info=True)
+
+
 # Process-level accumulators for the coverage ratio (prom Counter internals aren't cleanly readable).
 _brief_counts = {"served": 0, "confirmed": 0}
 

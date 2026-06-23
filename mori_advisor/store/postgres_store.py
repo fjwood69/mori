@@ -33,8 +33,8 @@ from mori_advisor.memory_store import (
 from mori_advisor.provenance import (
     LEGACY,
     Provenance,
-    authorize_tier,
     content_hash,
+    tier_decision,
     validate_provenance,
 )
 from mori_advisor.write_result import Disposition, WriteResult, accepted
@@ -408,25 +408,43 @@ class PostgresStore(BaseStore):
 
         audit_completeness(body, description, seam="store.write:postgres", name=name, log=logger)
 
-        # Phase 2 authorization pipeline (AUDIT-MODE — observe, never block in this step).
-        # stage 1: validate provenance · stage 2: tier-target authorization (may_target).
-        # Same single policy authority as SQLite; enforcement lands behind MORI_TIER_ENFORCE.
+        # Defensive coalesce: mirror SQLite's _ensure_tier — a None or unrecognised tier must
+        # never reach the DB as NULL (violates NOT NULL). Done BEFORE the decision so the tier
+        # judged is the tier persisted.
+        tier = tier if tier in VALID_TIERS else "working"
+
+        # Phase 2 authorization pipeline: stage 1 validate provenance, stage 2 tier-target
+        # decision (snapshot ONCE here — never re-read mid-write; GLM). audit-mode logs a
+        # would-block and proceeds; enforce-mode HARD-REJECTS (R2 — both backends, no pending).
+        from mori_advisor.metrics import record_tier_decision
+
         validate_provenance(provenance, name, logger)
-        _tier_ok, _tier_reason = authorize_tier(provenance, tier)
-        if not _tier_ok:
+        _reject, _decision, _mode, _tier_reason = tier_decision(provenance, tier)
+        record_tier_decision(provenance.actor, tier, _decision, _mode)
+        if _decision != "allowed":
             logger.warning(
-                "TIER-AUDIT would-block name=%s: %s (audit-mode — not enforced)",
+                "TIER-%s name=%s actor=%s op=%s src=%s mode=%s: %s",
+                _decision.upper(),
                 name,
+                provenance.actor,
+                provenance.op,
+                provenance.source,
+                _mode,
                 _tier_reason,
+            )
+        if _reject:
+            return WriteResult(
+                memory_name=name,
+                intended_tier=tier,
+                stored_tier="",
+                disposition=Disposition.REJECTED,
+                reason=_tier_reason,
             )
 
         tags_v = _tags_json(tags)
         sess_ids = _tags_json(origin_session_ids)
         clients = _tags_json(origin_clients or ([client] if client else []))
         now = _now_utc()
-        # Defensive coalesce: mirror SQLite's _ensure_tier — a None or unrecognised
-        # tier must never reach the DB as NULL (violates NOT NULL constraint).
-        tier = tier if tier in VALID_TIERS else "working"
 
         async def _do(conn):
             existing = await conn.fetchrow(

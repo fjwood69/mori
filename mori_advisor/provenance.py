@@ -22,6 +22,7 @@ Phasing (see identity-aware-chokepoint-epic.md):
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 
 
@@ -168,3 +169,45 @@ def authorize_tier(provenance: Provenance, intended_tier: str) -> tuple[bool, st
     return False, (
         f"actor '{provenance.actor}' may not target tier '{intended_tier}' (caps: {caps})"
     )
+
+
+def tier_enforce_mode(actor: str) -> str:
+    """Resolve the tier-enforcement mode for *actor* from ``$MORI_TIER_ENFORCE``.
+
+    Read ONCE per write (the store snapshots it at txn-start — never re-read mid-write; GLM).
+      unset / ``audit``     -> ``audit``   (observe only; the default — zero behaviour change)
+      ``enforce``           -> ``enforce``  (all actors)
+      ``enforce:mcp,rest``  -> ``enforce`` for the listed actors, ``audit`` for the rest
+                               (the board's per-actor flip — flip mcp/rest first, ingestion later)
+    Unrecognised values fail SAFE to ``audit``.
+    """
+    raw = (os.environ.get("MORI_TIER_ENFORCE") or "").strip().lower()
+    if not raw or raw == "audit":
+        return "audit"
+    if raw == "enforce":
+        return "enforce"
+    if raw.startswith("enforce:"):
+        allow = {a.strip() for a in raw[len("enforce:") :].split(",") if a.strip()}
+        return "enforce" if actor in allow else "audit"
+    return "audit"
+
+
+def tier_decision(provenance: Provenance, intended_tier: str) -> tuple[bool, str, str, str]:
+    """The full tier-authorization decision, snapshot once at ``store.write`` txn-start.
+
+    Returns ``(reject, decision, mode, reason)``:
+      reject:   ``True`` -> the store MUST reject (enforce mode + unauthorized tier); persists nothing.
+      decision: ``allowed`` | ``would_block`` (unauthorized but audit-mode) | ``rejected`` — metric cut.
+      mode:     ``audit`` | ``enforce`` for this actor.
+      reason:   the would-block reason (``""`` when allowed).
+
+    R2 (board-ratified): an unauthorized tier target is HARD-REJECTED on both backends — no
+    downgrade-to-pending (that lane is for the name/tag protection path only).
+    """
+    ok, reason = authorize_tier(provenance, intended_tier)
+    mode = tier_enforce_mode(provenance.actor)
+    if ok:
+        return False, "allowed", mode, ""
+    if mode == "enforce":
+        return True, "rejected", mode, reason
+    return False, "would_block", mode, reason
