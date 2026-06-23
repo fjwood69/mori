@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.3.0 — identity-aware chokepoint: universal audit + tier/anatomy enforcement (default-OFF)
+
+The `store.write` chokepoint gains a single audited authorization pipeline, all enforcement
+**default-OFF (audit-mode)** so this is a zero-behaviour-change deploy that begins the soak.
+
+- **#59 — SQLite off the event loop**: `AsyncStore` facade off-loads synchronous SQLite work to a
+  dedicated single-thread executor (`run_in_txn`), removing the single-worker self-host DoS.
+- **Phase 1 — universal in-transaction audit**: every write carries structured `Provenance`
+  (actor + actor_detail + source + op) and lands one `write_audit` row atomically with the write —
+  the dreamer included. Closes the v2.2.26 per-caller audit drift.
+- **Phase 2 — tier + anatomy enforcement (behind flags)**:
+  - `MORI_TIER_ENFORCE` (audit | enforce | enforce:actor) — an unauthorized tier target is
+    REJECTED on both backends (the #5 fix; canonical restricted to governed-promotion/init/import/
+    system). `mori_tier_decisions_total{actor,intended_tier,decision,mode}` sizes the flip.
+  - `MORI_ANATOMY_ENFORCE` — a failed completeness verdict downgrades to pending; the
+    `_skip_protection` trapdoor closes under enforce. `mori_anatomy_decisions_total{actor,code,mode}`.
+  - MCP/REST handlers consume `WriteResult.disposition` (plumbing before policy).
+- **fix(dream)**: advance the watermark on a valid-empty batch — a low-signal batch no longer
+  permanently stalls the dreamer (watermark was only advanced on non-empty batches).
+- **chore(sterility)**: scrub homelab/internal markers from public docs + a CI content-gate.
+
 ## v2.2.26 — serving robustness: off-loop LLM calls + infra housekeeping
 
 **fix(serving): the dream/MCP "pear-shaped" bug — a synchronous LLM call froze the whole server.**
