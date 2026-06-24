@@ -20,10 +20,9 @@
  *     at an operational-context file (kept out of this public repo).
  *
  * Config sentinel (runs before the above for startup/resume/clear):
- *   Server URL comes from --url, MORI_SERVER_URL, or the user_config value
- *   (CLAUDE_PLUGIN_OPTION_server_url). This hook only runs when the plugin is
- *   installed — which registers the capture hooks that REQUIRE a server — so an
- *   empty URL is a real misconfiguration, not an opt-out, and we surface it:
+ *   Server URL comes from --url or MORI_SERVER_URL. This hook only runs when the
+ *   plugin is installed — which registers the capture hooks that REQUIRE a server —
+ *   so an empty URL is a real misconfiguration, not an opt-out, and we surface it:
  *   - no URL           → injects UNCONFIGURED_MESSAGE (opt out: MORI_SKIP_SETUP_NUDGE=1)
  *   - URL set + "down" → injects SETUP_MESSAGE
  *   - URL set + "up"   → falls through to normal behaviour
@@ -41,7 +40,6 @@
  * Server URL resolution (in order):
  *   1. --url <value> argv (explicit; used by tests and the Cursor/Antigravity wrappers)
  *   2. MORI_SERVER_URL environment variable
- *   3. CLAUDE_PLUGIN_OPTION_server_url (injected from the plugin's user_config)
  *   Empty → UNCONFIGURED_MESSAGE is surfaced (the plugin is installed but unconfigured).
  *
  * Invoked by the Claude Code harness as:
@@ -92,15 +90,10 @@ function shouldNudgeOnce() {
 }
 
 async function main() {
-  // Explicit --url wins (tests / wrappers); otherwise the plugin's configured
-  // server URL, surfaced as MORI_SERVER_URL or the CLAUDE_PLUGIN_OPTION_* env var
-  // that user_config injects. Empty means the plugin is installed but unconfigured
+  // Explicit --url wins (tests / wrappers); otherwise MORI_SERVER_URL from the hook
+  // environment. Empty means the plugin is installed but the server isn't configured
   // — a real misconfiguration we surface below, not a silent no-op.
-  const serverUrl =
-    parseUrl(process.argv.slice(2)) ||
-    process.env.MORI_SERVER_URL ||
-    process.env.CLAUDE_PLUGIN_OPTION_server_url ||
-    '';
+  const serverUrl = parseUrl(process.argv.slice(2)) || process.env.MORI_SERVER_URL || '';
 
   let raw = '';
   try {

@@ -8,10 +8,10 @@
  * Usage:
  *   node mori-ship-event.mjs --url <base> --client <name> [--api-key <key>] [--mode raw|precompact]
  *
- * Config resolution: --url/--api-key win; otherwise MORI_SERVER_URL / MORI_API_KEY,
- * then CLAUDE_PLUGIN_OPTION_server_url / _api_key (the plugin user_config path).
- * Always exits 0 (fail-soft), but config errors (missing URL, 401/403) are surfaced
- * on stderr — not silently dropped. Transient errors go to the log only.
+ * Config resolution: --url/--api-key win; otherwise MORI_SERVER_URL / MORI_API_KEY
+ * from the hook environment. Always exits 0 (fail-soft), but config errors (missing
+ * URL, 401/403) are surfaced on stderr — not silently dropped. Transient errors go
+ * to the log only.
  *
  * Options:
  *   --url <base>      Base URL of the Mori server (or set MORI_SERVER_URL)
@@ -40,8 +40,8 @@ function parseArgs(argv) {
   if (!args.client) args.client = hostname();
   // Explicit --url/--api-key win (tests / wrappers); otherwise fall back to the
   // env vars the Claude Code plugin sets (MORI_SERVER_URL / MORI_API_KEY).
-  if (!args.url) args.url = process.env.MORI_SERVER_URL || process.env.CLAUDE_PLUGIN_OPTION_server_url || '';
-  if (!args.apiKey) args.apiKey = process.env.MORI_API_KEY || process.env.CLAUDE_PLUGIN_OPTION_api_key || '';
+  if (!args.url) args.url = process.env.MORI_SERVER_URL || '';
+  if (!args.apiKey) args.apiKey = process.env.MORI_API_KEY || '';
   return args;
 }
 
