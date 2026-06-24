@@ -8,9 +8,10 @@
  * Usage:
  *   node mori-ship-event.mjs --url <base> --client <name> [--api-key <key>] [--mode raw|precompact]
  *
- * Config resolution: --url/--api-key win; otherwise MORI_SERVER_URL / MORI_API_KEY
- * env vars (the Claude Code plugin's config path). No URL → events are not shipped
- * (fail-soft, exit 0).
+ * Config resolution: --url/--api-key win; otherwise MORI_SERVER_URL / MORI_API_KEY,
+ * then CLAUDE_PLUGIN_OPTION_server_url / _api_key (the plugin user_config path).
+ * Always exits 0 (fail-soft), but config errors (missing URL, 401/403) are surfaced
+ * on stderr — not silently dropped. Transient errors go to the log only.
  *
  * Options:
  *   --url <base>      Base URL of the Mori server (or set MORI_SERVER_URL)
@@ -21,7 +22,7 @@
  *                     precompact: POST to /api/precompact (blocks until dream completes)
  */
 
-import { readFileSync, existsSync, appendFileSync, statSync } from 'fs';
+import { readFileSync, existsSync, appendFileSync, statSync, writeFileSync } from 'fs';
 import { hostname } from 'os';
 
 // ---- Arg parsing ---------------------------------------------------------------
@@ -39,8 +40,8 @@ function parseArgs(argv) {
   if (!args.client) args.client = hostname();
   // Explicit --url/--api-key win (tests / wrappers); otherwise fall back to the
   // env vars the Claude Code plugin sets (MORI_SERVER_URL / MORI_API_KEY).
-  if (!args.url) args.url = process.env.MORI_SERVER_URL || '';
-  if (!args.apiKey) args.apiKey = process.env.MORI_API_KEY || '';
+  if (!args.url) args.url = process.env.MORI_SERVER_URL || process.env.CLAUDE_PLUGIN_OPTION_server_url || '';
+  if (!args.apiKey) args.apiKey = process.env.MORI_API_KEY || process.env.CLAUDE_PLUGIN_OPTION_api_key || '';
   return args;
 }
 
@@ -67,6 +68,20 @@ function logFailure(mode, uri, reason) {
   } catch {
     // Truly fail-silent
   }
+}
+
+// ---- Visible failure surfacing -------------------------------------------------
+// Fail-soft must not mean fail-silent. A missing server URL or a rejected POST
+// used to drop events with zero signal. Surface CONFIG errors (no URL, 401/403)
+// on stderr — visible in the Claude Code hook output — at most once per hour so
+// PostToolUse can't spam. Transient errors (5xx/timeouts) go to the log only.
+function warnOnce(reason, key = 'warn') {
+  const marker = `${process.env.TMPDIR || '/tmp'}/mori-hook-${key}`;
+  try {
+    if (existsSync(marker) && Date.now() - statSync(marker).mtimeMs < 3_600_000) return;
+    writeFileSync(marker, String(Date.now()));
+  } catch { /* if we can't persist the marker, warn anyway */ }
+  try { process.stderr.write(`[mori] ${reason}\n`); } catch { /* noop */ }
 }
 
 // ---- Stop-event enrichment -----------------------------------------------------
@@ -114,6 +129,14 @@ async function main() {
   const endpoint = args.mode === 'precompact' ? 'precompact' : 'events/raw';
   const uri = `${base}/api/${endpoint}?client=${encodeURIComponent(args.client)}`;
 
+  // A missing/relative base URL makes fetch() throw and silently drops every
+  // event. Stay fail-soft (exit 0) but say so loudly — this is a misconfiguration.
+  if (!base || !/^https?:\/\//i.test(base)) {
+    warnOnce(`MORI_SERVER_URL is unset or invalid ("${args.url}") — capture events are NOT being shipped. Configure the plugin's server URL.`, 'no-url');
+    logFailure(args.mode, uri, 'invalid base URL (MORI_SERVER_URL unset/invalid)');
+    process.exit(0);
+  }
+
   // Attempt Stop-event enrichment (parse → enrich → re-serialise; fall back to raw string)
   let body = raw;
   try {
@@ -129,8 +152,18 @@ async function main() {
   if (args.apiKey) headers['X-Api-Key'] = args.apiKey;
 
   try {
-    await fetch(uri, { method: 'POST', headers, body });
+    const resp = await fetch(uri, { method: 'POST', headers, body });
+    if (resp.status === 401 || resp.status === 403) {
+      // Config error — a fetch() that returns 401 does NOT throw, so this used to
+      // look like success. The key is wrong/missing; surface it.
+      logFailure(args.mode, uri, `HTTP ${resp.status}`);
+      warnOnce(`Mori server rejected the request (HTTP ${resp.status}) — check MORI_API_KEY. Events are not being recorded.`, 'auth');
+    } else if (!resp.ok) {
+      // Transient / server-side — log only, don't spam stderr.
+      logFailure(args.mode, uri, `HTTP ${resp.status}`);
+    }
   } catch (err) {
+    // Transient (connection refused / timeout) — log only.
     logFailure(args.mode, uri, String(err));
   }
 
