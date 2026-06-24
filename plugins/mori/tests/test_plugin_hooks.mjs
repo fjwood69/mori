@@ -117,12 +117,15 @@ console.log('\n── mori-context-hook.mjs ──\n');
 }
 
 {
-  // 4. source=startup + no URL configured → SILENT (no warning).
-  // The hook's health check is opt-in and separate from the MCP connection; an
-  // absent URL must NOT warn (it would false-fire on the claude-mcp-add setup).
-  const env = { ...process.env, TMPDIR: TMP };
+  // 4. source=startup + no URL configured → emits UNCONFIGURED_MESSAGE (cached).
+  // An installed-but-unconfigured plugin is a real misconfiguration; surface the
+  // onboarding nudge once rather than failing silently. Fresh XDG_CACHE_HOME so the
+  // 24h nudge cache is empty and the nudge fires.
+  const env = { ...process.env, TMPDIR: TMP, XDG_CACHE_HOME: mkdtempSync(join(tmpdir(), 'mori-cache-')) };
   delete env.MORI_SERVER_URL;
+  delete env.CLAUDE_PLUGIN_OPTION_server_url;
   delete env.MORI_SESSION_CONTEXT_FILE;
+  delete env.MORI_SKIP_SETUP_NUDGE;
   const r = spawnSync(process.execPath, [CONTEXT_HOOK, '--url', ''], {
     input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'test-noURL-s4' }),
     env,
@@ -130,7 +133,32 @@ console.log('\n── mori-context-hook.mjs ──\n');
     timeout: 5000,
   });
   assert((r.status ?? -1) === 0, 'startup+no-url: exits 0');
-  assert((r.stdout ?? '').trim() === '', 'startup+no-url: SILENT (no setup warning)', r.stdout);
+  let parsed;
+  try { parsed = JSON.parse((r.stdout ?? '').trim()); } catch { /* noop */ }
+  assert(
+    typeof parsed?.hookSpecificOutput?.additionalContext === 'string' &&
+      parsed.hookSpecificOutput.additionalContext.includes('No Mori server is configured'),
+    'startup+no-url: emits UNCONFIGURED_MESSAGE (no longer silent)',
+    r.stdout,
+  );
+
+  // 4b. no URL, but nudge cache now warm (<24h) → silent (no per-session spam).
+  const r2 = spawnSync(process.execPath, [CONTEXT_HOOK, '--url', ''], {
+    input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'test-noURL-s4b' }),
+    env,
+    encoding: 'utf8',
+    timeout: 5000,
+  });
+  assert((r2.stdout ?? '').trim() === '', 'startup+no-url (cache warm): silent within 24h (no spam)', r2.stdout);
+
+  // 4c. MORI_SKIP_SETUP_NUDGE=1 → silent even with a fresh cache.
+  const r3 = spawnSync(process.execPath, [CONTEXT_HOOK, '--url', ''], {
+    input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'test-noURL-s4c' }),
+    env: { ...env, XDG_CACHE_HOME: mkdtempSync(join(tmpdir(), 'mori-cache2-')), MORI_SKIP_SETUP_NUDGE: '1' },
+    encoding: 'utf8',
+    timeout: 5000,
+  });
+  assert((r3.stdout ?? '').trim() === '', 'startup+no-url + MORI_SKIP_SETUP_NUDGE=1: silent', r3.stdout);
 }
 
 {
@@ -302,6 +330,26 @@ console.log('\n── mori-ship-event.mjs ──\n');
 }
 
 {
+  // 13b. ship-event with no server URL → fail-soft (exit 0) but LOUD on stderr.
+  // Regression guard: an empty URL used to build a relative URI, throw inside
+  // fetch(), and drop the event silently with only a /tmp log.
+  const freshTmp = mkdtempSync(join(tmpdir(), 'mori-nourl-'));
+  const env = { ...process.env, TMPDIR: freshTmp };
+  delete env.MORI_SERVER_URL;
+  delete env.CLAUDE_PLUGIN_OPTION_server_url;
+  const result = spawnSync(process.execPath, [SHIP_EVENT, '--client', 'test-client', '--mode', 'raw'], {
+    input: JSON.stringify({ hook_event_name: 'PostToolUse', tool: 'Read' }),
+    encoding: 'utf8',
+    env,
+    timeout: 5000,
+  });
+  assert((result.status ?? -1) === 0, 'ship-event no-url: exits 0 (fail-soft preserved)');
+  assert(/MORI_SERVER_URL|not being shipped/i.test(result.stderr ?? ''),
+    'ship-event no-url: warns LOUDLY on stderr (no longer silent)', JSON.stringify(result.stderr));
+  try { rmSync(freshTmp, { recursive: true, force: true }); } catch { /* noop */ }
+}
+
+{
   // 14. Stop enrichment skipped when transcript_path does not exist
   const missingPath = join(TMP, 'nonexistent-transcript.jsonl');
   const enrichInlineTest = `
@@ -359,18 +407,24 @@ console.log('\n── env-var config (MORI_SERVER_URL / MORI_API_KEY) ──\n')
 }
 
 {
-  // 16. context-hook with neither --url nor MORI_SERVER_URL → SILENT (no warning).
-  // This is the recommended claude-mcp-add setup: the connection is separate and
-  // invisible to the hook, so the hook must not inject a "not configured" warning.
-  const env = { ...process.env, TMPDIR: TMP };
+  // 16. context-hook with neither --url nor MORI_SERVER_URL → emits the
+  // UNCONFIGURED_MESSAGE nudge (once/24h). An installed-but-unconfigured plugin is
+  // a real misconfiguration; MCP-only users who don't want it set
+  // MORI_SKIP_SETUP_NUDGE=1 (test 4c). Fresh cache so the nudge fires.
+  const env = { ...process.env, TMPDIR: TMP, XDG_CACHE_HOME: mkdtempSync(join(tmpdir(), 'mori-cache16-')) };
   delete env.MORI_SERVER_URL;
+  delete env.CLAUDE_PLUGIN_OPTION_server_url;
   delete env.MORI_SESSION_CONTEXT_FILE;
+  delete env.MORI_SKIP_SETUP_NUDGE;
   const r = spawnSync(process.execPath, [CONTEXT_HOOK], {
     input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'test-env-s16' }),
     env, encoding: 'utf8', timeout: 5000,
   });
   assert((r.status ?? -1) === 0, 'context-hook no-config: exits 0');
-  assert((r.stdout ?? '').trim() === '', 'context-hook no-config: unset MORI_SERVER_URL → SILENT', r.stdout);
+  assert(
+    (r.stdout ?? '').includes('No Mori server is configured'),
+    'context-hook no-config: emits UNCONFIGURED_MESSAGE (no longer silent)', r.stdout,
+  );
 }
 
 {

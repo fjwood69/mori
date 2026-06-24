@@ -7,5 +7,18 @@
   "homepage": "https://github.com/fjwood69/mori",
   "repository": "https://github.com/fjwood69/mori",
   "license": "AGPL-3.0-only",
-  "keywords": ["memory", "mcp", "agents", "context", "cross-device"]
+  "keywords": ["memory", "mcp", "agents", "context", "cross-device"],
+  "userConfig": {
+    "server_url": {
+      "type": "string",
+      "title": "Mori server URL",
+      "description": "Base URL of your Mori server (e.g. http://localhost:8968). Leave blank if you connect via `claude mcp add` instead of the capture hooks. Injected to the hooks as MORI_SERVER_URL / CLAUDE_PLUGIN_OPTION_server_url."
+    },
+    "api_key": {
+      "type": "string",
+      "title": "Mori API key",
+      "description": "API key for your Mori server (name:secret or bare secret). Optional; stored in secure storage, not settings.json.",
+      "sensitive": true
+    }
+  }
 }

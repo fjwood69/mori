@@ -19,16 +19,15 @@
  *     the env var is unset, so nothing is injected. Private deployments point it
  *     at an operational-context file (kept out of this public repo).
  *
- * Health sentinel (runs before the above for startup/resume/clear):
- *   ONLY runs when this hook has its own server URL (MORI_SERVER_URL / --url) —
- *   the hook's telemetry + health check are opt-in and SEPARATE from the mori MCP
- *   connection (`claude mcp add`), which hooks cannot see. So no URL = silent (the
- *   optional channel is just off); it must NOT warn, or it false-fires on the
- *   recommended claude-mcp-add setup and pollutes the session context.
+ * Config sentinel (runs before the above for startup/resume/clear):
+ *   Server URL comes from --url, MORI_SERVER_URL, or the user_config value
+ *   (CLAUDE_PLUGIN_OPTION_server_url). This hook only runs when the plugin is
+ *   installed — which registers the capture hooks that REQUIRE a server — so an
+ *   empty URL is a real misconfiguration, not an opt-out, and we surface it:
+ *   - no URL           → injects UNCONFIGURED_MESSAGE (opt out: MORI_SKIP_SETUP_NUDGE=1)
  *   - URL set + "down" → injects SETUP_MESSAGE
  *   - URL set + "up"   → falls through to normal behaviour
- *   - no URL           → silent, falls through
- *   Result is cached per session_id for 5 minutes (temp file) to avoid re-pinging.
+ *   Health result is cached per session_id for 5 minutes (temp file) to avoid re-pinging.
  *
  * Design:
  *   - SessionStart fires exactly once per boundary, so there is NO per-prompt
@@ -41,17 +40,20 @@
  *
  * Server URL resolution (in order):
  *   1. --url <value> argv (explicit; used by tests and the Cursor/Antigravity wrappers)
- *   2. MORI_SERVER_URL environment variable (opt-in hook telemetry)
- *   Empty → the health sentinel is skipped silently (no warning).
+ *   2. MORI_SERVER_URL environment variable
+ *   3. CLAUDE_PLUGIN_OPTION_server_url (injected from the plugin's user_config)
+ *   Empty → UNCONFIGURED_MESSAGE is surfaced (the plugin is installed but unconfigured).
  *
  * Invoked by the Claude Code harness as:
  *   node "${CLAUDE_PLUGIN_ROOT}/scripts/mori-context-hook.mjs"
  * with MORI_SERVER_URL exported in the environment.
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 import { checkServer, getCached, setCached } from './lib/health-gate.mjs';
-import { SETUP_MESSAGE } from './lib/setup-message.mjs';
+import { SETUP_MESSAGE, UNCONFIGURED_MESSAGE } from './lib/setup-message.mjs';
 
 function emit(additionalContext) {
   process.stdout.write(
@@ -71,11 +73,34 @@ function parseUrl(argv) {
   return '';
 }
 
+/**
+ * Should we surface the "unconfigured" nudge now? Capture degrades silently, but
+ * an installed-yet-unconfigured plugin is worth flagging — once. Rate-limited to
+ * once per 24h via a persistent marker so it never spams CI / long sessions, and
+ * fully suppressible with MORI_SKIP_SETUP_NUDGE=1.
+ */
+function shouldNudgeOnce() {
+  if (process.env.MORI_SKIP_SETUP_NUDGE === '1') return false;
+  const dir = join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'mori');
+  const marker = join(dir, 'unconfigured-nudge');
+  try {
+    if (existsSync(marker) && Date.now() - statSync(marker).mtimeMs < 86_400_000) return false;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(marker, String(Date.now()));
+  } catch { /* if we can't persist, nudge anyway — fail toward discovery */ }
+  return true;
+}
+
 async function main() {
-  // Explicit --url wins (tests / wrappers); otherwise read MORI_SERVER_URL. Empty
-  // is fine — the hook's health check is opt-in and separate from the MCP
-  // connection (`claude mcp add`); no URL just means the hook stays silent.
-  const serverUrl = parseUrl(process.argv.slice(2)) || process.env.MORI_SERVER_URL || '';
+  // Explicit --url wins (tests / wrappers); otherwise the plugin's configured
+  // server URL, surfaced as MORI_SERVER_URL or the CLAUDE_PLUGIN_OPTION_* env var
+  // that user_config injects. Empty means the plugin is installed but unconfigured
+  // — a real misconfiguration we surface below, not a silent no-op.
+  const serverUrl =
+    parseUrl(process.argv.slice(2)) ||
+    process.env.MORI_SERVER_URL ||
+    process.env.CLAUDE_PLUGIN_OPTION_server_url ||
+    '';
 
   let raw = '';
   try {
@@ -109,6 +134,17 @@ async function main() {
         'brief (new/superseded memories, pending mori-msg items, NATS traffic). Run it first, ' +
         'then continue.',
     );
+    process.exit(0);
+  }
+
+  // ── Unconfigured: plugin installed but no server URL ──────────────────────
+  // The capture + brief hooks are registered yet have nowhere to talk to, so the
+  // whole channel is dead. Surface the onboarding nudge (the same message the
+  // Cursor/Antigravity variants use) instead of silently doing nothing — silence
+  // here is exactly how a broken install goes unnoticed. Opt out with
+  // MORI_SKIP_SETUP_NUDGE=1 (e.g. MCP-only users who don't want the nudge).
+  if (!serverUrl) {
+    if (shouldNudgeOnce()) emit(UNCONFIGURED_MESSAGE);
     process.exit(0);
   }
 
