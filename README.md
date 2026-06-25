@@ -102,11 +102,14 @@ Instance B doesn't know that Instance A just changed the auth contract. Instance
 doesn't know that Instance B's deployment assumptions shifted. They find out the
 hard way, mid-task, when something breaks.
 
-Mori solves this. Every coding agent instance sends its session events to the shared Mori
-server. The dream pipeline distils those events from **all instances** into a
-unified memory store. At the start of any session, `/brief` surfaces what the
-other instances have been doing. From turn one, each instance knows what the
-others know.
+Mori gives every instance the same **shared picture**. Every coding agent instance sends
+its session events to the shared Mori server; the dream pipeline distils those events from
+**all instances** into a unified memory store, and `/brief` surfaces them at the start of
+any session. But be clear about what that buys: a shared picture is *visibility*, not
+coherence you can bank on. Surfacing what Instance A decided does not make Instance B *act*
+on it — a coding agent can read another instance's change and proceed against it anyway (we
+measured exactly that, 15/15). The coherence that **holds** is the gate's, not the brief's:
+a binding boundary that applies regardless of whether the agent read the memory at all.
 
 ---
 
@@ -383,8 +386,10 @@ not a textbook.
 
 **Standards-aware:** set `MORI_STANDARDS_DIR` to a directory of `.md` files
 and Mori imports them as protected memories. `/consult --focus security`
-automatically injects your security baseline — your agents check against your
-rules, not generic ones.
+injects your security baseline into the advisor call, so **`/consult` reviews
+against your rules, not a textbook**. (That's the advisor — a single, scoped
+review request — reading your standards; it is *not* a claim that your coding
+agent obeys them mid-task. Surfaced standards inform; they don't bind.)
 
 ### Inter-agent messaging (`/msg`)
 
