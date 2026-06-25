@@ -33,7 +33,9 @@
  *   conversation_id   → session_id        (Cursor uses this as the session key)
  *   hook_event_name   → hook_event_name   (identity)
  *   transcript_path   → transcript_path   (identity)
- *   workspace_roots   → workspace_roots   (identity; array of { path } objects)
+ *   workspace_roots   → workspace_roots   (identity)
+ *   tool_output       → tool_output + tool_response (Cursor postToolUse; JSON string)
+ *   tool_response     → (legacy fixture name; same mapping as tool_output)
  *   [other fields]    → _clientMeta.rest
  *
  *   Cursor event names map to canonical names:
@@ -64,6 +66,17 @@ const CURSOR_EVENT_NAME_MAP = {
 };
 
 /**
+ * Normalise Cursor tool result to the string form the mori server reads (tool_output).
+ * Cursor sends JSON-stringified tool_output; legacy fixtures may use tool_response objects.
+ */
+function cursorToolResultString(tool_output, tool_response) {
+  const raw = tool_output ?? tool_response;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === 'string') return raw;
+  return JSON.stringify(raw);
+}
+
+/**
  * Normalise a Cursor hook event JSON object to the canonical schema.
  *
  * @param {object} ev        Parsed Cursor event object (snake_case)
@@ -78,6 +91,7 @@ function fromCursor(ev, eventName) {
     workspace_roots,
     tool_name,
     tool_input,
+    tool_output,
     tool_response,
     source,
     cwd,
@@ -89,13 +103,18 @@ function fromCursor(ev, eventName) {
   const canonicalEventName =
     CURSOR_EVENT_NAME_MAP[rawName.toLowerCase()] || rawName;
 
+  const toolResultStr = cursorToolResultString(tool_output, tool_response);
+
   return {
     session_id: conversation_id || ev.session_id || '',
     hook_event_name: canonicalEventName,
     transcript_path: transcript_path || '',
     ...(tool_name !== undefined && { tool_name }),
     ...(tool_input !== undefined && { tool_input }),
-    ...(tool_response !== undefined && { tool_response }),
+    ...(toolResultStr !== undefined && {
+      tool_output: toolResultStr,
+      tool_response: toolResultStr,
+    }),
     ...(source !== undefined && { source }),
     ...(cwd !== undefined && { cwd }),
     ...(workspace_roots !== undefined && { workspace_roots }),

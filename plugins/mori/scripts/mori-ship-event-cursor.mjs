@@ -15,9 +15,9 @@
  *   --api-key <key>   API key sent as X-Api-Key header (optional)
  *   --event <name>    Override event name (optional; falls back to stdin hook_event_name)
  *
- * Cursor input fields (snake_case):
+ * Cursor input fields (snake_case, per cursor.com/docs/hooks):
  *   hook_event_name, conversation_id, transcript_path, workspace_roots, tool_name,
- *   tool_input, tool_response, source, cwd
+ *   tool_input, tool_output, tool_use_id, duration, cwd
  *
  * Stop enrichment: mirrors mori-ship-event.mjs — if hook_event_name is Stop and
  * transcript_path is readable, adds transcript_tail_b64 (last 64 KB, base64).

@@ -179,8 +179,41 @@ console.log('\n── mori-ship-event-cursor.mjs ──\n');
   assert(c?.session_id === 'conv-abc-123', 'canonical: conversation_id → session_id');
   assert(c?.hook_event_name === 'PostToolUse', 'canonical: postToolUse → PostToolUse (PascalCase)');
   assert(c?.transcript_path === '/tmp/cursor-transcript-abc123.jsonl', 'canonical: transcript_path identity');
-  assert(c?.tool_name === 'Read', 'canonical: tool_name mapped');
+  assert(c?.tool_name === 'Shell', 'canonical: tool_name mapped');
+  assert(
+    c?.tool_output === '{"exitCode":0,"stdout":"All tests passed"}',
+    'canonical: tool_output preserved (Cursor field)',
+  );
+  assert(
+    c?.tool_response === c?.tool_output,
+    'canonical: tool_response mirrors tool_output for server ingest',
+  );
+  assert(c?._clientMeta?.duration === 5432, 'canonical: duration in _clientMeta');
   assert(c?._clientMeta?.client === 'cursor', 'canonical: _clientMeta.client = cursor');
+}
+
+{
+  // 6b. legacy tool_response object → tool_output string
+  const canonicalTest = `
+    import { toCanonical } from '${join(SCRIPTS, 'lib/canonical.mjs')}';
+    const ev = {
+      hook_event_name: 'postToolUse',
+      conversation_id: 'conv-legacy',
+      tool_name: 'Read',
+      tool_response: { content: 'hello' },
+    };
+    const canon = toCanonical(ev, { client: 'cursor', eventName: 'postToolUse' });
+    console.log(JSON.stringify(canon));
+  `;
+  const r = spawnSync(process.execPath, ['--input-type=module'], {
+    input: canonicalTest,
+    encoding: 'utf8',
+    timeout: 5000,
+  });
+  let c;
+  try { c = JSON.parse(r.stdout.trim()); } catch { /* noop */ }
+  assert(c?.tool_output === '{"content":"hello"}', 'canonical: legacy tool_response → tool_output');
+  assert(c?.tool_response === c?.tool_output, 'canonical: legacy tool_response mirrored');
 }
 
 {
