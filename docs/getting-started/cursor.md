@@ -82,6 +82,22 @@ Claude Code’s `SessionStart source=compact` nudge has **no Cursor equivalent**
 
 ---
 
+## Event capture (native hooks)
+
+| Cursor event | Mori script | What gets shipped |
+|--------------|-------------|-------------------|
+| `sessionStart` | `mori-context-hook-cursor.mjs` | Injects `MORI_SESSION_CONTEXT_FILE` (if set) via `additional_context` |
+| `postToolUse` | `mori-ship-event-cursor.mjs` | `tool_name`, `tool_input`, and Cursor’s **`tool_output`** (JSON-stringified result) → `/api/events/raw` |
+| `stop` | `mori-ship-event-cursor.mjs` | Stop event + optional transcript tail (`transcript_tail_b64`) |
+| `beforeSubmitPrompt` | *(parity only)* | Prompt text |
+| `postToolUseFailure` | *(parity only)* | Failure metadata (best-effort) |
+
+The shipper normalises Cursor’s snake_case payload (including `tool_output`) before POST. The mori server stores tool results on the event row as `tool_response`. **`preToolUse`** is supported by Cursor but **not wired** by Mori’s installer (no gate/rewrite hook by default).
+
+Field names follow [Cursor hooks](https://cursor.com/docs/hooks) (`Shell`, `Read`, `Write`, …; `tool_output` on `postToolUse`).
+
+---
+
 ## Already set up via Claude Code?
 
 If Claude Code deployed skills under `~/.claude/skills/`, Cursor can use them. The plugin installer does not require wiping that directory.
@@ -139,6 +155,7 @@ All require MCP connected. See [slash-commands.md](../reference/slash-commands.m
 2. MCP → `mori` connected
 3. `/brief` — server counts via MCP
 4. Use Agent; event count at `curl http://<server>:8968/api/events/health`
+5. After a tool call, confirm a `PostToolUse` row landed with non-empty tool output (server `session_events.tool_response`, or `/api/events/raw` ingest logs)
 
 ---
 
@@ -149,6 +166,7 @@ All require MCP connected. See [slash-commands.md](../reference/slash-commands.m
 | MCP not connected | Re-run plugin installer; check plugin `mcp.json`; reload |
 | Skills missing | `--upgrade` plugin install; enable third-party skills |
 | No events shipping | Run hook installer step; check `/tmp/mori-hook.log` |
+| Events ship but no tool output | Upgrade plugin (`--upgrade`); hook paths are absolute to the plugin dir — no need to re-run `install-hooks-cursor.mjs` unless you changed server URL/key |
 | No post-compact re-ground | Install with `--parity` or legacy installer |
 | Duplicate events | Don't run legacy + plugin native hooks without `--parity` prune; use `tidy-up.mjs --client cursor` |
 
@@ -159,6 +177,7 @@ Migration from bespoke install: `node plugins/mori/scripts/legacy/tidy-up.mjs --
 ## Known limitations
 
 - **PostToolUseFailure** — wired in parity mode; not fully verified on all Cursor versions
+- **preToolUse** — not wired by Mori (Cursor supports it; Mori minimal/parity install does not)
 - **Post-compact** — no `SessionStart source=compact`; use `PostCompact` compat hook or manual `/brief --post-compact`
 - **Third-party skills** — Cursor updates can disable the toggle
 
@@ -171,5 +190,7 @@ git pull
 ./scripts/sync-plugin-skills.sh   # maintainers: refresh plugin skills snapshot
 ./scripts/install-mori-cursor-plugin.sh --url ... --upgrade --parity --force
 ```
+
+`--upgrade` refreshes `~/.cursor/plugins/local/mori/`; hook entries in `~/.cursor/hooks.json` point at absolute paths under that directory, so translator fixes (e.g. `postToolUse` `tool_output` mapping) apply after upgrade + Cursor reload — re-run the hook installer only if URL/API key changed.
 
 Optional: [git-hooks.md](../reference/git-hooks.md) for per-repo `git push` ingest.
