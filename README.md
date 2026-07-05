@@ -52,7 +52,7 @@ proved, not what I hope. The full argument is the [whitepaper](https://moriapp.d
 
 ---
 
-## Multi-Instance Coherence
+## Multi-Instance Visibility
 
 ![One Forest, Many Agents](https://raw.githubusercontent.com/fjwood69/mori/75c495f3f49e9ee53645bbe0de7aa11da43ad50d/docs/assets/figure-5-one-forest.svg)
 
@@ -65,11 +65,14 @@ hard way, mid-task, when something breaks.
 Mori gives every instance the same **shared picture**. Every coding agent instance sends
 its session events to the shared Mori server; the dream pipeline distils those events from
 **all instances** into a unified memory store, and `/brief` surfaces them at the start of
-any session. But be clear about what that buys: a shared picture is *visibility*, not
-coherence you can bank on. Surfacing what Instance A decided does not make Instance B *act*
+any session. Be clear about what that buys, though: a shared picture is **visibility, not
+coherence you can bank on**. Surfacing what Instance A decided does not make Instance B act
 on it — a coding agent can read another instance's change and proceed against it anyway (I
-measured exactly that, 15/15). The coherence that **holds** is the gate's, not the brief's:
-a binding boundary that applies regardless of whether the agent read the memory at all.
+measured exactly that, 15/15). So this is real value for a *cooperative* team — everyone
+opens a session knowing what the others changed — but it is **awareness, not enforcement**.
+Making one instance actually honour another's decision is the enforcement problem, and where
+it can be solved at all it's solved at the promotion boundary on the committed artifact —
+not by what any session was shown.
 
 ---
 
