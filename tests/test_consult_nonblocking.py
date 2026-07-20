@@ -15,9 +15,16 @@ def test_consult_advisor_does_not_block_event_loop(monkeypatch):
     from mori_advisor import main as m
 
     # A blocking consult that sleeps in its worker thread (simulates a slow LLM call).
+    # Response is contract-conformant (has evidence tags + COULD NOT VERIFY) so the
+    # response-shape lint does not prepend a banner, keeping this test's assertion simple.
+    _conformant = (
+        "P1: Use a thread pool [ASSUMED].\n\n"
+        "## COULD NOT VERIFY\nAll premises verified from attached context."
+    )
+
     def slow_consult(**kwargs):
         time.sleep(0.4)
-        return "advice"
+        return _conformant
 
     monkeypatch.setattr(m.bifrost, "consult", slow_consult)
     monkeypatch.setattr(m, "CONSULT_CAPTURE", False)
@@ -39,7 +46,7 @@ def test_consult_advisor_does_not_block_event_loop(monkeypatch):
 
     result, ticks = asyncio.run(scenario())
 
-    assert result == "advice"
+    assert result == _conformant
     # The ticker must have ticked through the ~0.4s consult → the loop stayed responsive.
     assert len(ticks) >= 5, f"event loop was blocked during consult (only {len(ticks)} ticks)"
 

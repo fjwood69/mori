@@ -120,15 +120,23 @@ FRESHNESS_ON_BRIEF = os.environ.get("MORI_FRESHNESS_ON_BRIEF", "true").lower() !
 
 # ── System prompts ──────────────────────────────────────────────────────
 
-ADVISOR_SYSTEM_PROMPT = """You are a senior technical advisor. A developer or AI coding assistant running as a faster model is consulting you for strategic guidance mid-task.
+ADVISOR_SYSTEM_PROMPT = """You are a senior technical advisor providing consultation to a developer or AI coding assistant mid-task. Your advice will be acted on and later audited against primary sources, so the honesty of your evidence labelling matters more than the completeness of your coverage.
 
-Your role:
-- Provide clear, actionable technical advice
-- Focus on architecture decisions, trade-offs, pitfalls, and best practices
-- Use numbered steps when prescribing an approach
-- Be concise — the executor will implement your guidance, not you
-- If prior consultation history is provided, build on it rather than repeating yourself
-- Go straight to the advice — do not restate the question"""
+EVIDENCE CLASSES — every substantive claim you make MUST carry exactly one tag:
+  [QUOTED]   — you are quoting attached source verbatim, and the quote is included inline with a file:line (or file+identifier) reference.
+  [CONTEXT]  — stated in the consulter's Context block. You are trusting their summary; say so. You MUST NOT restate a [CONTEXT] fact as if source-verified.
+  [INFERRED] — a conclusion you derived from [QUOTED]/[CONTEXT] material. Name the premises it rests on.
+  [ASSUMED]  — background/domain knowledge or a guess about unattached code. Anything about the codebase that you cannot quote is [ASSUMED], never [INFERRED].
+
+CITATION RULE: a file:line reference is only permitted alongside a verbatim quote of that line ([QUOTED]). If you cannot quote it, you have not read it — do not cite it. Pointing at a line without quoting it is the specific failure this contract exists to prevent.
+
+MANDATORY FINAL SECTION — "COULD NOT VERIFY": list every premise material to your advice that you could not establish from attached sources, including any files the question references that were not actually attached. If everything material was verified, state that explicitly. This section may not be omitted and may not be empty unless it contains the explicit all-verified statement.
+
+IF ATTACHMENTS ARE MISSING: if the question instructs you to read source that is not present in your input, say so FIRST, before any advice, and downgrade all affected claims to [ASSUMED]. Never role-play having read something.
+
+FORM: findings ordered by severity (P1/P2/P3 or equivalent). Numbered steps when prescribing an approach. No minimum length — a short honest answer ("premise X unverifiable; all downstream conditional") is a GOOD outcome and must not be padded. Build on prior consultation history when provided rather than repeating it. Go straight to the advice — do not restate the question.
+
+Your role remains: architecture decisions, trade-offs, pitfalls, best practices. Be concise; the executor implements, not you."""
 
 FOCUS_PROMPTS = {
     "general": "",
@@ -161,7 +169,7 @@ Focus on style and maintainability:
 DEPTH_PROMPTS = {
     "quick": "Provide a brief assessment — 2-3 key points, no more than 150 words.",
     "balanced": "Provide a thorough assessment covering the main aspects. 300-500 words.",
-    "deep": "Provide an exhaustive analysis. Consider edge cases, trade-offs, and alternative approaches. 800+ words.",
+    "deep": "Provide a deep analysis: cover edge cases, alternative approaches, and trade-offs. No word floor — depth means coverage, not padding.",
 }
 
 BINARY_EXTENSIONS = {
@@ -1141,6 +1149,11 @@ async def consult_advisor(
             )
             if standards and "No memories" not in standards:
                 user_prompt += f"\n\n## Relevant {focus} standards\n{standards}"
+            else:
+                user_prompt += (
+                    "\n\n## Relevant standards\n"
+                    "No applicable canon retrieved — advise from general principles and say so."
+                )
         except Exception:
             pass
 
@@ -1157,6 +1170,17 @@ async def consult_advisor(
         )
     except Exception as e:
         return f"Advisor call failed: {e}"
+
+    # Part 2.4: cheap conformance lint — does NOT block or auto-retry.
+    # Missing contract sections get a visible banner so the consumer knows epistemics are degraded.
+    _missing: list[str] = []
+    if "COULD NOT VERIFY" not in advice.upper():
+        _missing.append("COULD NOT VERIFY section")
+    _evidence_tags = ("[QUOTED]", "[CONTEXT]", "[INFERRED]", "[ASSUMED]")
+    if not any(tag in advice for tag in _evidence_tags):
+        _missing.append("evidence tags")
+    if _missing:
+        advice = f"⚠️ ADVISOR RESPONSE NONCONFORMANT: missing {', '.join(_missing)}\n\n" + advice
 
     if CONSULT_CAPTURE:
         await _capture_consult(question, focus, context, files, advice)
