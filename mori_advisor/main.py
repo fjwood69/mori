@@ -1139,6 +1139,9 @@ async def consult_advisor(
         files = []
 
     file_blocks, file_errors = _read_files(files)
+    if file_errors:
+        error_note = "## File Read Errors\n" + "\n".join(f"- {e}" for e in file_errors)
+        context = (error_note + "\n\n" + context).strip() if context else error_note
     system, user_prompt = _build_prompt(question, context, file_blocks, focus, depth)
 
     # Inject relevant standards when a specific focus is given

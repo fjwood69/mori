@@ -40,12 +40,31 @@ or `ATTACHED FILES: none` if no files were supplied.
 A consult is **source-dependent** if the question contains any attachment reference OR `--file`
 arguments were supplied.
 
+## File content injection (client-side)
+
+If `--file` arguments were supplied and all files passed verification:
+
+For each path, use the CC `Read` tool to read the file content **client-side**. Format each
+as a fenced code block with a `### <filename>` header:
+
+    ### path/to/file.py
+    ```python
+    <content>
+    ```
+
+Prepend all file blocks to the `context` parameter (before any other context text).
+Record each file's name and byte count (bytes = `len(content)`) for the `ATTACHED FILES:` manifest.
+
+**Do NOT pass raw paths in `files=`** — the MCP server runs on remote GCE; local filesystem
+paths are inaccessible there. Always pass `files=[]` (empty list); file content arrives via `context`.
+
 ## Execution
 
 1. Run attachment verification. Abort loudly if any referenced file is missing.
 2. Classify source-dependence.
-3. Call `mori-consult_advisor` with parsed arguments + `ATTACHED FILES:` manifest in context.
-4. Present the result.
+3. Read each `--file` path client-side (CC `Read` tool); prepend content blocks to `context`; append `ATTACHED FILES:` manifest.
+4. Call `mori-consult_advisor` with `question`, `context`, `focus`, `depth`, and `files=[]`.
+5. Present the result.
 
 **On error or empty response:**
 - **Not source-dependent**: retry once with `--depth quick`.
