@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.3.1 — /consult epistemic hardening: evidence contract + response linting
+
+- **Evidence-class contract**: `ADVISOR_SYSTEM_PROMPT` replaced with a mandatory tagging scheme —
+  `[QUOTED]`, `[CONTEXT]`, `[INFERRED]`, `[ASSUMED]` — and a required `COULD NOT VERIFY` final
+  section. Every substantive advisor claim must carry exactly one tag; the citation rule forbids
+  `file:line` references without a verbatim quote.
+- **Response-shape lint**: non-blocking ⚠️ banner prepended to advisor output when either the
+  evidence tags or the `COULD NOT VERIFY` section is absent — surfaces nonconformance without
+  blocking the call.
+- **Standards fallback**: when no applicable canon is retrieved the user-prompt gains an explicit
+  "No canon retrieved — advise from general principles and say so" note.
+- **Depth floor removed**: `DEPTH_PROMPTS["deep"]` no longer imposes an 800-word minimum; depth
+  means coverage, not padding.
+- **Skill hardening (both CC and plugin mirror)**:
+  - Attachment verification: fail-loud abort if any `(attached: <name>)` or read-the-source
+    reference points to a file not present on disk.
+  - `ATTACHED FILES:` manifest injected into context on every consult.
+  - Source-dependence classification: source-dependent consults refuse to fall back to a
+    transport path that drops attachments.
+- **12 acceptance tests** (`tests/test_consult_hardening.py`): attachment-ref detection,
+  manifest truth, source-dependence classification, conformant happy-path, nonconformance banner.
+- **fix(ci)**: canonical `skills/consult/SKILL.md` brought in sync with the hardening spec
+  (plugin drift guard caught the miss from the initial commit).
+
 ## v2.3.0 — identity-aware chokepoint: universal audit + tier/anatomy enforcement (default-OFF)
 
 The `store.write` chokepoint gains a single audited authorization pipeline, all enforcement
