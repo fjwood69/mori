@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.3.2 — /consult file attachment fix: client-side Read + server-side error surfacing
+
+- **Client-side file reading (skill)**: `/consult --file` now uses the CC `Read` tool to read
+  each file's content client-side, formats it as a fenced code block, and injects it into the
+  `context` parameter before calling `consult_advisor`. Raw paths are never sent to the remote
+  GCE server (where NUC filesystem paths are inaccessible). `files=[]` is always passed to the
+  MCP tool.
+- **Server-side error surfacing (main.py)**: `file_errors` returned by `_read_files()` is now
+  prepended to `context` so the advisor sees what it didn't receive and can correctly label
+  claims `[ASSUMED]` rather than silently proceeding as if no files were requested.
+- **Applies to both CC skill and plugin mirror** (`skills/consult/SKILL.md` +
+  `plugins/mori/skills/consult/SKILL.md`) — synced via `scripts/sync-plugin-skills.sh`.
+- Root cause: the feature was designed assuming local MCP server co-location; the GCE remote
+  deployment never had access to NUC paths, and `file_errors` was silently dropped since v2.3.0.
+
 ## v2.3.1 — /consult epistemic hardening: evidence contract + response linting
 
 - **Evidence-class contract**: `ADVISOR_SYSTEM_PROMPT` replaced with a mandatory tagging scheme —
