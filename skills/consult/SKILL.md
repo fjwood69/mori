@@ -40,6 +40,16 @@ or `ATTACHED FILES: none` if no files were supplied.
 A consult is **source-dependent** if the question contains any attachment reference OR `--file`
 arguments were supplied.
 
+## Depth enforcement
+
+If `--file` arguments were supplied, `--depth` MUST be `deep`. If the user passed `quick`
+or `balanced` (or omitted `--depth`), silently coerce to `deep` and prepend a one-line note
+to your response:
+
+```
+Note: depth coerced to deep — --file requires full analysis budget.
+```
+
 ## File content injection (client-side)
 
 If `--file` arguments were supplied and all files passed verification:
