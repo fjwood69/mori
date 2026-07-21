@@ -147,6 +147,8 @@ Sends your question plus optional file context to a configurable advisor model. 
 
 The last example chains existing tooling (Snyk, linters, SAST scanners) into the advisory flow — CC runs the scan, then feeds the results to the advisor alongside team standards.
 
+**Works with remote servers:** `--file` reads files on the client device and injects content into the advisor prompt — no shared filesystem required. Works whether mori-advisor runs locally or on GCE.
+
 ---
 
 ## `/pensieve` — Memory Search

@@ -348,6 +348,8 @@ not a textbook.
 /consult "review this" --focus security --file src/auth.py --file snyk-report.json
 ```
 
+**Works with remote servers:** `--file` reads files on the client device and injects content into the advisor prompt — no shared filesystem required. Works whether mori-advisor runs locally or on GCE.
+
 **Focus areas:** `general`, `architecture`, `security`, `performance`, `style`
 
 **Depth levels:** `quick` (fast scan), `balanced` (default), `deep` (thorough)
