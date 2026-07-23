@@ -79,7 +79,9 @@ up to ~300s of Bifrost inference (round-trip often 400–450s). Poll until done.
 4. Call `mori-consult_advisor` with `question`, `context`, `focus`, `depth`, `files=[]`, and
    `file_contents=[...]` (or omit / pass `[]` when no files).
 5. Parse the JSON response: `{"job_id": "...", "status": "pending"}`.
-6. Poll `mori-consult_status` with that `job_id` every **5–10 seconds** until:
+6. Poll `mori-consult_status` with that `job_id` every **30–60 seconds** (minimum 30s —
+   even small-file consults commonly take ~2 minutes of Bifrost latency; polling faster
+   just burns tool calls) until:
    - `{"status": "done", "result": "<advice>"}` → present `result`
    - `{"status": "error", "error": "..."}` → report the error loudly
    - **Deadline** (~**10 minutes** for deep; ~4 minutes for quick/balanced) → fail with timeout

@@ -12,7 +12,7 @@ take ~300s of Bifrost inference; holding the MCP HTTP request open was causing L
   truncation budgets as `_read_files`. Preferred for remote GCE; keep `files=` for
   co-located path reads.
 - **Skill update**: both `skills/consult` and plugin mirror — pass `file_contents`, poll
-  `consult_status` (5–10s, ~10 min deep deadline).
+  `consult_status` (30–60s, ~10 min deep deadline).
 - **Tests**: `tests/test_consult_async.py`; hardening/nonblocking/MCP stubs updated for poll.
 
 ## v2.3.2 — /consult file attachment fix: client-side Read + server-side error surfacing
