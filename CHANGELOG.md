@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.3.3 — /consult async jobs + remote `file_contents`
+
+Breaking change: `consult_advisor` now returns a JSON `job_id` immediately instead of the
+advice string. Poll the new `consult_status` tool until `done` / `error`. Deep consults can
+take ~300s of Bifrost inference; holding the MCP HTTP request open was causing LB 504s.
+
+- **Async submit + poll**: in-memory `_consult_jobs` (single Quadlet process; wiped on
+  restart/CD). Background task runs prompt build + `_run_llm` + capture.
+- **`file_contents` parameter**: client-supplied `[{name, content}, ...]` with the same
+  truncation budgets as `_read_files`. Preferred for remote GCE; keep `files=` for
+  co-located path reads.
+- **Skill update**: both `skills/consult` and plugin mirror — pass `file_contents`, poll
+  `consult_status` (5–10s, ~10 min deep deadline).
+- **Tests**: `tests/test_consult_async.py`; hardening/nonblocking/MCP stubs updated for poll.
+
 ## v2.3.2 — /consult file attachment fix: client-side Read + server-side error surfacing
 
 - **Client-side file reading (skill)**: `/consult --file` now uses the CC `Read` tool to read

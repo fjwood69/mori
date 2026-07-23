@@ -1,22 +1,18 @@
 """Regression: consult_advisor must not block the event loop on its (blocking) LLM call.
 
-bifrost.consult() is the *synchronous* OpenAI client. Called inline in the async
-consult_advisor handler it froze the single-worker server — every session, every tool —
-for the whole 30-90s generation, so a concurrent /dream or /consult made mori-advisor
-"unavailable" and the MCP connection dropped. consult_advisor now offloads the blocking
-call off the loop (dedicated executor + semaphore), so other coroutines keep progressing.
+bifrost.consult() is the *synchronous* OpenAI client. Called inline in an async
+handler it froze the single-worker server. consult_advisor now returns a job_id
+immediately and runs the LLM in a background task (off-loop via llm_executor).
 """
 
 import asyncio
+import json
 import time
 
 
 def test_consult_advisor_does_not_block_event_loop(monkeypatch):
     from mori_advisor import main as m
 
-    # A blocking consult that sleeps in its worker thread (simulates a slow LLM call).
-    # Response is contract-conformant (has evidence tags + COULD NOT VERIFY) so the
-    # response-shape lint does not prepend a banner, keeping this test's assertion simple.
     _conformant = (
         "P1: Use a thread pool [ASSUMED].\n\n"
         "## COULD NOT VERIFY\nAll premises verified from attached context."
@@ -33,21 +29,27 @@ def test_consult_advisor_does_not_block_event_loop(monkeypatch):
         ticks: list[float] = []
 
         async def ticker():
-            # If the loop were blocked by the sync consult, this could not tick during it.
             for _ in range(8):
                 ticks.append(time.monotonic())
                 await asyncio.sleep(0.05)
 
-        consult_task = asyncio.create_task(m.consult_advisor(question="hi", focus="general"))
+        submit = json.loads(await m.consult_advisor(question="hi", focus="general"))
+        job_id = submit["job_id"]
         tick_task = asyncio.create_task(ticker())
-        result = await consult_task
+        # Poll until done while ticker runs
+        result = None
+        for _ in range(40):
+            st = json.loads(await m.consult_status(job_id))
+            if st["status"] == "done":
+                result = st["result"]
+                break
+            await asyncio.sleep(0.05)
         await tick_task
         return result, ticks
 
     result, ticks = asyncio.run(scenario())
 
     assert result == _conformant
-    # The ticker must have ticked through the ~0.4s consult → the loop stayed responsive.
     assert len(ticks) >= 5, f"event loop was blocked during consult (only {len(ticks)} ticks)"
 
 

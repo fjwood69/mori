@@ -59,7 +59,7 @@ def _patch_roots(monkeypatch, roots: list[Path]) -> None:
 def test_etc_passwd_denied(monkeypatch, tmp_path):
     _patch_roots(monkeypatch, [tmp_path])
     read_files = _read_files_fn()
-    blocks, errors = read_files(["/etc/passwd"])
+    blocks, errors, _ = read_files(["/etc/passwd"])
     assert not blocks
     _assert_denied(errors, "/etc/passwd")
 
@@ -67,7 +67,7 @@ def test_etc_passwd_denied(monkeypatch, tmp_path):
 def test_proc_environ_denied(monkeypatch, tmp_path):
     _patch_roots(monkeypatch, [tmp_path])
     read_files = _read_files_fn()
-    blocks, errors = read_files(["/proc/self/environ"])
+    blocks, errors, _ = read_files(["/proc/self/environ"])
     assert not blocks
     _assert_denied(errors, "/proc/self/environ")
 
@@ -76,7 +76,7 @@ def test_absolute_outside_root_denied(monkeypatch, tmp_path):
     # /tmp itself is not inside tmp_path
     _patch_roots(monkeypatch, [tmp_path])
     read_files = _read_files_fn()
-    blocks, errors = read_files(["/tmp"])
+    blocks, errors, _ = read_files(["/tmp"])
     assert not blocks
     # Either "not a file" or "outside allowed roots" — either is a denial
     assert errors
@@ -90,7 +90,7 @@ def test_dotdot_traversal_denied(monkeypatch, tmp_path):
     _patch_roots(monkeypatch, [tmp_path])
     read_files = _read_files_fn()
     traversal = str(tmp_path / "../../../etc/passwd")
-    blocks, errors = read_files([traversal])
+    blocks, errors, _ = read_files([traversal])
     assert not blocks
     _assert_not_read(blocks, traversal)
     # Must have an error of some kind (denied or not-found)
@@ -106,7 +106,7 @@ def test_dotenv_inside_root_denied(monkeypatch, tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text("SECRET=hunter2\n")
     read_files = _read_files_fn()
-    blocks, errors = read_files([str(env_file)])
+    blocks, errors, _ = read_files([str(env_file)])
     assert not blocks
     _assert_denied(errors, str(env_file))
 
@@ -117,7 +117,7 @@ def test_dotsecrets_inside_root_denied(monkeypatch, tmp_path):
     sec_file = tmp_path / ".secrets"
     sec_file.write_text("API_KEY=abcdef\n")
     read_files = _read_files_fn()
-    blocks, errors = read_files([str(sec_file)])
+    blocks, errors, _ = read_files([str(sec_file)])
     assert not blocks
     _assert_denied(errors, str(sec_file))
 
@@ -128,7 +128,7 @@ def test_pem_inside_root_denied(monkeypatch, tmp_path):
     pem_file = tmp_path / "server.pem"
     pem_file.write_text("-----BEGIN CERTIFICATE-----\n")
     read_files = _read_files_fn()
-    blocks, errors = read_files([str(pem_file)])
+    blocks, errors, _ = read_files([str(pem_file)])
     assert not blocks
     _assert_denied(errors, str(pem_file))
 
@@ -139,7 +139,7 @@ def test_key_inside_root_denied(monkeypatch, tmp_path):
     key_file = tmp_path / "private.key"
     key_file.write_text("-----BEGIN PRIVATE KEY-----\n")
     read_files = _read_files_fn()
-    blocks, errors = read_files([str(key_file)])
+    blocks, errors, _ = read_files([str(key_file)])
     assert not blocks
     _assert_denied(errors, str(key_file))
 
@@ -150,7 +150,7 @@ def test_sqlite_inside_root_denied(monkeypatch, tmp_path):
     db_file = tmp_path / "memories.sqlite"
     db_file.write_bytes(b"SQLite format 3\x00")
     read_files = _read_files_fn()
-    blocks, errors = read_files([str(db_file)])
+    blocks, errors, _ = read_files([str(db_file)])
     assert not blocks
     _assert_denied(errors, str(db_file))
 
@@ -173,7 +173,7 @@ def test_symlink_escape_denied(monkeypatch, tmp_path):
     link = tmp_path / "escape_link"
     link.symlink_to(target)
     read_files = _read_files_fn()
-    blocks, errors = read_files([str(link)])
+    blocks, errors, _ = read_files([str(link)])
     assert not blocks
     # Must be denied (either allowlist or sensitive path)
     assert any("Access denied" in e or "outside allowed" in e for e in errors), errors
@@ -188,7 +188,7 @@ def test_py_file_inside_root_allowed(monkeypatch, tmp_path):
     py_file = tmp_path / "hello.py"
     py_file.write_text("print('hello')\n")
     read_files = _read_files_fn()
-    blocks, errors = read_files([str(py_file)])
+    blocks, errors, _ = read_files([str(py_file)])
     assert blocks, f"Expected blocks but got errors: {errors}"
     assert "hello.py" in blocks[0]
     assert "print" in blocks[0]
@@ -200,7 +200,7 @@ def test_md_file_inside_root_allowed(monkeypatch, tmp_path):
     md_file = tmp_path / "README.md"
     md_file.write_text("# Title\nSome content.\n")
     read_files = _read_files_fn()
-    blocks, errors = read_files([str(md_file)])
+    blocks, errors, _ = read_files([str(md_file)])
     assert blocks, f"Expected blocks but got errors: {errors}"
     assert "README.md" in blocks[0]
 
@@ -213,7 +213,7 @@ def test_file_in_subdirectory_of_root_allowed(monkeypatch, tmp_path):
     src_file = subdir / "helpers.py"
     src_file.write_text("def noop(): pass\n")
     read_files = _read_files_fn()
-    blocks, errors = read_files([str(src_file)])
+    blocks, errors, _ = read_files([str(src_file)])
     assert blocks, f"Expected blocks but got errors: {errors}"
 
 
@@ -233,12 +233,12 @@ def test_consult_advisor_denied_paths_return_errors(monkeypatch, tmp_path):
     _patch_roots(monkeypatch, [tmp_path])
 
     # Verify _read_files directly: no blocks for denied paths.
-    blocks, errors = m._read_files(["/etc/passwd", "/proc/self/environ"])
+    blocks, errors, _ = m._read_files(["/etc/passwd", "/proc/self/environ"])
     assert not blocks, "No content blocks should be produced for denied paths"
     assert len(errors) == 2
     assert all("Access denied" in e for e in errors)
 
     # Also verify an absolute path outside the root is denied.
-    blocks2, errors2 = m._read_files(["/etc/shadow"])
+    blocks2, errors2, _ = m._read_files(["/etc/shadow"])
     assert not blocks2
     assert errors2 and "Access denied" in errors2[0]

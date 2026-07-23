@@ -54,30 +54,41 @@ Note: depth coerced to deep — --file requires full analysis budget.
 
 If `--file` arguments were supplied and all files passed verification:
 
-For each path, use the CC `Read` tool to read the file content **client-side**. Format each
-as a fenced code block with a `### <filename>` header:
+For each path, use the CC `Read` tool to read the file content **client-side**. Build a list of
+objects for the `file_contents` parameter:
 
-    ### path/to/file.py
-    ```python
-    <content>
-    ```
+```json
+[{"name": "path/to/file.py", "content": "<file text>"}, ...]
+```
 
-Prepend all file blocks to the `context` parameter (before any other context text).
 Record each file's name and byte count (bytes = `len(content)`) for the `ATTACHED FILES:` manifest.
+Keep the manifest (and any other non-file background) in the `context` parameter — **do not**
+paste full file bodies into `context`.
 
 **Do NOT pass raw paths in `files=`** — the MCP server runs on remote GCE; local filesystem
-paths are inaccessible there. Always pass `files=[]` (empty list); file content arrives via `context`.
+paths are inaccessible there. Always pass `files=[]`; file bodies arrive via `file_contents`.
 
-## Execution
+## Execution (async submit + poll)
+
+`consult_advisor` is **non-blocking**: it returns a `job_id` immediately. Deep consults can take
+up to ~300s of Bifrost inference (round-trip often 400–450s). Poll until done.
 
 1. Run attachment verification. Abort loudly if any referenced file is missing.
 2. Classify source-dependence.
-3. Read each `--file` path client-side (CC `Read` tool); prepend content blocks to `context`; append `ATTACHED FILES:` manifest.
-4. Call `mori-consult_advisor` with `question`, `context`, `focus`, `depth`, and `files=[]`.
-5. Present the result.
+3. Read each `--file` path client-side; build `file_contents`; append `ATTACHED FILES:` to `context`.
+4. Call `mori-consult_advisor` with `question`, `context`, `focus`, `depth`, `files=[]`, and
+   `file_contents=[...]` (or omit / pass `[]` when no files).
+5. Parse the JSON response: `{"job_id": "...", "status": "pending"}`.
+6. Poll `mori-consult_status` with that `job_id` every **5–10 seconds** until:
+   - `{"status": "done", "result": "<advice>"}` → present `result`
+   - `{"status": "error", "error": "..."}` → report the error loudly
+   - **Deadline** (~**10 minutes** for deep; ~4 minutes for quick/balanced) → fail with timeout
+7. Present the advice (or the failure).
+
+**On job not found:** in-memory jobs are wiped on server restart/CD — resubmit; do not invent advice.
 
 **On error or empty response:**
-- **Not source-dependent**: retry once with `--depth quick`.
+- **Not source-dependent**: retry once with `--depth quick` (new submit + poll).
 - **Source-dependent**: do NOT fall back. Return:
 
 ```

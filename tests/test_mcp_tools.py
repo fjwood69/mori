@@ -957,22 +957,37 @@ def test_nats_sub_stubbed(backend, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_consult_advisor_stubbed(backend, tmp_path, monkeypatch):
-    """consult_advisor must return a str when bifrost is stubbed.
+    """consult_advisor returns a job_id; consult_status yields advice when bifrost is stubbed.
 
     The store side-effect (CONSULT_CAPTURE) must also not leak a coroutine.
     """
+    import json
+
     import mori_advisor.main as m
-    from mori_advisor.main import consult_advisor
+    from mori_advisor.main import consult_advisor, consult_status
 
     async def run(store):
-        # Stub the BifrostClient.consult method so no real LLM call is made
         monkeypatch.setattr(m.bifrost, "consult", lambda **kw: "Advisor says: stub response")
-        # Disable capture to keep the test focused on the tool path
         monkeypatch.setattr(m, "CONSULT_CAPTURE", False)
 
-        result = await consult_advisor(question="What is 2 + 2?", depth="quick")
-        assert_no_coroutines(result)
+        submit = await consult_advisor(question="What is 2 + 2?", depth="quick")
+        assert_no_coroutines(submit)
+        data = json.loads(submit)
+        assert data["status"] == "pending"
+        job_id = data["job_id"]
+
+        result = None
+        for _ in range(100):
+            status = json.loads(await consult_status(job_id))
+            assert_no_coroutines(status)
+            if status["status"] == "done":
+                result = status["result"]
+                break
+            if status["status"] == "error":
+                raise AssertionError(status.get("error"))
+            await asyncio.sleep(0.02)
         assert isinstance(result, str)
+        assert "stub response" in result
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
 

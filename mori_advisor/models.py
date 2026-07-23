@@ -13,13 +13,25 @@ class ConsultAdvisorInput(BaseModel):
 
     question: str = Field(description="The question or problem needing review")
     context: str = Field(default="", description="Additional context or constraints")
-    files: list[str] = Field(default=[], description="File paths to include as context")
+    files: list[str] = Field(
+        default=[], description="Server-local file paths (co-located deployments only)"
+    )
+    file_contents: list[dict] | None = Field(
+        default=None,
+        description='Client-supplied file bodies as {"name": str, "content": str} dicts',
+    )
     focus: Literal["general", "architecture", "security", "performance", "style"] = Field(
         default="general", description="Area of focus for the review"
     )
     depth: Literal["quick", "balanced", "deep"] = Field(
         default="balanced", description="Review depth"
     )
+
+
+class ConsultStatusInput(BaseModel):
+    """Input schema for the consult_status tool."""
+
+    job_id: str = Field(description="Job ID returned by consult_advisor")
 
 
 class MemoryFile(BaseModel):

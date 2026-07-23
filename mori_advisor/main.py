@@ -18,8 +18,10 @@ import logging
 import os
 import re
 import socket
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -220,6 +222,49 @@ BINARY_EXTENSIONS = {
 
 MAX_FILE_SIZE = 50 * 1024  # 50KB per file
 MAX_TOTAL_FILE_SIZE = 200 * 1024  # 200KB total
+
+# In-memory consult job tracker (single-process Quadlet/UAT). Lost on restart/CD.
+# job_id -> {status, result?, error?, created_at, updated_at}
+_consult_jobs: dict[str, dict] = {}
+_consult_tasks: set[asyncio.Task] = set()  # strong refs so tasks aren't GC'd
+
+_EXT_TO_LANG = {
+    ".py": "python",
+    ".ts": "typescript",
+    ".js": "javascript",
+    ".tsx": "typescriptreact",
+    ".jsx": "javascriptreact",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".scala": "scala",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".hpp": "cpp",
+    ".cs": "csharp",
+    ".swift": "swift",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
+    ".ps1": "powershell",
+    ".psm1": "powershell",
+    ".sql": "sql",
+    ".r": "r",
+    ".md": "markdown",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".xml": "xml",
+    ".html": "html",
+    ".css": "css",
+    ".dockerfile": "dockerfile",
+    ".tf": "terraform",
+    ".hcl": "terraform",
+}
 
 
 # ── Consult file-read security ────────────────────────────────────────────
@@ -553,49 +598,65 @@ ingestion_pipeline = IngestionPipeline(
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _read_files(file_paths: list[str]) -> tuple[list[str], list[str]]:
-    """Read files, returning (blocks, errors)."""
+def _blocks_from_file_contents(
+    file_contents: list[dict] | None,
+    *,
+    starting_bytes: int = 0,
+) -> tuple[list[str], list[str], int]:
+    """Turn client-supplied {name, content} dicts into prompt blocks with truncation.
+
+    Same per-file / total budget as ``_read_files``. Returns (blocks, errors, total_bytes).
+    """
+    blocks: list[str] = []
+    errors: list[str] = []
+    total_bytes = starting_bytes
+
+    if not file_contents:
+        return blocks, errors, total_bytes
+
+    for entry in file_contents:
+        if not isinstance(entry, dict):
+            errors.append(f"Invalid file_contents entry (expected dict): {type(entry).__name__}")
+            continue
+        name = str(entry.get("name") or "unnamed")
+        content = entry.get("content")
+        if content is None:
+            errors.append(f"Missing content for file_contents entry: {name}")
+            continue
+        content = str(content)
+
+        if total_bytes >= MAX_TOTAL_FILE_SIZE:
+            errors.append("Total file budget reached (200KB)")
+            break
+
+        if len(content) > MAX_FILE_SIZE:
+            content = content[:MAX_FILE_SIZE] + "\n... (truncated)"
+            label = f"{name} (truncated to 50KB)"
+        else:
+            label = name
+
+        available = MAX_TOTAL_FILE_SIZE - total_bytes
+        if len(content) > available:
+            content = content[:available] + "\n... (truncated by total budget)"
+            label = f"{label} (truncated)"
+
+        suffix = Path(name).suffix.lower()
+        lang = _EXT_TO_LANG.get(suffix, "")
+        blocks.append(f"### File: {label}\n```{lang}\n{content}\n```")
+        total_bytes += len(content)
+
+        if total_bytes >= MAX_TOTAL_FILE_SIZE:
+            errors.append("Total file budget reached (200KB)")
+            break
+
+    return blocks, errors, total_bytes
+
+
+def _read_files(file_paths: list[str]) -> tuple[list[str], list[str], int]:
+    """Read files, returning (blocks, errors, total_bytes)."""
     blocks: list[str] = []
     errors: list[str] = []
     total_bytes = 0
-
-    ext_to_lang = {
-        ".py": "python",
-        ".ts": "typescript",
-        ".js": "javascript",
-        ".tsx": "typescriptreact",
-        ".jsx": "javascriptreact",
-        ".go": "go",
-        ".rs": "rust",
-        ".rb": "ruby",
-        ".java": "java",
-        ".kt": "kotlin",
-        ".scala": "scala",
-        ".c": "c",
-        ".h": "c",
-        ".cpp": "cpp",
-        ".hpp": "cpp",
-        ".cs": "csharp",
-        ".swift": "swift",
-        ".sh": "bash",
-        ".bash": "bash",
-        ".zsh": "bash",
-        ".ps1": "powershell",
-        ".psm1": "powershell",
-        ".sql": "sql",
-        ".r": "r",
-        ".md": "markdown",
-        ".json": "json",
-        ".yaml": "yaml",
-        ".yml": "yaml",
-        ".toml": "toml",
-        ".xml": "xml",
-        ".html": "html",
-        ".css": "css",
-        ".dockerfile": "dockerfile",
-        ".tf": "terraform",
-        ".hcl": "terraform",
-    }
 
     for path_str in file_paths:
         path = Path(path_str)
@@ -654,7 +715,7 @@ def _read_files(file_paths: list[str]) -> tuple[list[str], list[str]]:
                 content = content[:available] + "\n... (truncated by total budget)"
                 label = f"{label} (truncated)"
 
-            lang = ext_to_lang.get(suffix, "")
+            lang = _EXT_TO_LANG.get(suffix, "")
             blocks.append(f"### File: {label}\n```{lang}\n{content}\n```")
             total_bytes += len(content)
 
@@ -665,7 +726,7 @@ def _read_files(file_paths: list[str]) -> tuple[list[str], list[str]]:
         except Exception as e:
             errors.append(f"Error reading {path_str}: {e}")
 
-    return blocks, errors
+    return blocks, errors, total_bytes
 
 
 def _build_prompt(
@@ -1114,55 +1175,52 @@ async def _capture_consult(
         logger.warning("consult capture failed: %s", e)
 
 
-@mcp.tool()
-async def consult_advisor(
+def _consult_job_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _execute_consult_job(
+    job_id: str,
     question: str,
-    context: str = "",
-    files: list[str] | None = None,
-    focus: str = "general",
-    depth: str = "balanced",
-) -> str:
-    """Get strategic guidance from the advisor model.
-
-    When a focus area is specified (security, architecture, etc.),
-    relevant team standards are automatically pulled from memory and
-    injected as context.
-
-    Args:
-        question: The question or problem needing review
-        context: Additional context, constraints, or background
-        files: File paths to include as code context (relative or absolute)
-        focus: Area of focus: general, architecture, security, performance, or style
-        depth: Review depth: quick (2-3 points), balanced, or deep (exhaustive)
-    """
-    if files is None:
-        files = []
-
-    file_blocks, file_errors = _read_files(files)
-    if file_errors:
-        error_note = "## File Read Errors\n" + "\n".join(f"- {e}" for e in file_errors)
-        context = (error_note + "\n\n" + context).strip() if context else error_note
-    system, user_prompt = _build_prompt(question, context, file_blocks, focus, depth)
-
-    # Inject relevant standards when a specific focus is given
-    if focus != "general":
-        try:
-            standards = await _a(
-                memory_store.search(query=None, tag=focus, type_filter="standard", limit=10)
-            )
-            if standards and "No memories" not in standards:
-                user_prompt += f"\n\n## Relevant {focus} standards\n{standards}"
-            else:
-                user_prompt += (
-                    "\n\n## Relevant standards\n"
-                    "No applicable canon retrieved — advise from general principles and say so."
-                )
-        except Exception:
-            pass
-
-    max_tokens = {"quick": 2048, "balanced": 8192, "deep": 16384}.get(depth, 8192)
-
+    context: str,
+    files: list[str],
+    file_contents: list[dict] | None,
+    focus: str,
+    depth: str,
+) -> None:
+    """Background worker: build prompt, call LLM, update `_consult_jobs[job_id]`."""
+    job = _consult_jobs[job_id]
     try:
+        file_blocks, file_errors, path_bytes = _read_files(files)
+        content_blocks, content_errors, _ = _blocks_from_file_contents(
+            file_contents,
+            starting_bytes=path_bytes,
+        )
+        file_blocks = file_blocks + content_blocks
+        all_errors = file_errors + content_errors
+        if all_errors:
+            error_note = "## File Read Errors\n" + "\n".join(f"- {e}" for e in all_errors)
+            context = (error_note + "\n\n" + context).strip() if context else error_note
+
+        system, user_prompt = _build_prompt(question, context, file_blocks, focus, depth)
+
+        if focus != "general":
+            try:
+                standards = await _a(
+                    memory_store.search(query=None, tag=focus, type_filter="standard", limit=10)
+                )
+                if standards and "No memories" not in standards:
+                    user_prompt += f"\n\n## Relevant {focus} standards\n{standards}"
+                else:
+                    user_prompt += (
+                        "\n\n## Relevant standards\n"
+                        "No applicable canon retrieved — advise from general principles and say so."
+                    )
+            except Exception:
+                pass
+
+        max_tokens = {"quick": 2048, "balanced": 8192, "deep": 16384}.get(depth, 8192)
+
         advice = await _run_llm(
             bifrost.consult,
             system=system,
@@ -1171,24 +1229,105 @@ async def consult_advisor(
             max_tokens=max_tokens,
             temperature=0.3,
         )
+
+        _missing: list[str] = []
+        if "COULD NOT VERIFY" not in advice.upper():
+            _missing.append("COULD NOT VERIFY section")
+        _evidence_tags = ("[QUOTED]", "[CONTEXT]", "[INFERRED]", "[ASSUMED]")
+        if not any(tag in advice for tag in _evidence_tags):
+            _missing.append("evidence tags")
+        if _missing:
+            advice = f"⚠️ ADVISOR RESPONSE NONCONFORMANT: missing {', '.join(_missing)}\n\n" + advice
+
+        capture_files = list(files)
+        if file_contents:
+            capture_files.extend(
+                str(e.get("name") or "unnamed") for e in file_contents if isinstance(e, dict)
+            )
+        if CONSULT_CAPTURE:
+            await _capture_consult(question, focus, context, capture_files, advice)
+
+        job["status"] = "done"
+        job["result"] = advice
+        job["updated_at"] = _consult_job_now()
     except Exception as e:
-        return f"Advisor call failed: {e}"
+        logger.exception("consult job %s failed", job_id)
+        job["status"] = "error"
+        job["error"] = f"Advisor call failed: {e}"
+        job["updated_at"] = _consult_job_now()
 
-    # Part 2.4: cheap conformance lint — does NOT block or auto-retry.
-    # Missing contract sections get a visible banner so the consumer knows epistemics are degraded.
-    _missing: list[str] = []
-    if "COULD NOT VERIFY" not in advice.upper():
-        _missing.append("COULD NOT VERIFY section")
-    _evidence_tags = ("[QUOTED]", "[CONTEXT]", "[INFERRED]", "[ASSUMED]")
-    if not any(tag in advice for tag in _evidence_tags):
-        _missing.append("evidence tags")
-    if _missing:
-        advice = f"⚠️ ADVISOR RESPONSE NONCONFORMANT: missing {', '.join(_missing)}\n\n" + advice
 
-    if CONSULT_CAPTURE:
-        await _capture_consult(question, focus, context, files, advice)
+@mcp.tool()
+async def consult_advisor(
+    question: str,
+    context: str = "",
+    files: list[str] | None = None,
+    file_contents: list[dict] | None = None,
+    focus: str = "general",
+    depth: str = "balanced",
+) -> str:
+    """Submit a consult job; returns a job_id immediately. Poll consult_status for the result.
 
-    return advice
+    Deep consults can take up to ~300s of Bifrost inference. Returning a job_id keeps the
+    MCP HTTP request short so load-balancer idle timeouts do not 504.
+
+    Args:
+        question: The question or problem needing review
+        context: Additional context, constraints, or background
+        files: Server-local file paths (co-located / self-host only)
+        file_contents: Client-supplied file bodies as {name, content} dicts (preferred for remote)
+        focus: Area of focus: general, architecture, security, performance, or style
+        depth: Review depth: quick (2-3 points), balanced, or deep (exhaustive)
+
+    Returns:
+        JSON: {"job_id": "...", "status": "pending"}
+    """
+    if files is None:
+        files = []
+
+    job_id = str(uuid.uuid4())
+    now = _consult_job_now()
+    _consult_jobs[job_id] = {
+        "status": "pending",
+        "result": None,
+        "error": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    task = asyncio.create_task(
+        _execute_consult_job(job_id, question, context, files, file_contents, focus, depth)
+    )
+    _consult_tasks.add(task)
+    task.add_done_callback(_consult_tasks.discard)
+
+    return json.dumps({"job_id": job_id, "status": "pending"})
+
+
+@mcp.tool()
+async def consult_status(job_id: str) -> str:
+    """Poll a consult job started by consult_advisor.
+
+    Returns JSON: {"status": "pending"|"done"|"error", "result"?: str, "error"?: str}.
+    Unknown job_id (restart/CD wiped in-memory state) → status error.
+    """
+    job = _consult_jobs.get(job_id)
+    if job is None:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": (
+                    f"Job not found: {job_id}. "
+                    "In-memory jobs are lost on restart/CD; resubmit the consult."
+                ),
+            }
+        )
+    payload: dict = {"status": job["status"]}
+    if job.get("result") is not None:
+        payload["result"] = job["result"]
+    if job.get("error") is not None:
+        payload["error"] = job["error"]
+    return json.dumps(payload)
 
 
 # ── Standards ingestion ──────────────────────────────────────────────────

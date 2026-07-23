@@ -49,6 +49,7 @@ MORI_MCP_ALLOW = [
     "mcp__mori__brief",
     "mcp__mori__pensieve",
     "mcp__mori__consult_advisor",
+    "mcp__mori__consult_status",
     "mcp__mori__update",
     "mcp__mori__standards_reload",
     # Memory CRUD

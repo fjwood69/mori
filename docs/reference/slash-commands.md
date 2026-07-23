@@ -126,7 +126,11 @@ Reads recent session events (tool calls, prompts, responses) since the last wate
 
 Sends your question plus optional file context to a configurable advisor model. When a specific focus is given (`--focus security`), relevant team standards are automatically pulled from the memory store and injected into the prompt — so the advisor checks your code against your own baseline, not generic advice.
 
-**MCP tool:** `mori-consult_advisor`
+**MCP tools:** `mori-consult_advisor` (submit) + `mori-consult_status` (poll)
+
+`consult_advisor` returns a `job_id` immediately; poll `consult_status` until `done`/`error`.
+Deep consults can take up to ~300s of inference — holding the MCP HTTP request open would
+504 on typical load-balancer idle timeouts.
 
 **Parameters:**
 
@@ -147,7 +151,8 @@ Sends your question plus optional file context to a configurable advisor model. 
 
 The last example chains existing tooling (Snyk, linters, SAST scanners) into the advisory flow — CC runs the scan, then feeds the results to the advisor alongside team standards.
 
-**Works with remote servers:** `--file` reads files on the client device and injects content into the advisor prompt — no shared filesystem required. Works whether mori-advisor runs locally or on GCE.
+**Works with remote servers:** `--file` reads files on the client device and sends bodies via
+`file_contents` — no shared filesystem required. Works whether mori-advisor runs locally or on GCE.
 
 ---
 

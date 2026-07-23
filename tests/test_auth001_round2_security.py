@@ -309,7 +309,7 @@ def test_read_files_env_local_inside_root_denied(monkeypatch, tmp_path):
     f.write_text("DB_PASS=secret\n")
     from mori_advisor.main import _read_files
 
-    blocks, errors = _read_files([str(f)])
+    blocks, errors, _ = _read_files([str(f)])
     assert not blocks
     assert any("Access denied" in e for e in errors), f"Expected denial but got: {errors}"
 
@@ -321,7 +321,7 @@ def test_read_files_env_production_inside_root_denied(monkeypatch, tmp_path):
     f.write_text("API_KEY=secret\n")
     from mori_advisor.main import _read_files
 
-    blocks, errors = _read_files([str(f)])
+    blocks, errors, _ = _read_files([str(f)])
     assert not blocks
     assert any("Access denied" in e for e in errors)
 
@@ -333,7 +333,7 @@ def test_read_files_secrets_txt_inside_root_denied(monkeypatch, tmp_path):
     f.write_text("password=hunter2\n")
     from mori_advisor.main import _read_files
 
-    blocks, errors = _read_files([str(f)])
+    blocks, errors, _ = _read_files([str(f)])
     assert not blocks
     assert any("Access denied" in e for e in errors)
 
@@ -345,7 +345,7 @@ def test_read_files_PASSWD_inside_root_denied(monkeypatch, tmp_path):
     f.write_text("root:x:0:0:root:/root:/bin/bash\n")
     from mori_advisor.main import _read_files
 
-    blocks, errors = _read_files([str(f)])
+    blocks, errors, _ = _read_files([str(f)])
     assert not blocks
     assert any("Access denied" in e for e in errors)
 
@@ -370,7 +370,7 @@ def test_symlink_outside_root_denied_by_allowlist(monkeypatch, tmp_path):
     link.symlink_to(target)
     from mori_advisor.main import _read_files
 
-    blocks, errors = _read_files([str(link)])
+    blocks, errors, _ = _read_files([str(link)])
     assert not blocks
     # Allowlist denial fires because resolve() returns /etc/hostname which is
     # outside tmp_path.

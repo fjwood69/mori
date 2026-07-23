@@ -10,6 +10,7 @@ Reference: mori-verse spec "SPEC — /consult epistemic hardening (mori skill in
 from __future__ import annotations
 
 import asyncio
+import json
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,20 @@ def _make_fake_advice(*, has_tags: bool = True, has_cvv: bool = True) -> str:
     if has_cvv:
         parts.append("## COULD NOT VERIFY\nAll premises verified from attached files.")
     return "".join(parts)
+
+
+async def _await_consult(m, **kwargs) -> str:
+    """Submit async consult and poll consult_status until terminal."""
+    submit = json.loads(await m.consult_advisor(**kwargs))
+    job_id = submit["job_id"]
+    for _ in range(200):
+        status = json.loads(await m.consult_status(job_id))
+        if status["status"] == "done":
+            return status["result"]
+        if status["status"] == "error":
+            return status.get("error") or "error"
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"consult job {job_id} did not complete")
 
 
 # ── Test 1: Missing-attachment abort (skill-side logic extracted for unit test) ──
@@ -131,7 +146,7 @@ def test_conformant_response_no_banner(monkeypatch):
     monkeypatch.setattr(m.bifrost, "consult", lambda **kw: advice)
     monkeypatch.setattr(m, "CONSULT_CAPTURE", False)
 
-    result = asyncio.run(m.consult_advisor(question="test", focus="general"))
+    result = asyncio.run(_await_consult(m, question="test", focus="general"))
     assert "NONCONFORMANT" not in result
     assert result == advice
 
@@ -147,7 +162,7 @@ def test_missing_cvv_gets_banner(monkeypatch):
     monkeypatch.setattr(m.bifrost, "consult", lambda **kw: advice)
     monkeypatch.setattr(m, "CONSULT_CAPTURE", False)
 
-    result = asyncio.run(m.consult_advisor(question="test", focus="general"))
+    result = asyncio.run(_await_consult(m, question="test", focus="general"))
     assert "⚠️ ADVISOR RESPONSE NONCONFORMANT" in result
     assert "COULD NOT VERIFY section" in result
 
@@ -160,7 +175,7 @@ def test_missing_evidence_tags_gets_banner(monkeypatch):
     monkeypatch.setattr(m.bifrost, "consult", lambda **kw: advice)
     monkeypatch.setattr(m, "CONSULT_CAPTURE", False)
 
-    result = asyncio.run(m.consult_advisor(question="test", focus="general"))
+    result = asyncio.run(_await_consult(m, question="test", focus="general"))
     assert "⚠️ ADVISOR RESPONSE NONCONFORMANT" in result
     assert "evidence tags" in result
 
@@ -173,7 +188,7 @@ def test_missing_both_gets_banner_listing_both(monkeypatch):
     monkeypatch.setattr(m.bifrost, "consult", lambda **kw: advice)
     monkeypatch.setattr(m, "CONSULT_CAPTURE", False)
 
-    result = asyncio.run(m.consult_advisor(question="test", focus="general"))
+    result = asyncio.run(_await_consult(m, question="test", focus="general"))
     assert "COULD NOT VERIFY section" in result
     assert "evidence tags" in result
 
@@ -190,7 +205,7 @@ def test_happy_path_no_banner_no_abort(monkeypatch):
     monkeypatch.setattr(m, "CONSULT_CAPTURE", False)
 
     # Source-dependent via --file; file exists (monkeypatched away at server level)
-    result = asyncio.run(m.consult_advisor(question="test", files=[], focus="general"))
+    result = asyncio.run(_await_consult(m, question="test", files=[], focus="general"))
     assert "NONCONFORMANT" not in result
     assert "CONSULT ABORTED" not in result
 
