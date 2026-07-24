@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.3.4 — raise /consult deep max_tokens 16 K → 32 K
+
+- `deep` depth ceiling lifted from 16 384 to 32 768 tokens — the previous limit
+  was causing truncation on long architectural reviews.
+
 ## v2.3.3 — /consult async jobs + remote `file_contents`
 
 Breaking change: `consult_advisor` now returns a JSON `job_id` immediately instead of the

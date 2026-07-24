@@ -1219,7 +1219,7 @@ async def _execute_consult_job(
             except Exception:
                 pass
 
-        max_tokens = {"quick": 2048, "balanced": 8192, "deep": 16384}.get(depth, 8192)
+        max_tokens = {"quick": 2048, "balanced": 8192, "deep": 32768}.get(depth, 8192)
 
         advice = await _run_llm(
             bifrost.consult,
