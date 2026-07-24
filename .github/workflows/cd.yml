@@ -84,75 +84,85 @@ jobs:
           echo "SSH port not reachable after 30s" && exit 1
 
       - name: Deploy to GCE via SSH
-        uses: appleboy/ssh-action@v1.2.5
-        with:
-          host: ${{ secrets.GCE_HOST }}
-          username: ${{ secrets.GCE_USER }}
-          key: ${{ secrets.GCE_SSH_KEY }}
-          envs: GITHUB_REF_NAME
-          script: |
-            set -e
-            VERSION="${GITHUB_REF_NAME#v}"
-            IMAGE_VERSION="ghcr.io/fjwood69/mori:${VERSION}"
-            IMAGE_LATEST="ghcr.io/fjwood69/mori:latest"
-            IMAGE_ROLLBACK="ghcr.io/fjwood69/mori:previous-rollback"
-            ENVFILE="/data/mori-advisor/.env"
-            MORI_UID=$(id -u mori)
-            RT="XDG_RUNTIME_DIR=/run/user/${MORI_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${MORI_UID}/bus"
-            # All three mori app containers share the :latest image and are managed
-            # as rootless Quadlet units — restart them together so none drifts onto
-            # stale code (the drift class this migration exists to kill).
-            UNITS="mori-advisor mori-ingestion mori-msg"
+        env:
+          GCE_SSH_KEY: ${{ secrets.GCE_SSH_KEY }}
+          GCE_USER: ${{ secrets.GCE_USER }}
+          GCE_HOST: ${{ secrets.GCE_HOST }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          KEYFILE=$(mktemp)
+          chmod 600 "$KEYFILE"
+          echo "$GCE_SSH_KEY" > "$KEYFILE"
+          trap "rm -f '$KEYFILE'" EXIT
 
-            # Containers are managed by rootless systemd **Quadlet** units owned by
-            # the mori user (installed by the GCE startup script to
-            # ~mori/.config/containers/systemd/; source of truth: deploy/gcp/quadlet/).
-            # CD only refreshes the image and restarts the units — the run-spec lives
-            # in the units, not here, so the startup/CD definitions can no longer drift.
-            # The CD user reaches the mori user systemd/podman via `sudo su - mori`.
-            # All runtime config (incl. secrets) lives in $ENVFILE — CD never sees it.
+          ssh -i "$KEYFILE" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "${GCE_USER}@${GCE_HOST}" \
+            "GITHUB_REF_NAME='${REF_NAME}' bash -s" << 'REMOTESCRIPT'
+          set -e
+          VERSION="${GITHUB_REF_NAME#v}"
+          IMAGE_VERSION="ghcr.io/fjwood69/mori:${VERSION}"
+          IMAGE_LATEST="ghcr.io/fjwood69/mori:latest"
+          IMAGE_ROLLBACK="ghcr.io/fjwood69/mori:previous-rollback"
+          ENVFILE="/data/mori-advisor/.env"
+          MORI_UID=$(id -u mori)
+          RT="XDG_RUNTIME_DIR=/run/user/${MORI_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${MORI_UID}/bus"
+          # All three mori app containers share the :latest image and are managed
+          # as rootless Quadlet units — restart them together so none drifts onto
+          # stale code (the drift class this migration exists to kill).
+          UNITS="mori-advisor mori-ingestion mori-msg"
 
-            if [ ! -f "$ENVFILE" ]; then
-              echo "FATAL: $ENVFILE missing — startup script must write it first"; exit 1
-            fi
+          # Containers are managed by rootless systemd **Quadlet** units owned by
+          # the mori user (installed by the GCE startup script to
+          # ~mori/.config/containers/systemd/; source of truth: deploy/gcp/quadlet/).
+          # CD only refreshes the image and restarts the units — the run-spec lives
+          # in the units, not here, so the startup/CD definitions can no longer drift.
+          # The CD user reaches the mori user systemd/podman via `sudo su - mori`.
+          # All runtime config (incl. secrets) lives in $ENVFILE — CD never sees it.
 
-            # Rollback tag: pin the currently-running :latest before we move it, so a
-            # bad deploy reverts with
-            #   podman tag …:previous-rollback …:latest && systemctl --user restart $UNITS
-            sudo su - mori -c "$RT podman image exists '$IMAGE_LATEST'" \
-              && sudo su - mori -c "$RT podman tag '$IMAGE_LATEST' '$IMAGE_ROLLBACK'" || true
+          if [ ! -f "$ENVFILE" ]; then
+            echo "FATAL: $ENVFILE missing — startup script must write it first"; exit 1
+          fi
 
-            # Pull the new build and move :latest onto it. The Quadlet units reference
-            # :latest and do NOT re-pull on restart, so retagging locally is what makes
-            # the restart pick up exactly this build (deterministic — not registry latest).
-            sudo su - mori -c "$RT podman pull '$IMAGE_VERSION'"
-            sudo su - mori -c "$RT podman tag '$IMAGE_VERSION' '$IMAGE_LATEST'"
+          # Rollback tag: pin the currently-running :latest before we move it, so a
+          # bad deploy reverts with
+          #   podman tag …:previous-rollback …:latest && systemctl --user restart $UNITS
+          sudo su - mori -c "$RT podman image exists '$IMAGE_LATEST'" \
+            && sudo su - mori -c "$RT podman tag '$IMAGE_LATEST' '$IMAGE_ROLLBACK'" || true
 
-            # Restart the units — Quadlet recreates each container from the refreshed
-            # :latest. Atomic stop-old/start-new per unit (no port clash under --network=host).
-            sudo su - mori -c "$RT systemctl --user restart $UNITS"
+          # Pull the new build and move :latest onto it. The Quadlet units reference
+          # :latest and do NOT re-pull on restart, so retagging locally is what makes
+          # the restart pick up exactly this build (deterministic — not registry latest).
+          sudo su - mori -c "$RT podman pull '$IMAGE_VERSION'"
+          sudo su - mori -c "$RT podman tag '$IMAGE_VERSION' '$IMAGE_LATEST'"
 
-            # Health gate
-            for i in 1 2 3 4 5; do
-              sleep $((i * 2))
-              curl -sf http://localhost:8968/health && curl -sf http://localhost:8969/health && break
-              [ $i -eq 5 ] && { echo "health check failed"; exit 1; }
-            done
+          # Restart the units — Quadlet recreates each container from the refreshed
+          # :latest. Atomic stop-old/start-new per unit (no port clash under --network=host).
+          sudo su - mori -c "$RT systemctl --user restart $UNITS"
 
-            # Deployment contract gate — the SAME scripts/verify-deployment.py that
-            # UAT runs, executed INSIDE the freshly-deployed container against its own
-            # endpoint. Asserts the full route surface (not just /health). A deploy
-            # that serves /health but 404s on feature routes fails here instead of
-            # reporting a false green. Uses the first configured API key from the
-            # env-file (mode 600, so read via sudo).
-            VERIFY_KEY=$(sudo grep -m1 '^MORI_API_KEYS=' "$ENVFILE" | cut -d= -f2- | cut -d, -f1 | cut -d: -f2)
-            if [ -z "$VERIFY_KEY" ]; then echo "FATAL: no MORI_API_KEYS in $ENVFILE — refusing to ship auth-off"; exit 1; fi
-            echo "Running deployment contract against live container..."
-            sudo su - mori -c "$RT podman exec mori-advisor python /app/scripts/verify-deployment.py http://localhost:8968 '$VERIFY_KEY'" || {
-              echo "DEPLOYMENT CONTRACT FAILED — the deployed container is not serving the expected route surface"
-              exit 1
-            }
-            echo "Deploy OK: $IMAGE (rootless, --env-file, contract verified)"
+          # Health gate
+          for i in 1 2 3 4 5; do
+            sleep $((i * 2))
+            curl -sf http://localhost:8968/health && curl -sf http://localhost:8969/health && break
+            [ $i -eq 5 ] && { echo "health check failed"; exit 1; }
+          done
+
+          # Deployment contract gate — the SAME scripts/verify-deployment.py that
+          # UAT runs, executed INSIDE the freshly-deployed container against its own
+          # endpoint. Asserts the full route surface (not just /health). A deploy
+          # that serves /health but 404s on feature routes fails here instead of
+          # reporting a false green. Uses the first configured API key from the
+          # env-file (mode 600, so read via sudo).
+          VERIFY_KEY=$(sudo grep -m1 '^MORI_API_KEYS=' "$ENVFILE" | cut -d= -f2- | cut -d, -f1 | cut -d: -f2)
+          if [ -z "$VERIFY_KEY" ]; then echo "FATAL: no MORI_API_KEYS in $ENVFILE — refusing to ship auth-off"; exit 1; fi
+          echo "Running deployment contract against live container..."
+          sudo su - mori -c "$RT podman exec mori-advisor python /app/scripts/verify-deployment.py http://localhost:8968 '$VERIFY_KEY'" || {
+            echo "DEPLOYMENT CONTRACT FAILED — the deployed container is not serving the expected route surface"
+            exit 1
+          }
+          echo "Deploy OK: $IMAGE_VERSION (rootless, --env-file, contract verified)"
+          REMOTESCRIPT
 
   create-release:
     name: Create GitHub Release
