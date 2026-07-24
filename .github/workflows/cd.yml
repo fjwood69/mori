@@ -92,12 +92,15 @@ jobs:
         run: |
           KEYFILE=$(mktemp)
           chmod 600 "$KEYFILE"
-          echo "$GCE_SSH_KEY" > "$KEYFILE"
+          printf '%s\n' "$GCE_SSH_KEY" > "$KEYFILE"
           trap "rm -f '$KEYFILE'" EXIT
 
           ssh -i "$KEYFILE" \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=30 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
             "${GCE_USER}@${GCE_HOST}" \
             "GITHUB_REF_NAME='${REF_NAME}' bash -s" << 'REMOTESCRIPT'
           set -e
