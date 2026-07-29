@@ -93,7 +93,14 @@ if __name__ == "__main__":
 DATA_DIR = Path(os.environ.get("MORI_ADVISOR_DATA", "/data/mori-advisor"))
 MCP_SERVER_NAME = os.environ.get("MORI_MCP_SERVER_NAME", "mori")
 BIFROST_BASE_URL = os.environ.get("MORI_BASE_URL", "http://localhost:8787")
-BIFROST_TIMEOUT = int(os.environ.get("MORI_BIFROST_TIMEOUT", "300"))
+BIFROST_TIMEOUT = int(os.environ.get("MORI_BIFROST_TIMEOUT", "900"))
+# The caller-side budget for ONE blocking LLM call, enforced by _run_llm's wait_for.
+# 900s, not 330s. Measured 2026-07-29: successful deep consults land at 132-590s, so a 330s cap
+# abandoned work that had already SUCCEEDED -- five complete answers discarded in one day, the
+# largest 32,768 tokens. This must stay ABOVE BIFROST_TIMEOUT below, which must stay above the
+# gateway's per-provider budget for the hops we are willing to wait through. Raising one alone
+# just moves the wall.
+LLM_CALL_TIMEOUT = int(os.environ.get("MORI_LLM_CALL_TIMEOUT", "900"))
 TRUSTED_DREAMERS = (
     os.environ.get(
         "MORI_TRUSTED_DREAMERS",
@@ -491,7 +498,7 @@ async def _run_llm(fn, **kwargs):
     async with _llm_sem:
         return await asyncio.wait_for(
             loop.run_in_executor(_llm_executor, functools.partial(fn, **kwargs)),
-            timeout=330,
+            timeout=LLM_CALL_TIMEOUT,
         )
 
 
@@ -1252,7 +1259,7 @@ async def _execute_consult_job(
     except Exception as e:
         logger.exception("consult job %s failed", job_id)
         job["status"] = "error"
-        job["error"] = f"Advisor call failed: {e}"
+        job["error"] = f"Advisor call failed: {type(e).__name__}: {e}".rstrip(": ")
         job["updated_at"] = _consult_job_now()
 
 

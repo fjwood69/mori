@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.3.6 — /consult: stop discarding completed answers
+
+- `_run_llm`'s abandonment backstop raised from a hardcoded `330s` to an
+  env-backed `LLM_CALL_TIMEOUT` (default `900s`, `MORI_LLM_CALL_TIMEOUT`).
+  Measured 2026-07-29: successful deep consults land at 132–590s; the 330s cap
+  was below the normal working range, not a safety margin — five complete
+  answers (up to 32,768 tokens) were generated successfully and then discarded
+  client-side in one day. Cancelling `wait_for` does not stop the underlying
+  thread, so the work and its cost were incurred either way; raising the cap
+  stops throwing the result away, it does not create new load.
+- `BIFROST_TIMEOUT` default raised `300s` → `900s` in both `main.py` and
+  `ingestion_server.py` (kept identical on purpose — one-of-two-sites
+  divergence is the defect class this change avoids).
+- Job-failure messages now include the exception type
+  (`f"{type(e).__name__}: {e}"`) instead of just `str(e)`. Every discarded
+  answer today surfaced as an empty `"Advisor call failed: "` message and was
+  twice misdiagnosed as a swallowed provider error — it was
+  `asyncio.TimeoutError`, which has no args, so `str(e)` is empty by design.
+  The type name alone would have said "timeout" in one word.
+- **Deployment note**: the GCE container sets `MORI_BIFROST_TIMEOUT=600`
+  explicitly in its Quadlet unit, which overrides the new code default. The
+  unit env was updated to `900` alongside this release — the code change alone
+  would not have taken effect otherwise.
+- Explicitly not done: capping `deep` `max_tokens` (32768→8192) to cut
+  latency — rejected on the measurement, since observed completions already
+  reach up to 32,768 tokens and capping would silently truncate answers
+  rather than speed them up.
+
 ## v2.3.5 — /consult: stop sending a fixed temperature
 
 - `bifrost_client.py:consult()` no longer sends `temperature` unless the caller

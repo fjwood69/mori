@@ -36,7 +36,7 @@ DATA_DIR = Path(os.environ.get("MORI_ADVISOR_DATA", "/data/mori-advisor"))
 INGESTION_PORT = int(os.environ.get("MORI_INGESTION_PORT", "8969"))
 API_KEY = os.environ.get("MORI_ADVISOR_API_KEY", "")
 BIFROST_BASE_URL = os.environ.get("MORI_BASE_URL", "http://localhost:8787")
-BIFROST_TIMEOUT = int(os.environ.get("MORI_BIFROST_TIMEOUT", "300"))
+BIFROST_TIMEOUT = int(os.environ.get("MORI_BIFROST_TIMEOUT", "900"))
 MAX_FILE_MB = int(os.environ.get("MORI_INGESTION_MAX_FILE_MB", "50"))
 MAX_TOTAL_MB = MAX_FILE_MB * 4
 
