@@ -1227,7 +1227,6 @@ async def _execute_consult_job(
             user=user_prompt,
             vk="advisor",
             max_tokens=max_tokens,
-            temperature=0.3,
         )
 
         _missing: list[str] = []

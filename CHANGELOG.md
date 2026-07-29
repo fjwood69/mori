@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.3.5 — /consult: stop sending a fixed temperature
+
+- `bifrost_client.py:consult()` no longer sends `temperature` unless the caller
+  explicitly passes one — default changed from `0.3` to `None`, and the field is
+  now omitted from the request entirely when unset. Some provider endpoints
+  (Nebius/Kimi-K3) reject any client-supplied temperature outright, causing
+  `/consult` to fail in ~600ms. Blanking rather than pegging to `1.0` avoids
+  tying the fix to one endpoint's requirement, since the routing rule fans out
+  across multiple vendors.
+- `main.py`'s `/consult` call site no longer passes `temperature=0.3` — the one
+  behavioural change; every other caller (ingestion, dream, extraction) still
+  passes its own value explicitly and is unaffected.
+- Removed a dead `max_tokens < 200` guard in `consult()` left over from a
+  K2.6-specific constraint on a client that now routes to K3; verified
+  unreachable (the one call site using that VK always sends `max_tokens` in the
+  thousands).
+- Added `tests/test_bifrost_client_temperature.py` — no prior test coverage
+  existed for `bifrost_client.py`.
+
 ## v2.3.4 — raise /consult deep max_tokens 16 K → 32 K
 
 - `deep` depth ceiling lifted from 16 384 to 32 768 tokens — the previous limit

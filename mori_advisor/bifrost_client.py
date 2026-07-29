@@ -122,7 +122,7 @@ class BifrostClient:
         user: str,
         vk: Literal["advisor", "dream", "fast"] = "advisor",
         max_tokens: int = 4096,
-        temperature: float = 0.3,
+        temperature: float | None = None,
         response_format: dict | None = None,
     ) -> str:
         """Send a consult request.
@@ -132,7 +132,9 @@ class BifrostClient:
             user: User message content.
             vk: Which model profile to use (advisor or dream).
             max_tokens: Max output tokens.
-            temperature: Sampling temperature.
+            temperature: Sampling temperature. ``None`` (the default) OMITS the field
+                entirely so the provider's own default applies — some endpoints
+                (Nebius/Kimi-K3) reject any client-supplied value.
             response_format: Optional OpenAI-style ``response_format`` (e.g. a
                 ``{"type": "json_schema", ...}`` structured-output spec). Passed
                 through to the provider verbatim when set; omitted otherwise.
@@ -141,10 +143,6 @@ class BifrostClient:
         Returns:
             The model's response text.
         """
-        # Kimi K2.6 requires max_tokens >= 200
-        if vk == "advisor" and max_tokens < 200:
-            max_tokens = 200
-
         client, model = self._client_for(vk)
 
         kwargs: dict = {
@@ -154,8 +152,9 @@ class BifrostClient:
                 {"role": "user", "content": user},
             ],
             "max_tokens": max_tokens,
-            "temperature": temperature,
         }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         if response_format is not None:
             kwargs["response_format"] = response_format
 
