@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.3.7 — /consult: raise file-attachment truncation limits
+
+- `MAX_FILE_SIZE` 50KB → 125KB, `MAX_TOTAL_FILE_SIZE` 200KB → 500KB
+  (`mori_advisor/main.py`). Same 25% per-file/total ratio as before; sized so
+  4 files at the per-file cap fit exactly in the total budget. Prompted by
+  `--file` consults on the production advisor model (`kimi-k2.7-code`,
+  large context window) needing more than 200KB of combined attached source
+  for realistic multi-file reviews.
+- Applies identically to both file-read paths (`_read_files` for server-local
+  paths, `_blocks_from_file_contents` for the client-supplied bodies the
+  `/consult` skill actually uses) — they share the same two constants.
+
 ## v2.3.6 — /consult: stop discarding completed answers
 
 - `_run_llm`'s abandonment backstop raised from a hardcoded `330s` to an

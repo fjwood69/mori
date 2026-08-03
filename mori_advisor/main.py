@@ -227,8 +227,8 @@ BINARY_EXTENSIONS = {
     ".obj",
 }
 
-MAX_FILE_SIZE = 50 * 1024  # 50KB per file
-MAX_TOTAL_FILE_SIZE = 200 * 1024  # 200KB total
+MAX_FILE_SIZE = 125 * 1024  # 125KB per file
+MAX_TOTAL_FILE_SIZE = 500 * 1024  # 500KB total — 4 files at MAX_FILE_SIZE fits exactly
 
 # In-memory consult job tracker (single-process Quadlet/UAT). Lost on restart/CD.
 # job_id -> {status, result?, error?, created_at, updated_at}
