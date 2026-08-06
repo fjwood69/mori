@@ -29,3 +29,14 @@ metadata-backup-*.sh
 
 # Landing page local archive (pre-edit snapshots, not for git)
 web/landing/_archive/
+
+# ── REPO HYGIENE. Enforced by the `hygiene` job in .github/workflows/ci.yml.
+# ⚠ THESE RULES USED TO LIVE ONLY IN .git/info/exclude, WHICH IS LOCAL AND NEVER COMMITTED — so a
+# fresh clone, a second machine and CI itself were all unprotected. Measured 2026-08-06 across
+# gated, gated-uat and mori: all three, same gap, all three public.
+# ⚠ AND THIS FILE IS THE GUARD, NOT THE ENFORCEMENT. .gitignore stops an ACCIDENT; it does not
+# detect an artefact that is ALREADY tracked, and `git add -f` walks straight past it. The CI job
+# therefore asserts on `git ls-files` — on what IS tracked — and checks this file separately.
+.gitnexus/
+node_modules/
+.secrets

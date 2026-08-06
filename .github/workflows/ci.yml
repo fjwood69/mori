@@ -11,6 +11,45 @@ on:
 # build-push-action@v7).
 
 jobs:
+  hygiene:
+    name: Repo hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # ⚠ THE ENFORCEMENT ASSERTS ON WHAT IS TRACKED, NEVER ON .gitignore. A gitignore rule is a
+      # guard against ACCIDENT: it does nothing about a file that is already in the index, and
+      # `git add -f` ignores it entirely. Checking the guard instead of the property is a control
+      # that certifies its own precondition.
+      - name: No generated or local-only artefact is TRACKED
+        run: |
+          set -uo pipefail
+          # ⚠ `git ls-files` LISTS FILES, so a directory pattern must match a PATH COMPONENT and
+          # never the end of the string: `.gitnexus/` appears as `.gitnexus/meta.json`. An
+          # end-anchored directory pattern matches nothing and the gate passes vacuously.
+          bad=$(git ls-files | grep -E \
+            '(^|/)(\.gitnexus|__pycache__|\.venv|venv|node_modules|\.mypy_cache|\.ruff_cache|\.pytest_cache)/|(^|/)(\.env|\.secrets|\.DS_Store)$|\.py[cod]$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::these are tracked and must never be committed:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "OK — no generated or local-only artefact is tracked"
+      # The GUARD, checked separately and for a different reason: these rules lived only in
+      # .git/info/exclude, which is LOCAL AND NEVER COMMITTED, so every fresh clone was unprotected.
+      - name: .gitignore covers the denylist (so a FRESH CLONE is protected)
+        run: |
+          set -uo pipefail
+          missing=""
+          for p in ".gitnexus/" "__pycache__/" ".venv/" "node_modules/" ".env" ".secrets"; do
+            grep -qxF -- "$p" .gitignore || missing="$missing $p"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::.gitignore is missing:$missing"
+            echo "these must be in the COMMITTED .gitignore, not in .git/info/exclude"
+            exit 1
+          fi
+          echo "OK — .gitignore covers the denylist"
+
   sterility:
     name: Content sterility
     runs-on: ubuntu-latest
