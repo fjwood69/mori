@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 import time
 from typing import Optional
 
@@ -25,7 +24,6 @@ from prometheus_client import (
     CollectorRegistry,
     Counter,
     Gauge,
-    Histogram,
     Info,
     generate_latest,
 )
@@ -46,6 +44,11 @@ events_counter: metrics.Counter | None = None
 pending_writes_gauge: metrics.Gauge | None = None
 eviction_queue_gauge: metrics.Gauge | None = None
 
+# Histograms — record duration/tokens
+consult_duration: metrics.Histogram | None = None
+dream_duration: metrics.Histogram | None = None
+consult_tokens: metrics.Histogram | None = None
+
 
 def init_metrics() -> None:
     """Initialise the meter provider and create instruments.
@@ -54,6 +57,7 @@ def init_metrics() -> None:
     """
     global _meter, _provider, memories_gauge, events_counter
     global pending_writes_gauge, eviction_queue_gauge
+    global consult_duration, dream_duration, consult_tokens
 
     if _meter is not None:
         return  # already initialised
@@ -99,6 +103,21 @@ def init_metrics() -> None:
     eviction_queue_gauge = _meter.create_gauge(
         name="mori_eviction_queue_size",
         description="Number of unresolved eviction queue entries",
+        unit="1",
+    )
+    consult_duration = _meter.create_histogram(
+        name="mori_consult_duration_ms",
+        description="Consult call duration in milliseconds",
+        unit="ms",
+    )
+    dream_duration = _meter.create_histogram(
+        name="mori_dream_duration_ms",
+        description="Dream pipeline run duration in milliseconds",
+        unit="ms",
+    )
+    consult_tokens = _meter.create_histogram(
+        name="mori_consult_tokens",
+        description="Tokens used per consult call",
         unit="1",
     )
 
@@ -257,141 +276,6 @@ def record_anatomy_decision(actor: str, code: str, mode: str) -> None:
         logger.debug("record_anatomy_decision failed", exc_info=True)
 
 
-# ── Outbound LLM calls ────────────────────────────────────────────────────
-# Recorded by BifrostClient._send, the single funnel for every LLM call in this process.
-# Labelled by `vk` (model profile) because that is all the client boundary knows for certain:
-# dream AND ingest both use vk=dream. Per-feature dream timing is the dream last-run summary
-# below. Buckets reach 900s = LLM_CALL_TIMEOUT so a timeout lands in a finite bucket.
-_llm_call_seconds = Histogram(
-    "mori_llm_call_duration_seconds",
-    "Outbound LLM call duration by VK profile, outcome (ok|error|timeout) and serving provider",
-    ["vk", "outcome", "provider"],
-    buckets=(1, 5, 15, 30, 60, 120, 300, 600, 900),
-    registry=prom_registry,
-)
-_llm_output_tokens = Counter(
-    "mori_llm_output_tokens_total",
-    "Completion tokens returned by outbound LLM calls",
-    ["vk"],
-    registry=prom_registry,
-)
-_llm_inflight = Gauge(
-    "mori_llm_inflight",
-    "Outbound LLM calls sent and still awaiting a response",
-    ["vk"],
-    registry=prom_registry,
-)
-_llm_oldest_inflight = Gauge(
-    "mori_llm_oldest_inflight_seconds",
-    "Age of the oldest outbound LLM call still awaiting a response (0 when none)",
-    registry=prom_registry,
-)
-# Consult concurrency slots (main._run_llm). A wedge reads as queued > 0 with active at the cap.
-_llm_slot_wait = Histogram(
-    "mori_llm_slot_wait_seconds",
-    "Time a consult waited for a free LLM slot",
-    buckets=(0.1, 1, 5, 15, 30, 60, 120, 300),
-    registry=prom_registry,
-)
-_llm_slots_active = Gauge(
-    "mori_llm_slots_active", "Consult LLM slots in use", registry=prom_registry
-)
-_llm_slots_queued = Gauge(
-    "mori_llm_slots_queued", "Consults waiting for a free LLM slot", registry=prom_registry
-)
-
-_inflight_lock = threading.Lock()
-_inflight: dict[str, tuple[str, float]] = {}  # call_id -> (vk, monotonic start)
-_inflight_vks_seen: set[str] = {"advisor", "dream", "fast"}
-
-
-def llm_call_started(call_id: str, vk: str) -> None:
-    """Register an outbound call as in flight. Fail-open; called from executor threads."""
-    try:
-        with _inflight_lock:
-            _inflight[call_id] = (vk, time.monotonic())
-            _inflight_vks_seen.add(vk)
-    except Exception:
-        logger.debug("llm_call_started failed", exc_info=True)
-
-
-def llm_call_finished(
-    call_id: str,
-    vk: str,
-    outcome: str,
-    provider: str,
-    elapsed_s: float,
-    output_tokens: Optional[int] = None,
-) -> None:
-    """Retire an in-flight call and observe its duration. Fail-open."""
-    try:
-        with _inflight_lock:
-            _inflight.pop(call_id, None)
-        _llm_call_seconds.labels(vk=vk, outcome=outcome, provider=provider).observe(elapsed_s)
-        if output_tokens:
-            _llm_output_tokens.labels(vk=vk).inc(output_tokens)
-    except Exception:
-        logger.debug("llm_call_finished failed", exc_info=True)
-
-
-def llm_slot_state(active: int, queued: int) -> None:
-    try:
-        _llm_slots_active.set(active)
-        _llm_slots_queued.set(queued)
-    except Exception:
-        logger.debug("llm_slot_state failed", exc_info=True)
-
-
-def llm_slot_waited(seconds: float) -> None:
-    try:
-        _llm_slot_wait.observe(seconds)
-    except Exception:
-        logger.debug("llm_slot_waited failed", exc_info=True)
-
-
-def _refresh_inflight() -> None:
-    """Recompute the in-flight gauges from the live registry (so oldest-age grows between events)."""
-    now = time.monotonic()
-    with _inflight_lock:
-        entries = list(_inflight.values())
-        seen = set(_inflight_vks_seen)
-    counts: dict[str, int] = {}
-    for vk, _ in entries:
-        counts[vk] = counts.get(vk, 0) + 1
-    for vk in seen:
-        _llm_inflight.labels(vk=vk).set(counts.get(vk, 0))
-    _llm_oldest_inflight.set(max((now - started for _, started in entries), default=0.0))
-
-
-# ── Dream last run ────────────────────────────────────────────────────────
-# DreamPipeline.run() persists a summary in dream_state because the scheduled dream runs in a
-# SEPARATE process (`python -m mori_advisor.dream_job`); read at scrape time so both scheduled
-# and on-demand runs appear. avg_over_time() of the duration gauge ≈ per-run mean when runs
-# are evenly spaced (each value is held until the next run).
-DREAM_OUTCOMES = ("ok", "no_events", "empty_batch", "parse_error", "error")
-_dream_last_duration = Gauge(
-    "mori_dream_last_run_duration_seconds",
-    "Wall time of the last dream run (scheduled or on-demand)",
-    registry=prom_registry,
-)
-_dream_last_finished = Gauge(
-    "mori_dream_last_run_timestamp_seconds",
-    "Unix time the last dream run finished",
-    registry=prom_registry,
-)
-_dream_last_written = Gauge(
-    "mori_dream_last_run_memories_written",
-    "Memories written by the last dream run",
-    registry=prom_registry,
-)
-_dream_last_outcome = Gauge(
-    "mori_dream_last_run_outcome",
-    "1 on the outcome label of the last dream run, 0 on the others",
-    ["outcome"],
-    registry=prom_registry,
-)
-
-
 # Process-level accumulators for the coverage ratio (prom Counter internals aren't cleanly readable).
 _brief_counts = {"served": 0, "confirmed": 0}
 
@@ -462,28 +346,7 @@ async def collect_metrics(store, nats_url: Optional[str] = None) -> bytes:
         watermark_raw = await _a(store.get_dream_state("last_dreamed_event_id"))
         watermark = int(watermark_raw or 0)
         _dream_watermark.set(watermark)
-        _dream_undreamed.set(await _a(store.count_events_since(watermark)))
-    except Exception:
-        pass
-
-    # Dream last run — only set once a run has recorded one (absent ≠ zero).
-    try:
-        finished = await _a(store.get_dream_state("last_run_finished_at"))
-        if finished:
-            _dream_last_finished.set(float(finished))
-            _dream_last_duration.set(
-                float(await _a(store.get_dream_state("last_run_duration_s")) or 0)
-            )
-            _dream_last_written.set(int(await _a(store.get_dream_state("last_run_written")) or 0))
-            last_outcome = await _a(store.get_dream_state("last_run_outcome"))
-            for outcome in DREAM_OUTCOMES:
-                _dream_last_outcome.labels(outcome=outcome).set(1 if outcome == last_outcome else 0)
-    except Exception:
-        pass
-
-    # Outbound LLM calls in flight (process-local; recomputed so oldest-age is current).
-    try:
-        _refresh_inflight()
+        _dream_undreamed.set(max(0, events_val - watermark))
     except Exception:
         pass
 
