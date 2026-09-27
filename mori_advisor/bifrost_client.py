@@ -170,8 +170,10 @@ class BifrostClient:
         client, model = self._client_for(vk, call_id=call_id)
         kwargs = {"model": model, **kwargs}
         req_bytes = len(json.dumps(kwargs["messages"], ensure_ascii=False).encode())
+        # In bifrost mode the requested name is only a routing key: gateway rules may rewrite
+        # it to another model entirely, so the served model is logged separately on recv.
         logger.info(
-            "llm.send call_id=%s ref=%s vk=%s mode=%s model=%s req_bytes=%d max_tokens=%s",
+            "llm.send call_id=%s ref=%s vk=%s mode=%s model_requested=%s req_bytes=%d max_tokens=%s",
             call_id,
             ref or "-",
             vk,
@@ -208,11 +210,13 @@ class BifrostClient:
         finish = getattr(response.choices[0], "finish_reason", None) if response.choices else None
         _metrics.llm_call_finished(call_id, vk, "ok", provider, elapsed, out_tokens)
         logger.info(
-            "llm.recv call_id=%s ref=%s vk=%s provider=%s elapsed_s=%.1f out_tokens=%s finish=%s",
+            "llm.recv call_id=%s ref=%s vk=%s provider=%s model_served=%s elapsed_s=%.1f "
+            "out_tokens=%s finish=%s",
             call_id,
             ref or "-",
             vk,
             provider,
+            getattr(response, "model", None) or "unknown",
             elapsed,
             out_tokens,
             finish,

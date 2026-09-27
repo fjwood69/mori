@@ -22,7 +22,7 @@ _COMPLETION = {
     "id": "chatcmpl-test",
     "object": "chat.completion",
     "created": 0,
-    "model": "stub-model",
+    "model": "moonshotai/kimi-k3",  # what the gateway served — not what was requested
     "choices": [
         {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
     ],
@@ -85,6 +85,22 @@ def test_success_logs_send_and_recv_and_observes_provider(monkeypatch, caplog):
     assert "ref=job-123" in send[0] and "ref=job-123" in recv[0]
     assert "provider=fireworks" in recv[0] and "out_tokens=7" in recv[0]
     assert not mx._inflight, "a finished call must leave the in-flight registry"
+
+
+def test_logs_requested_and_served_model_separately(monkeypatch, caplog):
+    """Gateway routing rules rewrite the requested name (prod: kimi-k2.7-code -> kimi-k3),
+    so a single `model=` field would log a model that never ran."""
+    monkeypatch.setenv("MORI_ADVISOR_MODEL", "Novita/moonshotai/kimi-k2.7-code")
+    client = _client_over(monkeypatch, lambda r: httpx.Response(200, json=_COMPLETION))
+
+    with caplog.at_level(logging.INFO, logger="mori_advisor.bifrost_client"):
+        client.consult(system="s", user="u", vk="advisor")
+
+    lines = [r.getMessage() for r in caplog.records]
+    send = next(line for line in lines if line.startswith("llm.send"))
+    recv = next(line for line in lines if line.startswith("llm.recv"))
+    assert "model_requested=Novita/moonshotai/kimi-k2.7-code" in send
+    assert "model_served=moonshotai/kimi-k3" in recv
 
 
 def test_failure_is_reraised_unchanged_and_counted_as_error(monkeypatch, caplog):

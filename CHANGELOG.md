@@ -12,7 +12,9 @@ and measured.
   `consult.done` / `consult.error`, plus `llm.slot_timeout`, `llm.call_timeout` and
   `dream.run outcome=… written=… elapsed_s=…`. Consult lines carry the `job_id`; LLM
   lines carry a per-call `call_id`, the VK, the serving provider, latency, output tokens
-  and finish reason.
+  and finish reason. The model is logged twice on purpose: `model_requested` on send (in
+  Bifrost mode only a routing key — gateway rules may rewrite it) and `model_served` on
+  receive, from the response.
 - **Gateway join key.** Each HTTP attempt sends `x-request-id: <call_id>` (retries
   `<call_id>.r<n>`). Bifrost stores it as `logs.id` and logs its own server-side
   fallback hops with `parent_request_id` set to it, so
