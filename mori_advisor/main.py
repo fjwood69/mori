@@ -18,7 +18,6 @@ import logging
 import os
 import re
 import socket
-import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -40,8 +39,6 @@ from mori_advisor.metrics import (
     events_counter,
     eviction_queue_gauge,
     init_metrics,
-    llm_slot_state,
-    llm_slot_waited,
     memories_gauge,
     metrics_content_type,
     pending_writes_gauge,
@@ -104,11 +101,6 @@ BIFROST_TIMEOUT = int(os.environ.get("MORI_BIFROST_TIMEOUT", "900"))
 # gateway's per-provider budget for the hops we are willing to wait through. Raising one alone
 # just moves the wall.
 LLM_CALL_TIMEOUT = int(os.environ.get("MORI_LLM_CALL_TIMEOUT", "900"))
-# How long a consult may queue for one of the LLM slots before failing with an explicit
-# "no LLM slot free" error instead of sitting in `pending`. 600s: long enough to queue behind
-# one full wave of deep consults (measured 132-590s, above), short enough to surface a wedge
-# before the slot-holders' own LLM_CALL_TIMEOUT releases them.
-LLM_SLOT_WAIT_TIMEOUT = int(os.environ.get("MORI_LLM_SLOT_WAIT_TIMEOUT", "600"))
 TRUSTED_DREAMERS = (
     os.environ.get(
         "MORI_TRUSTED_DREAMERS",
@@ -495,83 +487,19 @@ async def _orphan_scan_loop():
 # starve short to_thread tasks on the default pool), bounded by a semaphore
 # (backpressure) and a timeout backstop. The default executor is left untouched.
 _llm_executor: ThreadPoolExecutor | None = None
-LLM_SLOTS = 6
-_llm_sem = asyncio.Semaphore(LLM_SLOTS)
-_llm_active = 0  # slots held; mutated only on the event loop
-_llm_queued = 0  # callers waiting for a slot
-
-
-class LLMSlotUnavailable(RuntimeError):
-    """No LLM slot freed up within LLM_SLOT_WAIT_TIMEOUT."""
+_llm_sem = asyncio.Semaphore(6)
 
 
 async def _run_llm(fn, **kwargs):
     """Run a blocking bifrost call off the event loop, bounded by a semaphore and a
     timeout backstop. Falls back to the default executor if the lifespan never ran
-    (e.g. in unit tests).
-
-    Both waits are bounded and logged: queueing for a slot (LLM_SLOT_WAIT_TIMEOUT) and the
-    call itself (LLM_CALL_TIMEOUT), so a wedge surfaces as an error, not an endless `pending`.
-    `ref` in kwargs (a consult job_id) is only read for the log lines; kwargs pass through as-is.
-    """
-    global _llm_active, _llm_queued
+    (e.g. in unit tests)."""
     loop = asyncio.get_running_loop()
-    ref = kwargs.get("ref") or "-"
-    t0 = time.monotonic()
-    if _llm_sem.locked():
-        logger.info(
-            "llm.slot_queued ref=%s active=%d/%d queued=%d",
-            ref,
-            _llm_active,
-            LLM_SLOTS,
-            _llm_queued + 1,
-        )
-    _llm_queued += 1
-    llm_slot_state(_llm_active, _llm_queued)
-    try:
-        await asyncio.wait_for(_llm_sem.acquire(), timeout=LLM_SLOT_WAIT_TIMEOUT)
-    except asyncio.TimeoutError:
-        logger.error(
-            "llm.slot_timeout ref=%s waited_s=%.1f active=%d/%d",
-            ref,
-            time.monotonic() - t0,
-            _llm_active,
-            LLM_SLOTS,
-        )
-        raise LLMSlotUnavailable(
-            f"no LLM slot free after {LLM_SLOT_WAIT_TIMEOUT}s ({_llm_active} of {LLM_SLOTS} in use)"
-        ) from None
-    finally:
-        _llm_queued -= 1
-        llm_slot_state(_llm_active, _llm_queued)
-
-    waited = time.monotonic() - t0
-    _llm_active += 1
-    llm_slot_waited(waited)
-    llm_slot_state(_llm_active, _llm_queued)
-    logger.info(
-        "llm.slot_acquired ref=%s waited_s=%.1f active=%d/%d", ref, waited, _llm_active, LLM_SLOTS
-    )
-    try:
+    async with _llm_sem:
         return await asyncio.wait_for(
             loop.run_in_executor(_llm_executor, functools.partial(fn, **kwargs)),
             timeout=LLM_CALL_TIMEOUT,
         )
-    except asyncio.TimeoutError:
-        # The executor thread cannot be cancelled: the HTTP call keeps running (and may still
-        # land in the gateway log) after the caller has given up on it.
-        logger.error(
-            "llm.call_timeout ref=%s after_s=%d — caller gave up; the call's thread is still running",
-            ref,
-            LLM_CALL_TIMEOUT,
-        )
-        raise TimeoutError(
-            f"no response within {LLM_CALL_TIMEOUT}s; the call may still complete at the gateway"
-        ) from None
-    finally:
-        _llm_active -= 1
-        _llm_sem.release()
-        llm_slot_state(_llm_active, _llm_queued)
 
 
 @asynccontextmanager
@@ -1306,7 +1234,6 @@ async def _execute_consult_job(
             user=user_prompt,
             vk="advisor",
             max_tokens=max_tokens,
-            ref=job_id,
         )
 
         _missing: list[str] = []
@@ -1329,24 +1256,11 @@ async def _execute_consult_job(
         job["status"] = "done"
         job["result"] = advice
         job["updated_at"] = _consult_job_now()
-        logger.info(
-            "consult.done job_id=%s elapsed_s=%.1f result_chars=%d nonconformant=%s",
-            job_id,
-            time.monotonic() - job["_t0"],
-            len(advice),
-            ",".join(_missing) or "-",
-        )
     except Exception as e:
         logger.exception("consult job %s failed", job_id)
         job["status"] = "error"
         job["error"] = f"Advisor call failed: {type(e).__name__}: {e}".rstrip(": ")
         job["updated_at"] = _consult_job_now()
-        logger.error(
-            "consult.error job_id=%s elapsed_s=%.1f error=%s",
-            job_id,
-            time.monotonic() - job["_t0"],
-            type(e).__name__,
-        )
 
 
 @mcp.tool()
@@ -1385,26 +1299,7 @@ async def consult_advisor(
         "error": None,
         "created_at": now,
         "updated_at": now,
-        "_t0": time.monotonic(),
     }
-    payload_bytes = (
-        len(question.encode())
-        + len(context.encode())
-        + sum(
-            len(str(e.get("content") or "").encode())
-            for e in (file_contents or [])
-            if isinstance(e, dict)
-        )
-    )
-    logger.info(
-        "consult.created job_id=%s depth=%s focus=%s files=%d file_contents=%d payload_bytes=%d",
-        job_id,
-        depth,
-        focus,
-        len(files),
-        len(file_contents or []),
-        payload_bytes,
-    )
 
     task = asyncio.create_task(
         _execute_consult_job(job_id, question, context, files, file_contents, focus, depth)

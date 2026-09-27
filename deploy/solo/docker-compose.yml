@@ -5,7 +5,7 @@
 # For multi-pod or Postgres, see deploy/team/docker-compose.yml.
 #
 # Quickstart:
-#   1. cp .env.example .env  — fill in MORI_BASE_URL + API key
+#   1. cp .env.example .env  — fill in MORI_BIFROST_BASE_URL + API key
 #   2. docker compose up -d
 #   3. curl http://localhost:8968/health
 #

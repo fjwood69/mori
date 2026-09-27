@@ -39,14 +39,11 @@ class _FakeClient:
         self.completions = _FakeCompletions()
         self.chat = _FakeChat(self.completions)
 
-    def close(self) -> None:
-        pass
-
 
 def _client_with_fake(monkeypatch) -> tuple[BifrostClient, _FakeCompletions]:
     client = BifrostClient()
     fake = _FakeClient()
-    monkeypatch.setattr(client, "_client_for", lambda vk="advisor", **_: (fake, "stub-model"))
+    monkeypatch.setattr(client, "_client_for", lambda vk="advisor": (fake, "stub-model"))
     return client, fake.completions
 
 
