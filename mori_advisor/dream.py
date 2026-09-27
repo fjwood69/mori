@@ -15,6 +15,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -130,6 +131,7 @@ class DreamPipeline:
         # Prevents concurrent dream runs from blocking the event loop simultaneously.
         # Lazily initialised so __init__ can be called outside a running loop.
         self._run_lock: asyncio.Lock | None = None
+        self._run_stats: dict | None = None  # set only during a non-dry run
 
     # ── Public API ───────────────────────────────────────────────────────
 
@@ -184,7 +186,40 @@ class DreamPipeline:
             logger.info("Dream run already in progress; skipping concurrent invocation.")
             return []
         async with self._run_lock:
-            return await self._run_inner(dry_run=dry_run)
+            if dry_run:
+                return await self._run_inner(dry_run=True)
+            self._run_stats = {"outcome": "ok", "written": 0}
+            t0 = time.monotonic()
+            try:
+                return await self._run_inner(dry_run=False)
+            except Exception:
+                self._run_stats["outcome"] = "error"
+                raise
+            finally:
+                await self._record_last_run(time.monotonic() - t0)
+                self._run_stats = None
+
+    def _note(self, **fields) -> None:
+        """Annotate the current run's summary (no-op on dry runs)."""
+        if self._run_stats is not None:
+            self._run_stats.update(fields)
+
+    async def _record_last_run(self, duration_s: float) -> None:
+        """Persist a last-run summary in dream_state so /metrics sees every run, including the
+        scheduled ones that execute in a separate process. Fail-open: never fails the run."""
+        stats = self._run_stats or {}
+        outcome, written = stats.get("outcome", "ok"), stats.get("written", 0)
+        logger.info("dream.run outcome=%s written=%s elapsed_s=%.1f", outcome, written, duration_s)
+        try:
+            for key, value in (
+                ("last_run_duration_s", f"{duration_s:.3f}"),
+                ("last_run_outcome", outcome),
+                ("last_run_written", str(written)),
+                ("last_run_finished_at", f"{time.time():.0f}"),
+            ):
+                await _a(self.store.set_dream_state(key, value))
+        except Exception:
+            logger.warning("dream: could not record last-run summary", exc_info=True)
 
     async def _run_inner(self, dry_run: bool = False) -> list[dict]:
         # B3 — intake promotion (flag-gated, Postgres-only, additive).
@@ -207,6 +242,7 @@ class DreamPipeline:
         events = await _a(self.session_log.read_events(since_event_id=last_id, limit=500))
         if not events:
             logger.info("No new events since id %s. Nothing to do.", last_id)
+            self._note(outcome="no_events")
             return []
 
         logger.info("Found %s new events since event id %s", len(events), last_id)
@@ -222,6 +258,7 @@ class DreamPipeline:
             # Parse FAILURE (malformed/garbled model output) — do NOT advance the watermark; the
             # batch retries next run. Distinct from a valid, empty result handled below.
             logger.error("Failed to parse dream model response as JSON")
+            self._note(outcome="parse_error")
             return []
 
         if dry_run:
@@ -253,6 +290,7 @@ class DreamPipeline:
                 max_id,
                 pruned,
             )
+            self._note(outcome="empty_batch")
             return []
 
         batch_session_ids = list(
@@ -343,6 +381,7 @@ class DreamPipeline:
                 logger.warning("NATS eviction notice failed: %s", e)
 
         logger.info("Done: %s written, %s errors, watermark at id %s", written, errors, max_id)
+        self._note(written=written)
         return memories
 
     # ── B3: intake promotion ──────────────────────────────────────────────
