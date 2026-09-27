@@ -1,5 +1,59 @@
 # Changelog
 
+## v2.3.8 — /consult and dream: observability
+
+A consult sat `pending` for 25+ minutes with nothing in the advisor to say whether it
+was queued, in flight, or already answered — the only evidence was in the gateway's own
+log. Every outbound LLM call, the consult slot queue and each dream run are now logged
+and measured.
+
+- **Lifecycle logs** (key=value, greppable by id): `consult.created` → `llm.slot_queued`
+  (only when waiting) → `llm.slot_acquired` → `llm.send` → `llm.recv` / `llm.fail` →
+  `consult.done` / `consult.error`, plus `llm.slot_timeout`, `llm.call_timeout` and
+  `dream.run outcome=… written=… elapsed_s=…`. Consult lines carry the `job_id`; LLM
+  lines carry a per-call `call_id`, the VK, the serving provider, latency, output tokens
+  and finish reason. The model is logged twice on purpose: `model_requested` on send (in
+  Bifrost mode only a routing key — gateway rules may rewrite it) and `model_served` on
+  receive, from the response.
+- **Gateway join key.** Each HTTP attempt sends `x-request-id: <call_id>` (retries
+  `<call_id>.r<n>`). Bifrost stores it as `logs.id` and logs its own server-side
+  fallback hops with `parent_request_id` set to it, so
+  `WHERE id LIKE '<call_id>%' OR parent_request_id LIKE '<call_id>%'` returns the whole
+  chain. Ids are per attempt because Bifrost keeps one row per id: the OpenAI client's
+  automatic retries resend identical headers and would otherwise lose their rows
+  (measured).
+- **Metrics** on `/metrics`: `mori_llm_call_duration_seconds{vk,outcome,provider}`
+  (histogram, buckets to 900s), `mori_llm_output_tokens_total{vk}`,
+  `mori_llm_inflight{vk}`, `mori_llm_oldest_inflight_seconds`, `mori_llm_slots_active`,
+  `mori_llm_slots_queued`, `mori_llm_slot_wait_seconds`, and a dream last-run set
+  (`mori_dream_last_run_duration_seconds`, `…_timestamp_seconds`,
+  `…_memories_written`, `…_outcome{outcome}`). The dream summary is persisted in
+  `dream_state` because the scheduled dream runs in a separate process
+  (`python -m mori_advisor.dream_job`) whose in-memory metrics would never reach the
+  server. Labelled by `vk`, not feature: dream and ingest share the `dream` VK, so
+  per-feature dream timing comes from the last-run summary.
+- **Bounded slot wait.** A consult now waits at most `MORI_LLM_SLOT_WAIT_TIMEOUT`
+  (default 600s) for one of the 6 LLM slots, then fails with
+  `LLMSlotUnavailable: no LLM slot free after 600s (6 of 6 in use)` instead of reporting
+  `pending`. The wait was already bounded by the slot-holders' own `LLM_CALL_TIMEOUT`,
+  but it was indistinguishable from a normal in-flight job.
+- **Caller-timeout message** now reads `TimeoutError: no response within 900s; the call
+  may still complete at the gateway` (was a bare `TimeoutError`).
+- **Fix — `mori_dream_undreamed`** was `event row count − watermark id`, which reads 0
+  once events are pruned (row count ≪ max id). It now uses
+  `count_events_since(watermark)`, as `/dream --status` already did. Measured in UAT:
+  gauge 0 while 20,804 events were waiting.
+- **Fix — deploy examples.** `deploy/solo` and `deploy/team` `.env.example` set
+  `MORI_BIFROST_BASE_URL`, which the client never reads (it reads `MORI_BASE_URL`), so
+  a non-default gateway URL was silently ignored. Renamed.
+- Removed the OpenTelemetry `mori_consult_duration_ms` / `mori_dream_duration_ms` /
+  `mori_consult_tokens` instruments: defined, never recorded, and not in the scraped
+  registry.
+- **Known, not changed here:** the OpenAI client retries twice by default, so a hung
+  provider holds an executor thread for up to ~3 × `MORI_BIFROST_TIMEOUT` — after the
+  caller has already given up at `LLM_CALL_TIMEOUT`. Now visible as
+  `mori_llm_oldest_inflight_seconds` exceeding `LLM_CALL_TIMEOUT`.
+
 ## v2.3.7 — /consult: raise file-attachment truncation limits
 
 - `MAX_FILE_SIZE` 50KB → 125KB, `MAX_TOTAL_FILE_SIZE` 200KB → 500KB
