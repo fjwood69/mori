@@ -20,7 +20,8 @@ served model.
   the scan writes nothing. The intake assessor was already fail-closed (structured output).
 - **Reasoning off for classifier calls only.** The three classifier sites send
   `reasoning_effort` from `MORI_CLASSIFIER_REASONING_EFFORT`: unset → `"none"` (a reasoning
-  model answers in 1–2 tokens); set but empty → field omitted (escape hatch for a routed
+  model answers in a few tokens, at the answer's own length, within the existing budgets);
+  set but empty → field omitted (escape hatch for a routed
   model that rejects it); anything else → that value. `BifrostClient.consult` gains a
   `reasoning_effort` argument with **no** environment default, so advisor, dream and vision
   calls are unaffected. No automatic retry without the field — a failing route shows up in
