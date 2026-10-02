@@ -209,6 +209,8 @@ class BifrostClient:
         out_tokens = getattr(getattr(response, "usage", None), "completion_tokens", None)
         finish = getattr(response.choices[0], "finish_reason", None) if response.choices else None
         _metrics.llm_call_finished(call_id, vk, "ok", provider, elapsed, out_tokens)
+        if finish == "length":
+            _metrics.llm_call_truncated(vk)
         logger.info(
             "llm.recv call_id=%s ref=%s vk=%s provider=%s model_served=%s elapsed_s=%.1f "
             "out_tokens=%s finish=%s",
@@ -233,6 +235,7 @@ class BifrostClient:
         response_format: dict | None = None,
         *,
         ref: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         """Send a consult request.
 
@@ -249,6 +252,10 @@ class BifrostClient:
                 through to the provider verbatim when set; omitted otherwise.
                 Kept provider-agnostic — callers own the schema.
             ref: Caller correlation id (e.g. a consult job_id), echoed in the call's log lines.
+            reasoning_effort: OpenAI-style ``reasoning_effort`` (e.g. ``"none"``). ``None`` (the
+                default) OMITS the field. Deliberately has no environment-driven default here:
+                only the one-word classifiers set it (via ``utils.classifier_reasoning_effort``),
+                so advisor / dream / vision calls never inherit it.
 
         Returns:
             The model's response text.
@@ -264,6 +271,8 @@ class BifrostClient:
             kwargs["temperature"] = temperature
         if response_format is not None:
             kwargs["response_format"] = response_format
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
 
         response = self._send(vk, kwargs, ref)
         return response.choices[0].message.content or ""

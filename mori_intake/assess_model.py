@@ -53,7 +53,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 if TYPE_CHECKING:
     from mori_advisor.bifrost_client import BifrostClient
 
-from mori_advisor.utils import CONTRADICTION_SCAN_PROMPT
+from mori_advisor.metrics import record_classifier_verdict
+from mori_advisor.utils import CONTRADICTION_SCAN_PROMPT, classifier_reasoning_effort
 from mori_intake.assessor import AssessmentResult
 
 logger = logging.getLogger(__name__)
@@ -125,9 +126,10 @@ def _parse_verdict(raw: str, neighbour_name: str) -> str:
             neighbour_name,
             text[:160],
         )
+        record_classifier_verdict("intake", "unparseable")
         return "NEEDS_REVIEW"
     try:
-        return _VerdictModel.model_validate(data).verdict
+        verdict = _VerdictModel.model_validate(data).verdict
     except ValidationError as exc:
         logger.warning(
             "assess_model: verdict schema-validation failed for %s (data=%r) — NEEDS_REVIEW: %s",
@@ -135,7 +137,10 @@ def _parse_verdict(raw: str, neighbour_name: str) -> str:
             data,
             exc,
         )
+        record_classifier_verdict("intake", "unparseable")
         return "NEEDS_REVIEW"
+    record_classifier_verdict("intake", verdict.lower())
+    return verdict
 
 
 # Confidence score assigned to a SUPERSEDES/RELATED match.  The fast model
@@ -300,6 +305,7 @@ def make_canon_assessor(
                 max_tokens=32,
                 temperature=0.0,
                 response_format=_VERDICT_RESPONSE_FORMAT,
+                reasoning_effort=classifier_reasoning_effort(),
             )
             # Structured parse + Pydantic validation; any deviation → NEEDS_REVIEW
             # (no free-text fallback — that is the brittleness we are removing).
@@ -310,6 +316,7 @@ def make_canon_assessor(
                 name,
                 exc,
             )
+            record_classifier_verdict("intake", "error")
             return "NEEDS_REVIEW"
 
     async def assess(body: str, content_hash: str) -> AssessmentResult:  # noqa: ARG001

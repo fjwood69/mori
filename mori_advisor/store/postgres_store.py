@@ -29,7 +29,9 @@ from mori_advisor.memory_store import (
     VALID_TIERS,
     _freshness_cache,
     _freshness_cache_lock,
+    _freshness_verdict,
 )
+from mori_advisor.metrics import record_classifier_verdict
 from mori_advisor.provenance import (
     LEGACY,
     Provenance,
@@ -38,6 +40,7 @@ from mori_advisor.provenance import (
     tier_decision,
     validate_provenance,
 )
+from mori_advisor.utils import classifier_reasoning_effort
 from mori_advisor.write_result import Disposition, WriteResult, accepted
 
 from .base import BaseStore
@@ -1821,6 +1824,7 @@ class PostgresStore(BaseStore):
                     # Run it in the default thread-pool executor so we don't
                     # block the event loop.
                     loop = asyncio.get_event_loop()
+                    effort = classifier_reasoning_effort()
                     response = await loop.run_in_executor(
                         None,
                         lambda: llm_consult(
@@ -1829,18 +1833,15 @@ class PostgresStore(BaseStore):
                             vk="fast",
                             max_tokens=10,
                             temperature=0.0,
+                            reasoning_effort=effort,
                         ),
                     )
-                    status = (response or "").strip().upper()
-                    normalized = "fresh"
-                    if status == "NO":
-                        normalized = "no"
-                    elif status == "STALE":
-                        normalized = "stale"
-                    return m["name"], normalized
                 except Exception as exc:
                     logger.warning("Freshness check failed for '%s': %s", m["name"], exc)
+                    record_classifier_verdict("freshness", "error")
                     return m["name"], None
+                # None (not exactly one allowed word) takes the error path below: nothing is written.
+                return m["name"], _freshness_verdict(response)
 
         check_results = await asyncio.gather(*[_check_one(m) for m in mems_to_check])
 
@@ -1868,7 +1869,7 @@ class PostgresStore(BaseStore):
                     for name, normalized in updates:
                         await conn.execute(
                             "UPDATE memories SET freshness_status = $1, "
-                            "freshness_checked_at = $2 WHERE name = $3",
+                            "freshness_checked_at = $2 WHERE name = $3 AND deleted_at IS NULL",
                             normalized,
                             checked_at,
                             name,

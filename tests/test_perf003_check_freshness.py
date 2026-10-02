@@ -9,7 +9,7 @@ Verifies:
    same memory.
 3. Batching: all status UPDATEs are applied in a single connection/transaction
    (verified by inspecting that the results tally correctly after one call).
-4. Verdicts unchanged: the normalisation logic (FRESH/STALE/NO → lowercase)
+4. Verdicts: YES/STALE/NO → fresh/stale/no; anything else is an error (v2.3.9)
    matches the old sequential behaviour.
 
 All tests run against SQLite.  Postgres tests are skipped unless
@@ -75,16 +75,20 @@ def _insert_canonical_infra(store, name: str, title: str = "A canonical memory")
 @pytest.mark.parametrize(
     "llm_response,expected_status",
     [
-        ("FRESH", "fresh"),
-        ("fresh", "fresh"),
+        ("YES", "fresh"),
+        ("yes", "fresh"),
         ("STALE", "stale"),
         ("NO", "no"),
-        ("garbage", "fresh"),  # unrecognised → fresh (safe default)
-        ("", "fresh"),
+        # v2.3.9: anything that is not exactly one allowed word is an ERROR, never a verdict.
+        # These rows previously asserted "fresh" ("unrecognised → fresh (safe default)") —
+        # that default is the fail-open defect fixed in v2.3.9.
+        ("FRESH", None),
+        ("garbage", None),
+        ("", None),
     ],
 )
 def test_verdict_normalisation(mem_store, llm_response, expected_status, tmp_path):
-    """check_freshness normalises LLM responses correctly."""
+    """check_freshness persists only an exact verdict; a non-answer is counted as an error."""
     _insert_canonical_infra(mem_store, f"mem-norm-{expected_status}-{llm_response[:4]}")
 
     call_count = 0
@@ -95,9 +99,13 @@ def test_verdict_normalisation(mem_store, llm_response, expected_status, tmp_pat
         return llm_response
 
     results = mem_store.check_freshness(_fake_llm, limit=1)
-    assert results["checked"] == 1
-    assert results[expected_status] == 1
     assert call_count == 1
+    if expected_status is None:
+        assert results["checked"] == 0
+        assert results["errors"] == 1
+    else:
+        assert results["checked"] == 1
+        assert results[expected_status] == 1
 
 
 # ── Concurrency cap ───────────────────────────────────────────────────────
@@ -122,7 +130,7 @@ def test_concurrency_cap_max_5_in_flight(mem_store):
         time.sleep(0.01)  # enough to overlap
         with lock:
             current -= 1
-        return "FRESH"
+        return "YES"
 
     mem_store.check_freshness(_slow_llm, limit=n)
     assert max_concurrent <= 5, (
@@ -141,7 +149,7 @@ def test_all_n_memories_checked(mem_store):
     def _count_llm(**kwargs):
         nonlocal call_count
         call_count += 1
-        return "FRESH"
+        return "YES"
 
     results = mem_store.check_freshness(_count_llm, limit=n)
     assert call_count == n
@@ -161,7 +169,7 @@ def test_cache_prevents_second_llm_call_within_ttl(mem_store):
     def _counting_llm(**kwargs):
         nonlocal call_count
         call_count += 1
-        return "FRESH"
+        return "YES"
 
     # First call — LLM should be invoked once.
     results1 = mem_store.check_freshness(_counting_llm, limit=1)
@@ -188,7 +196,7 @@ def test_cache_expires_after_ttl(mem_store):
     def _counting_llm(**kwargs):
         nonlocal call_count
         call_count += 1
-        return "FRESH"
+        return "YES"
 
     # First call.
     mem_store.check_freshness(_counting_llm, limit=1)
@@ -207,16 +215,16 @@ def test_cache_hit_still_counted_in_results(mem_store):
     """Cache hits are still reflected in the results dict.
 
     The cache is consulted for memories whose freshness_status is 'unknown'
-    or 'fresh'.  After a first call that returns FRESH, the DB status is
+    or 'fresh'.  After a first call that returns YES, the DB status is
     'fresh' and the cache entry is set.  A second call within the TTL must
     return the cached verdict without calling the LLM, but still count it.
     """
     _insert_canonical_infra(mem_store, "infra-cache-counted")
 
     def _llm(**kwargs):
-        return "FRESH"
+        return "YES"
 
-    # First call — LLM returns FRESH; DB updated to 'fresh'; cache populated.
+    # First call — LLM returns YES; DB updated to 'fresh'; cache populated.
     r1 = mem_store.check_freshness(_llm, limit=1)
     assert r1["checked"] == 1
     assert r1["fresh"] == 1
@@ -240,7 +248,7 @@ def test_results_tally_correct_after_batch(mem_store):
     for n in names:
         _insert_canonical_infra(mem_store, n)
 
-    responses = {"infra-batch-a": "FRESH", "infra-batch-b": "STALE", "infra-batch-c": "NO"}
+    responses = {"infra-batch-a": "YES", "infra-batch-b": "STALE", "infra-batch-c": "NO"}
 
     def _verdict_llm(**kwargs):
         return responses[kwargs["user"]]
@@ -294,7 +302,7 @@ def test_no_duplicate_llm_calls_concurrent_threads(mem_store):
     def _slow_llm(**kwargs):
         call_log.append(kwargs.get("user", "?"))
         time.sleep(0.03)  # hold long enough for others to hit the in-flight sentinel
-        return "FRESH"
+        return "YES"
 
     def _run():
         barrier.wait()  # all threads start concurrently
@@ -339,7 +347,7 @@ def test_in_flight_sentinel_cleared_on_llm_error(mem_store):
     def _ok_llm(**kwargs):
         nonlocal call_count
         call_count += 1
-        return "FRESH"
+        return "YES"
 
     # Second call — sentinel was cleared, so LLM is called again.
     results2 = mem_store.check_freshness(_ok_llm, limit=1)
@@ -366,7 +374,7 @@ def test_llm_error_counted_in_errors(mem_store):
         call_count += 1
         if call_count == 1:
             raise RuntimeError("LLM transient failure")
-        return "FRESH"
+        return "YES"
 
     results = mem_store.check_freshness(_flaky_llm, limit=2)
     assert results["errors"] == 1
@@ -410,7 +418,7 @@ def test_pg_check_freshness_concurrency(tmp_path):
                 time.sleep(0.02)
                 with lock:
                     current -= 1
-                return "FRESH"
+                return "YES"
 
             results = await store.check_freshness(_slow_llm, limit=n)
             assert results["checked"] == n
@@ -452,7 +460,7 @@ def test_pg_cache_prevents_second_llm_call(tmp_path):
             def _counting_llm(**kwargs):
                 nonlocal call_count
                 call_count += 1
-                return "FRESH"
+                return "YES"
 
             await store.check_freshness(_counting_llm, limit=1)
             assert call_count == 1
