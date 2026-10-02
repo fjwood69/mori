@@ -1,5 +1,57 @@
 # Changelog
 
+## v2.3.9 — Fail-closed one-word classifiers
+
+The gateway route behind the `fast` VK began serving a reasoning model. With the
+classifiers' small `max_tokens` it spent the whole budget thinking and returned **empty
+content** with `finish_reason=length`. The freshness check mapped any reply other than
+exactly `NO` / `STALE` to `fresh`, so it stamped canonical memories fresh on zero answer
+tokens; the contradiction scan went silently blind (an unparseable verdict logged nothing).
+Model routing stays in the gateway by design, so the fix makes the code correct for any
+served model.
+
+- **Fail-closed parser** (`utils.parse_one_word_verdict`), shared by the freshness check
+  and the contradiction scan. A reply counts only if it is exactly one allowed word after
+  end-only normalisation (whitespace, one trailing `.`, surrounding quotes / backticks /
+  asterisks), with any remaining non-ASCII character rejected before case comparison
+  (`str.upper` folds look-alikes such as `ſ`, `ﬆ` into allowed tokens). Anything else —
+  empty, a reasoning leak, two words — is an **error**: freshness writes neither
+  `freshness_status` nor `freshness_checked_at` (the row stays immediately re-eligible), and
+  the scan writes nothing. The intake assessor was already fail-closed (structured output).
+- **Reasoning off for classifier calls only.** The three classifier sites send
+  `reasoning_effort` from `MORI_CLASSIFIER_REASONING_EFFORT`: unset → `"none"` (a reasoning
+  model answers in a few tokens, at the answer's own length, within the existing budgets);
+  set but empty → field omitted (escape hatch for a routed
+  model that rejects it); anything else → that value. `BifrostClient.consult` gains a
+  `reasoning_effort` argument with **no** environment default, so advisor, dream and vision
+  calls are unaffected. No automatic retry without the field — a failing route shows up in
+  the metrics instead.
+- **`MORI_FRESHNESS_ON_BRIEF` now defaults to `false`.** The check asks "is this still
+  accurate?" with no evidence; with reasoning off its verdict on one memory was measured as
+  a coin flip at temperature 0. A wrong `stale` is terminal (never re-checked) and a wrong
+  `fresh` is surfaced to API consumers, so `unknown` is the honest default until freshness
+  is grounded in evidence. Opt back in with exactly `MORI_FRESHNESS_ON_BRIEF=true`
+  (case-insensitive) — any other value, including `yes` and `1`, now means off. Re-enabling it
+  before that redesign re-introduces guessed verdicts and re-poisons rows the release reset.
+- **Contradiction scan hardening.** A memory is never compared with — or superseded by —
+  itself: its own active row is excluded by primary key (an ingest written straight to the
+  `canonical` tier matched its own name prefix; the blind scan had masked this).
+  `memories.name` is unique only among non-deleted rows, so candidates now exclude
+  soft-deleted rows and the supersession `UPDATE` is keyed by id. Each supersession (the
+  `UPDATE` and its eviction-queue row) is atomic: a savepoint on Postgres — so one failed write
+  no longer aborts the scan's transaction and silently rolls back supersessions already
+  counted — and a rollback on SQLite, so a half-applied pair is never committed by the next
+  one. Candidates are ordered by id (deterministic under `LIMIT 5`). Scan failures log at
+  WARNING instead of DEBUG.
+- **Metrics:** `mori_classifier_verdicts_total{site,outcome}` — `site` ∈
+  freshness / contradiction / intake; `outcome` is the parsed verdict (lower-case),
+  `unparseable` or `error` — and `mori_llm_truncated_total{vk}` for replies that stopped at
+  `max_tokens` (a dashboard signal; routine for some advisor / dream calls). Every series is
+  created at zero on import, so the first burst of failures after a restart is visible to
+  `increase()`. A parsed `SUPERSEDES` whose write then fails is counted twice — once as the
+  verdict and once as `error` — so the unparseable+error share is not "the fraction of calls
+  that failed".
+
 ## v2.3.8 — /consult and dream: observability
 
 A consult sat `pending` for 25+ minutes with nothing in the advisor to say whether it

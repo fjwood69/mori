@@ -692,13 +692,14 @@ class DreamPipeline:
         """
 
         # Consult wrapper matching the expected callable signature
-        def consult_fn(system, user, vk, max_tokens, temperature):
+        def consult_fn(system, user, vk, max_tokens, temperature, reasoning_effort=None):
             return self.client.consult(
                 system=system,
                 user=user,
                 vk=vk,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                reasoning_effort=reasoning_effort,
             )
 
         return await run_contradiction_scan(

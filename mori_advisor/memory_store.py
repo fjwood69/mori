@@ -21,6 +21,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from mori_advisor.metrics import record_classifier_verdict
 from mori_advisor.provenance import (
     LEGACY,
     Provenance,
@@ -30,6 +31,7 @@ from mori_advisor.provenance import (
     tier_decision,
     validate_provenance,
 )
+from mori_advisor.utils import classifier_reasoning_effort, parse_one_word_verdict
 from mori_advisor.write_result import Disposition, WriteResult, accepted
 
 logger = logging.getLogger(__name__)
@@ -165,6 +167,22 @@ Answer with exactly one word: YES, NO, or STALE.
 YES = still completely accurate and relevant
 NO = no longer accurate, should be ignored or archived
 STALE = partially outdated, needs human review before use"""
+
+_FRESHNESS_VERDICTS = {"YES": "fresh", "NO": "no", "STALE": "stale"}
+
+
+def _freshness_verdict(response: str | None) -> str | None:
+    """Map a freshness reply to ``fresh`` / ``no`` / ``stale``, or ``None`` when it is not exactly
+    one allowed word. ``None`` is an error: the caller writes neither ``freshness_status`` nor
+    ``freshness_checked_at``, so the row stays immediately re-eligible. Shared by both backends.
+    """
+    verdict = parse_one_word_verdict(response, tuple(_FRESHNESS_VERDICTS))
+    if verdict is None:
+        logger.warning("Freshness check: unparseable verdict (raw=%r)", (response or "")[:160])
+        record_classifier_verdict("freshness", "unparseable")
+        return None
+    record_classifier_verdict("freshness", verdict.lower())
+    return _FRESHNESS_VERDICTS[verdict]
 
 
 def _slugify(title: str) -> str:
@@ -2683,17 +2701,14 @@ class MemoryStore:
                     vk="fast",
                     max_tokens=10,
                     temperature=0.0,
+                    reasoning_effort=classifier_reasoning_effort(),
                 )
-                status = (response or "").strip().upper()
-                normalized = "fresh"
-                if status == "NO":
-                    normalized = "no"
-                elif status == "STALE":
-                    normalized = "stale"
-                return m["name"], normalized
             except Exception as exc:
                 logger.warning("Freshness check failed for '%s': %s", m["name"], exc)
+                record_classifier_verdict("freshness", "error")
                 return m["name"], None
+            # None (not exactly one allowed word) takes the error path below: nothing is written.
+            return m["name"], _freshness_verdict(response)
 
         # Run LLM calls concurrently — bounded at 5 workers.
         updates: list[tuple[str, str]] = []  # (name, normalized_status)
@@ -2722,7 +2737,7 @@ class MemoryStore:
                 for name, normalized in updates:
                     write_conn.execute(
                         "UPDATE memories SET freshness_status = ?, "
-                        "freshness_checked_at = datetime('now') WHERE name = ?",
+                        "freshness_checked_at = datetime('now') WHERE name = ? AND deleted_at IS NULL",
                         (normalized, name),
                     )
                 write_conn.commit()

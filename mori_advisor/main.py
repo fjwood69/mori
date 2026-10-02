@@ -129,11 +129,13 @@ NATS_URL = os.environ.get("MORI_NATS_URL", "nats://localhost:4222")
 # Set to "false" to suppress consult output capture (e.g. for sensitive/experimental questions)
 CONSULT_CAPTURE = os.environ.get("MORI_CONSULT_CAPTURE", "true").lower() != "false"
 
-# Set to "false" to disable the per-memory LLM freshness check on the brief() hot path.
-# The check is bounded (24h cache, 5-worker cap) and safe for single-operator/low-concurrency
-# use, but operators running brief() frequently across many concurrent clients may wish to
-# disable it here and schedule check_freshness() as a background task instead.
-FRESHNESS_ON_BRIEF = os.environ.get("MORI_FRESHNESS_ON_BRIEF", "true").lower() != "false"
+# Opt-in ("true") per-memory LLM freshness check on the brief() hot path. OFF by default since
+# v2.3.9: the check asks a fast model "is this still accurate?" with no evidence, and with
+# reasoning off its verdict on one memory was measured as a coin flip (YES 3 / STALE 3 at
+# temperature 0). A coin-flip `stale` is terminal (never re-checked) and a coin-flip `fresh` is
+# surfaced to API consumers, so persisting nothing (`unknown`) is the honest default until an
+# evidence-grounded redesign. Re-enabling it before then re-poisons rows the v2.3.9 repair reset.
+FRESHNESS_ON_BRIEF = os.environ.get("MORI_FRESHNESS_ON_BRIEF", "false").strip().lower() == "true"
 
 # ── System prompts ──────────────────────────────────────────────────────
 
@@ -1118,11 +1120,9 @@ async def brief(
             parts.append(f"**Shared memories:** error loading ({e})")
 
     # Freshness check on canonical infrastructure memories.
-    # Controlled by MORI_FRESHNESS_ON_BRIEF (default true).  The check is
-    # bounded by a 24h in-memory cache and a 5-worker concurrency cap, making
-    # it safe for single-operator / low-concurrency deployments.  Set
-    # MORI_FRESHNESS_ON_BRIEF=false to disable and move the check to a
-    # scheduled background task for higher-concurrency environments.
+    # Opt-in via MORI_FRESHNESS_ON_BRIEF=true (default false since v2.3.9 — see
+    # FRESHNESS_ON_BRIEF above).  The check is bounded by a 24h in-memory cache and a
+    # 5-worker concurrency cap.
     if FRESHNESS_ON_BRIEF:
         try:
             fc = await _a(memory_store.check_freshness(bifrost.consult, limit=20))

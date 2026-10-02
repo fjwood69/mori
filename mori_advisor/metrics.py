@@ -299,6 +299,40 @@ _llm_slots_active = Gauge(
 _llm_slots_queued = Gauge(
     "mori_llm_slots_queued", "Consults waiting for a free LLM slot", registry=prom_registry
 )
+# finish_reason == "length": the reply hit max_tokens. Routine for some advisor/dream calls, so
+# this is a dashboard signal, not an alert — the classifier counter below carries the alert.
+_llm_truncated = Counter(
+    "mori_llm_truncated_total",
+    "Outbound LLM calls that stopped at max_tokens (finish_reason=length)",
+    ["vk"],
+    registry=prom_registry,
+)
+
+# ── One-word classifiers (freshness / contradiction scan / intake assessor) ──
+# `outcome` is the parsed verdict (lower-case), or `unparseable` (a reply that is not exactly one
+# allowed token — e.g. empty content from a reasoning model that spent its budget thinking), or
+# `error` (the call or the scan raised). A healthy site shows verdicts; a broken one shows
+# unparseable/error. Bounded: 3 sites x <= 5 outcomes each.
+_classifier_verdicts = Counter(
+    "mori_classifier_verdicts_total",
+    "One-word classifier results by site (freshness|contradiction|intake) and outcome",
+    ["site", "outcome"],
+    registry=prom_registry,
+)
+
+# Every series the alert reads exists at zero from import. A labelled counter series is otherwise
+# created on its first increment, and `increase()` cannot see a jump from absent to N — so the
+# first burst of failures after a restart (the 2026-09-25 case) would be invisible to the alert.
+CLASSIFIER_OUTCOMES: dict[str, tuple[str, ...]] = {
+    "freshness": ("yes", "no", "stale", "unparseable", "error"),
+    "contradiction": ("supersedes", "related", "unrelated", "unparseable", "error"),
+    "intake": ("supersedes", "related", "unrelated", "unparseable", "error"),
+}
+for _site, _outcomes in CLASSIFIER_OUTCOMES.items():
+    for _outcome in _outcomes:
+        _classifier_verdicts.labels(site=_site, outcome=_outcome)
+for _vk in ("advisor", "dream", "fast"):
+    _llm_truncated.labels(vk=_vk)
 
 _inflight_lock = threading.Lock()
 _inflight: dict[str, tuple[str, float]] = {}  # call_id -> (vk, monotonic start)
@@ -332,6 +366,22 @@ def llm_call_finished(
             _llm_output_tokens.labels(vk=vk).inc(output_tokens)
     except Exception:
         logger.debug("llm_call_finished failed", exc_info=True)
+
+
+def llm_call_truncated(vk: str) -> None:
+    """Count a call whose reply stopped at max_tokens. Fail-open."""
+    try:
+        _llm_truncated.labels(vk=vk).inc()
+    except Exception:
+        logger.debug("llm_call_truncated failed", exc_info=True)
+
+
+def record_classifier_verdict(site: str, outcome: str) -> None:
+    """Count one classifier result (verdict | unparseable | error). Fail-open."""
+    try:
+        _classifier_verdicts.labels(site=site, outcome=outcome).inc()
+    except Exception:
+        logger.debug("record_classifier_verdict failed", exc_info=True)
 
 
 def llm_slot_state(active: int, queued: int) -> None:
