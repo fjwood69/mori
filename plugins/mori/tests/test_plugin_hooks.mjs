@@ -55,6 +55,8 @@ function run(scriptPath, { stdin = '', env = {}, args = [] } = {}) {
 // ---- Temp dir ------------------------------------------------------------------
 
 const TMP = mkdtempSync(join(tmpdir(), 'mori-test-'));
+// #88: hook logs live in the per-user state dir (lib/state.mjs), not $TMPDIR/mori-hook.log.
+const HOOK_LOG = join(TMP, `mori-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`, 'hook.log');
 
 function cleanup() {
   try { rmSync(TMP, { recursive: true, force: true }); } catch { /* noop */ }
@@ -236,8 +238,8 @@ console.log('\n── mori-ship-event.mjs ──\n');
 
   // We intercept at the fetch layer by pointing at a port nothing is listening on.
   // The script should: parse the Stop event, add transcript_tail_b64, attempt POST,
-  // fail gracefully (connection refused), log to mori-hook.log, exit 0.
-  const logFile = join(TMP, 'mori-hook.log');
+  // fail gracefully (connection refused), log to the per-user hook.log, exit 0.
+  const logFile = HOOK_LOG;
   const result = spawnSync(process.execPath, [
     SHIP_EVENT,
     '--url', 'http://127.0.0.1:19999',
@@ -253,7 +255,7 @@ console.log('\n── mori-ship-event.mjs ──\n');
   assert((result.status ?? -1) === 0, 'ship-event Stop: exits 0 even on connection failure');
 
   // Verify the log was written
-  assert(existsSync(logFile), 'ship-event Stop: failure logged to mori-hook.log');
+  assert(existsSync(logFile), 'ship-event Stop: failure logged to hook.log');
 
   // Verify Stop enrichment by checking the log contains the right URL (the enrich
   // itself happens before fetch, so we need another approach: run a minimal inline
@@ -431,7 +433,7 @@ console.log('\n── env-var config (MORI_SERVER_URL / MORI_API_KEY) ──\n')
   // 17. ship-event reads MORI_SERVER_URL/MORI_API_KEY from env (no --url/--api-key args).
   // Proof: the failure log records the request URI, which must contain the env host.
   const env = { ...process.env, TMPDIR: TMP, MORI_SERVER_URL: 'http://127.0.0.1:19998', MORI_API_KEY: 'envtest:secret' };
-  const logFile = join(TMP, 'mori-hook.log');
+  const logFile = HOOK_LOG;
   try { rmSync(logFile, { force: true }); } catch { /* noop */ }
   const r = spawnSync(process.execPath, [SHIP_EVENT, '--mode', 'raw'], {
     input: JSON.stringify({ hook_event_name: 'Stop', session_id: 'test-env-s17' }),

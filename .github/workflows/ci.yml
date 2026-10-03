@@ -155,6 +155,35 @@ jobs:
       - name: Guard — plugin skills mirror in sync with skills/
         run: bash scripts/sync-plugin-skills.sh --check
 
+      # #88: the hook harnesses were never run in CI. Each is a self-executing script with its
+      # own PASS/FAIL counters that exits 1 on failure — run as `node "$f"`, NOT `node --test`
+      # (which registers nothing in these files and passes vacuously). The count guard fails
+      # if a glob or path change makes the loop run fewer files than exist today.
+      - name: Plugin hook harnesses
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(plugins/mori/tests/test_*.mjs)
+          [ "${#files[@]}" -ge 8 ] || { echo "::error::expected >= 8 harness files, found ${#files[@]}"; exit 1; }
+          for f in "${files[@]}"; do echo "== $f"; node "$f"; done
+
+  # #88: the plugin gained status checks in June but stayed at 0.3.3, so no installed client
+  # ever received them. A change under a shipped artifact's directory must raise its version.
+  version-guard:
+    name: Artifact version guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # the guard needs the merge base; a shallow clone fails it, never passes it
+
+      - name: Changed artifacts raised their versions
+        env:
+          # PR: the base branch tip. Push: the previous tip (all zeros for a new branch → the
+          # bump rule is skipped, the version sources are still checked against each other).
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: python3 scripts/check-artifact-versions.py --base "$BASE"
+
   test:
     name: Unit tests
     runs-on: ubuntu-latest

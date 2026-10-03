@@ -5,15 +5,21 @@
  * event schema, optionally enriches Stop events with a transcript tail, then
  * POSTs to the mori server's /api/events/raw endpoint.
  *
- * Always exits 0 (fail-open). Any error → logged to $TMPDIR/mori-hook.log, exit 0.
+ * Always exits 0 (fail-open). Any error is logged under the per-user state directory
+ * (`<tmpdir>/mori-<uid>/hook.log`), then the process exits 0.
  *
  * Usage (wired by install-hooks-cursor.mjs into ~/.cursor/hooks.json):
- *   node /abs/path/mori-ship-event-cursor.mjs --url <base> --api-key <key> [--event <name>]
+ *   node /abs/path/mori-ship-event-cursor.mjs --url <base> --api-key-file <path> [--event <name>]
  *
  * Options:
- *   --url <base>      Base URL of the mori server (required)
- *   --api-key <key>   API key sent as X-Api-Key header (optional)
- *   --event <name>    Override event name (optional; falls back to stdin hook_event_name)
+ *   --url <base>          Base URL of the mori server (or MORI_SERVER_URL)
+ *   --api-key-file <path> File holding the API key, mode 0600 (or MORI_API_KEY_FILE / MORI_API_KEY)
+ *   --api-key <key>       Deprecated: puts the key in hooks.json and the process list
+ *   --event <name>        Override event name (optional; falls back to stdin hook_event_name)
+ *
+ * #88: this script used to accept the key only as --api-key, so the NUC install carried no
+ * key and every Cursor event was rejected (401) with nothing visible. Key resolution is now
+ * lib/config.mjs, and a missing URL or an unusable key file is surfaced, not dropped.
  *
  * Cursor input fields (snake_case, per cursor.com/docs/hooks):
  *   hook_event_name, conversation_id, transcript_path, workspace_roots, tool_name,
@@ -30,20 +36,8 @@ import { hostname } from 'os';
 import { runFailOpen } from './lib/fail-open.mjs';
 import { postEvent } from './lib/post.mjs';
 import { toCanonical } from './lib/canonical.mjs';
-
-// ---- Arg parsing ---------------------------------------------------------------
-
-function parseArgs(argv) {
-  const args = { url: '', apiKey: '', event: '' };
-  for (let i = 0; i < argv.length; i++) {
-    switch (argv[i]) {
-      case '--url':     args.url    = argv[++i] ?? ''; break;
-      case '--api-key': args.apiKey = argv[++i] ?? ''; break;
-      case '--event':   args.event  = argv[++i] ?? ''; break;
-    }
-  }
-  return args;
-}
+import { parseCommonArgs, resolveConfig } from './lib/config.mjs';
+import { count, logLine, warnOnce } from './lib/state.mjs';
 
 // ---- Stop enrichment -----------------------------------------------------------
 
@@ -64,7 +58,7 @@ function enrichStop(canonical) {
 // ---- Main ----------------------------------------------------------------------
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseCommonArgs(process.argv.slice(2));
 
   // Read stdin
   let raw = '';
@@ -92,12 +86,26 @@ async function main() {
   const canonical = toCanonical(parsed, { client: 'cursor', eventName });
   const enriched = enrichStop(canonical);
 
+  const cfg = resolveConfig(args);
+  const base = cfg.url.replace(/\/$/, '');
+  if (!base || !/^https?:\/\//i.test(base)) {
+    warnOnce('cursor-no-url', `mori (Cursor): server URL unset or invalid ("${cfg.url}") — events are NOT being shipped.`);
+    logLine('mori-cursor', 'invalid base URL');
+    count('no-url');
+    process.exit(0);
+  }
+  if (cfg.problem) {
+    warnOnce('cursor-key-config', `mori (Cursor): ${cfg.problem} — events are NOT being shipped.`);
+    logLine('mori-cursor', 'key configuration problem');
+    count('key-config');
+    process.exit(0);
+  }
+
   // Build endpoint URL
-  const base = args.url.replace(/\/$/, '');
   const client = process.env.MORI_CLIENT_ID || hostname();
   const url = `${base}/api/events/raw?client=${encodeURIComponent(client)}`;
 
-  await postEvent({ url, apiKey: args.apiKey, body: enriched });
+  await postEvent({ url, apiKey: cfg.apiKey, body: enriched, tag: 'mori-cursor' });
   process.exit(0);
 }
 

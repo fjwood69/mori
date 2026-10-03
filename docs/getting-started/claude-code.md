@@ -223,7 +223,7 @@ The Mori server uses a **dual-backend** store: SQLite for solo or synchronous se
 |---------|----------------|-----|
 | Permission prompt on every mori tool call | `permissions.allow` not seeded | Re-run installer or reinstall plugin; check doctor output |
 | `/brief` returns nothing / MCP error | MCP not connected | Reload window; confirm `mcpServers.mori` in settings.json or plugin MCP config |
-| Hooks not shipping events | Shipper script missing or hook not installed | Run doctor; check `%TEMP%\mori-hook.log` (Windows) or `/tmp/mori-hook.log` |
+| Hooks not shipping events | Shipper script missing, hook not installed, or key rejected | Plugin 0.4.0+: check `<tmpdir>/mori-<uid>/hook.log` (a rejected key also shows at session start). Legacy shipper scripts: `%TEMP%\mori-hook.log` (Windows) or `/tmp/mori-hook.log` |
 | VS Code profile install ignored | No profiles found or wrong choice | Check `%APPDATA%\Code\User\profiles\`; re-run targeting the correct number |
 | Stale `/brief` skill text | Skills not upgraded | Re-run with `--upgrade-skills` / `-UpgradeSkills` or reinstall plugin |
 | Non-Mori hooks disappeared after install | Old installer version (pre-merge-fix) | Re-run current installer — hooks are now merged per-event, not replaced |

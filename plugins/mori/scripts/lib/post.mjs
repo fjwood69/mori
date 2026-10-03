@@ -1,61 +1,101 @@
 /**
  * lib/post.mjs — Fail-soft HTTP POST helper for mori hooks (Node ESM)
  *
- * Export: postEvent({ url, apiKey, body })
+ * Export: postEvent({ url, apiKey, body, timeoutMs, tag }) → Promise<{ok, status, reason}>
+ * `tag` names the calling tool ('mori-ship' = Claude Code, 'mori-cursor' = Cursor).
  *
- * POSTs `body` (string or object) as JSON to the given URL.
- * If `apiKey` is provided, it is sent as the X-Api-Key header.
- * On ANY network or parse error, appends a line to $TMPDIR/mori-hook.log
- * and resolves (never throws). The caller can safely await without try/catch.
+ * POSTs `body` (string or object) as JSON; `apiKey`, if given, goes in the X-Api-Key header.
+ * Never throws — the caller can await without try/catch (signature unchanged for existing
+ * callers, which ignore the result).
  *
- * Requirements: Node 18+ (global fetch).
+ * #88: `fetch` resolves on a 401, so a rejected key used to look like success and a client
+ * could ship nothing for weeks unnoticed. Now every non-2xx and every network failure is
+ * classified and recorded (never the key, never a request or response body):
+ *   auth (401/403) · rate (429) · client (other 4xx) · server (5xx) · timeout · network
+ * - each failure: one line in the per-user hook log + a counter entry;
+ * - auth: also a marker the tool's context hook surfaces at the next session start, and a
+ *   once-an-hour stderr warning — both per `tag`, i.e. per tool (lib/state.mjs);
+ * - a hung server is cut off after `timeoutMs` (default 10 s, below the hooks' 15 s timeout)
+ *   instead of being killed by the host with nothing logged;
+ * - sending a key over plain http to a non-loopback host is warned about once a day.
  */
 
-import { appendFileSync, existsSync, statSync, readFileSync } from 'fs';
+import { clearAuthFailure, count, logLine, markAuthFailure, warnOnce } from './state.mjs';
 
-const LOG_MAX_BYTES = 102400; // 100 KB
+const DAY_MS = 86_400_000;
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
-/**
- * Append a failure line to $TMPDIR/mori-hook.log.
- * Silently ignores its own errors (truly fail-silent).
- *
- * @param {string} uri
- * @param {string} reason
- */
-function logFailure(uri, reason) {
-  const log = `${process.env.TMPDIR || '/tmp'}/mori-hook.log`;
+export function classifyStatus(status) {
+  if (status >= 200 && status < 300) return null;
+  if (status === 401 || status === 403) return 'auth';
+  if (status === 429) return 'rate';
+  if (status >= 400 && status < 500) return 'client';
+  return 'server';
+}
+
+/** Log target without query string (keeps ?client=… out of nothing sensitive, and short). */
+function target(url) {
   try {
-    // Best-effort rotation: archive to .old when the log exceeds 100 KB
-    if (existsSync(log)) {
-      try {
-        const st = statSync(log);
-        if (st.size > LOG_MAX_BYTES) {
-          appendFileSync(`${log}.old`, readFileSync(log));
-          // Leave original in place; a full truncation would need openSync
-        }
-      } catch { /* noop */ }
-    }
-    const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-    appendFileSync(log, `${ts} [mori-post] ${uri} : ${reason}\n`);
+    const u = new URL(url);
+    return `${u.origin}${u.pathname}`;
   } catch {
-    // Truly fail-silent
+    return '<invalid url>';
   }
 }
 
+function warnPlainHttp(url, apiKey) {
+  if (!apiKey) return;
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'http:' && !LOOPBACK.has(u.hostname)) {
+      warnOnce(
+        'plain-http-key',
+        `sending the API key over plain http to ${u.host}; use https unless this network is private.`,
+        DAY_MS,
+      );
+    }
+  } catch { /* invalid URL is reported by the caller */ }
+}
+
 /**
- * POST a JSON body to url, optionally authenticated with X-Api-Key.
- * Resolves (does not throw) on any error.
- *
- * @param {{ url: string, apiKey?: string, body: string | object }} opts
- * @returns {Promise<void>}
+ * @param {{ url: string, apiKey?: string, body: string | object, timeoutMs?: number, tag?: string }} opts
+ * @returns {Promise<{ok: boolean, status: number, reason: string|null}>}
  */
-export async function postEvent({ url, apiKey, body }) {
+export async function postEvent({ url, apiKey, body, timeoutMs = 10_000, tag = 'mori-post' }) {
   const payload = typeof body === 'string' ? body : JSON.stringify(body);
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['X-Api-Key'] = apiKey;
+  warnPlainHttp(url, apiKey);
+  let res;
   try {
-    await fetch(url, { method: 'POST', headers, body: payload });
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: payload,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
   } catch (err) {
-    logFailure(url, String(err));
+    const reason = err && (err.name === 'TimeoutError' || err.name === 'AbortError') ? 'timeout' : 'network';
+    logLine(tag, `${target(url)} : ${reason} (${err && err.name ? err.name : 'error'})`);
+    count(reason);
+    return { ok: false, status: 0, reason };
   }
+  // Never read the body: error pages can echo request headers. Release the socket.
+  try { await res.body?.cancel(); } catch { /* noop */ }
+  const reason = classifyStatus(res.status);
+  if (!reason) {
+    clearAuthFailure(tag);
+    return { ok: true, status: res.status, reason: null };
+  }
+  logLine(tag, `${target(url)} : HTTP ${res.status} (${reason})`);
+  count(reason);
+  if (reason === 'auth') {
+    markAuthFailure(res.status, tag);
+    warnOnce(
+      `auth-${tag}`,
+      `Mori server rejected this client's API key (HTTP ${res.status}) — events are NOT being recorded. ` +
+        'Check MORI_API_KEY or the key file.',
+    );
+  }
+  return { ok: false, status: res.status, reason };
 }

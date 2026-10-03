@@ -128,9 +128,15 @@ if [ ! -f "$HOOK_INSTALLER" ]; then
   exit 1
 fi
 HOOK_ARGS=(--url "$MORI_URL")
-[ -n "$API_KEY" ] && HOOK_ARGS+=(--api-key "$API_KEY")
 [ "$PARITY" = true ] && HOOK_ARGS+=(--parity)
-node "$HOOK_INSTALLER" "${HOOK_ARGS[@]}"
+# #88: the key goes to the installer through the environment (readable only by this user), and
+# the installer stores it in a 0600 key file referenced by the hooks — never in hooks.json.
+# An empty --api-key must not wipe a MORI_API_KEY the caller already exported.
+if [ -n "$API_KEY" ]; then
+  MORI_API_KEY="$API_KEY" node "$HOOK_INSTALLER" "${HOOK_ARGS[@]}"
+else
+  node "$HOOK_INSTALLER" "${HOOK_ARGS[@]}"
+fi
 
 # ---- Step 4: Compat layer (--parity) ----
 if [ "$PARITY" = true ]; then

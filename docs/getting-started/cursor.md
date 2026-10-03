@@ -9,7 +9,7 @@ Connect Cursor 2.4+ to your Mori shared memory server: `/brief`, `/consult`, `/d
 - **Cursor 2.4+** — plugin MCP, `~/.cursor/hooks.json`, and `~/.claude/skills/` (or plugin `skills/`).
 - **Mori server** reachable (homelab, GCE, Tailscale, etc.).
 - **Third-party skills enabled:** Settings → Rules, Skills, Subagents → **Enable third-party skills**.
-- Optional: API key if the server uses `MORI_ADVISOR_API_KEY`.
+- Optional: API key if the server uses `MORI_API_KEYS`. Pass it as `MORI_API_KEY` (the bare secret). The installer writes it to a `0600` file and the hooks reference that file.
 - **Node.js 18+** for native hook scripts (bundled in the plugin).
 
 ---
@@ -24,16 +24,18 @@ From the **mori** repo root:
 
 ```bash
 # Minimal: MCP + skills + core native hooks (sessionStart, postToolUse, stop)
-./scripts/install-mori-cursor-plugin.sh \
+# MORI_API_KEY is the bare secret. It is stored in ~/.config/mori/api-key (mode 0600);
+# ~/.cursor/hooks.json only names that file.
+MORI_API_KEY="<bare-secret-if-required>" \
+  ./scripts/install-mori-cursor-plugin.sh \
   --url "http://<your-server>:8968" \
-  --api-key "<bare-secret-if-required>" \
   --client "$(hostname)" \
   --force
 
 # Parity: true up to legacy hook depth (adds prompt/failure native hooks + PreCompact/PostCompact compat)
-./scripts/install-mori-cursor-plugin.sh \
+MORI_API_KEY="<bare-secret-if-required>" \
+  ./scripts/install-mori-cursor-plugin.sh \
   --url "http://<your-server>:8968" \
-  --api-key "<bare-secret-if-required>" \
   --parity \
   --force
 ```
@@ -45,8 +47,9 @@ Use `--upgrade` to refresh the plugin copy from the repo. Use `--doctor` (add `-
 ```bash
 cp -r plugins/mori ~/.cursor/plugins/local/mori
 # Edit ~/.cursor/plugins/local/mori/mcp.json (URL + x-api-key)
-node ~/.cursor/plugins/local/mori/scripts/install-hooks-cursor.mjs \
-  --url http://<server>:8968 --api-key <key>
+MORI_API_KEY="<bare-secret>" \
+  node ~/.cursor/plugins/local/mori/scripts/install-hooks-cursor.mjs \
+  --url http://<server>:8968 --api-key-file ~/.config/mori/api-key
 # Optional parity compat layer:
 ./scripts/install-mori-cursor-plugin.sh --url http://<server>:8968 --parity --force
 # (re-runs hook steps; use after manual copy)
@@ -165,7 +168,7 @@ All require MCP connected. See [slash-commands.md](../reference/slash-commands.m
 |---------|-----|
 | MCP not connected | Re-run plugin installer; check plugin `mcp.json`; reload |
 | Skills missing | `--upgrade` plugin install; enable third-party skills |
-| No events shipping | Run hook installer step; check `/tmp/mori-hook.log` |
+| No events shipping | Run hook installer step; check `<tmpdir>/mori-<uid>/hook.log` (a rejected key also shows at session start) |
 | Events ship but no tool output | Upgrade plugin (`--upgrade`); hook paths are absolute to the plugin dir — no need to re-run `install-hooks-cursor.mjs` unless you changed server URL/key |
 | No post-compact re-ground | Install with `--parity` or legacy installer |
 | Duplicate events | Don't run legacy + plugin native hooks without `--parity` prune; use `tidy-up.mjs --client cursor` |
