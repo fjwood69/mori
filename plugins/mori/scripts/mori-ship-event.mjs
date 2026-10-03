@@ -1,118 +1,49 @@
 /**
- * mori-ship-event.mjs — Mori event shipper for Claude/Cursor hooks (Node ESM)
+ * mori-ship-event.mjs — Mori event shipper for Claude Code hooks (Node ESM)
  *
  * Node port of mori-ship-event.sh. Uses Node built-ins + global fetch (Node 18+).
  * Reads hook event JSON from stdin, enriches Stop events with a transcript tail,
  * then POSTs to the Mori server. Always exits 0 (fail-soft).
  *
  * Usage:
- *   node mori-ship-event.mjs --url <base> --client <name> [--api-key <key>] [--mode raw|precompact]
+ *   node mori-ship-event.mjs [--url <base>] [--client <name>] [--api-key-file <path>] [--mode raw|precompact]
  *
- * Config resolution: --url/--api-key win; otherwise MORI_SERVER_URL / MORI_API_KEY
- * from the hook environment. Always exits 0 (fail-soft), but config errors (missing
- * URL, 401/403) are surfaced on stderr — not silently dropped. Transient errors go
- * to the log only.
+ * Config (lib/config.mjs): URL from --url or MORI_SERVER_URL; key from --api-key-file,
+ * MORI_API_KEY_FILE, MORI_API_KEY, or the deprecated --api-key. Fail-soft never means
+ * fail-silent: a missing URL, an unreadable key file and a rejected key (401/403) are
+ * surfaced on stderr (rate-limited) and recorded for the next session start; transient
+ * failures go to the per-user hook log and counters (lib/state.mjs).
+ *
+ * #88: Cursor also runs this plugin's hooks, with its own event names and without Claude
+ * Code's settings env. Events this plugin is not wired for are ignored (lib/claude-events.mjs)
+ * before any config check — Cursor's own mori plugin ships them.
  *
  * Options:
- *   --url <base>      Base URL of the Mori server (or set MORI_SERVER_URL)
- *   --client <name>   Client identifier sent as ?client= query param (default: os.hostname())
- *   --api-key <key>   API key sent as X-Api-Key header (or set MORI_API_KEY; omit for unauthenticated servers)
- *   --mode raw|precompact
- *                     raw (default): POST to /api/events/raw
- *                     precompact: POST to /api/precompact (blocks until dream completes)
+ *   --url <base>          Base URL of the Mori server (or MORI_SERVER_URL)
+ *   --client <name>       ?client= query param (default: os.hostname())
+ *   --api-key-file <path> File holding the API key (0600; or MORI_API_KEY_FILE / MORI_API_KEY)
+ *   --api-key <key>       Deprecated: exposes the key in the process list
+ *   --mode raw|precompact raw (default): POST /api/events/raw
+ *                         precompact: POST /api/precompact (blocks until the dream completes)
  */
 
-import { readFileSync, existsSync, appendFileSync, statSync, writeFileSync } from 'fs';
 import { hostname } from 'os';
+import { isForeignEvent } from './lib/claude-events.mjs';
+import { enrichStopEvent } from './lib/enrich.mjs';
+import { parseCommonArgs, resolveConfig } from './lib/config.mjs';
+import { postEvent } from './lib/post.mjs';
+import { count, logLine, warnOnce } from './lib/state.mjs';
 
-// ---- Arg parsing ---------------------------------------------------------------
-
-function parseArgs(argv) {
-  const args = { url: '', client: '', apiKey: '', mode: 'raw' };
-  for (let i = 0; i < argv.length; i++) {
-    switch (argv[i]) {
-      case '--url':     args.url    = argv[++i] ?? ''; break;
-      case '--client':  args.client = argv[++i] ?? ''; break;
-      case '--api-key': args.apiKey = argv[++i] ?? ''; break;
-      case '--mode':    args.mode   = argv[++i] ?? 'raw'; break;
-    }
-  }
-  if (!args.client) args.client = hostname();
-  // Explicit --url/--api-key win (tests / wrappers); otherwise fall back to the
-  // env vars the Claude Code plugin sets (MORI_SERVER_URL / MORI_API_KEY).
-  if (!args.url) args.url = process.env.MORI_SERVER_URL || '';
-  if (!args.apiKey) args.apiKey = process.env.MORI_API_KEY || '';
-  return args;
-}
-
-// ---- Logging -------------------------------------------------------------------
-
-function logFailure(mode, uri, reason) {
-  const log = `${process.env.TMPDIR || '/tmp'}/mori-hook.log`;
-  try {
-    // Rotate log if > 100 KB
-    if (existsSync(log)) {
-      try {
-        const st = statSync(log);
-        if (st.size > 102400) {
-          // Best-effort rotation: append a separator instead of renaming
-          // (renameSync is available but skipped to keep imports minimal — the
-          // log will be reset naturally on the next rotation-eligible write)
-          appendFileSync(`${log}.old`, readFileSync(log));
-          appendFileSync(log, ''); // leave file in place; OS truncation not available without openSync
-        }
-      } catch { /* noop */ }
-    }
-    const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-    appendFileSync(log, `${ts} [mori-ship] ${mode} ${uri} : ${reason}\n`);
-  } catch {
-    // Truly fail-silent
-  }
-}
-
-// ---- Visible failure surfacing -------------------------------------------------
-// Fail-soft must not mean fail-silent. A missing server URL or a rejected POST
-// used to drop events with zero signal. Surface CONFIG errors (no URL, 401/403)
-// on stderr — visible in the Claude Code hook output — at most once per hour so
-// PostToolUse can't spam. Transient errors (5xx/timeouts) go to the log only.
-function warnOnce(reason, key = 'warn') {
-  const marker = `${process.env.TMPDIR || '/tmp'}/mori-hook-${key}`;
-  try {
-    if (existsSync(marker) && Date.now() - statSync(marker).mtimeMs < 3_600_000) return;
-    writeFileSync(marker, String(Date.now()));
-  } catch { /* if we can't persist the marker, warn anyway */ }
-  try { process.stderr.write(`[mori] ${reason}\n`); } catch { /* noop */ }
-}
-
-// ---- Stop-event enrichment -----------------------------------------------------
-// Mirror bash logic: if hook_event_name === "Stop" and transcript_path is readable,
-// read last 65536 bytes, base64-encode, add as transcript_tail_b64. Any failure →
-// return null (caller ships original body unchanged).
-
-function enrichStopEvent(parsed, mode) {
-  if (mode !== 'raw') return null;
-  if ((parsed.hook_event_name || '') !== 'Stop') return null;
-
-  const tpath = parsed.transcript_path;
-  if (!tpath || typeof tpath !== 'string') return null;
-
-  try {
-    if (!existsSync(tpath)) return null;
-    const buf = readFileSync(tpath);
-    const tail = buf.length > 65536 ? buf.slice(buf.length - 65536) : buf;
-    const tailB64 = tail.toString('base64');
-    return { ...parsed, transcript_tail_b64: tailB64 };
-  } catch {
-    return null;
-  }
-}
-
-// ---- Main ----------------------------------------------------------------------
+// Raw events stay well inside the host's hook timeout; PreCompact waits for the server's
+// dream, so it gets nearly all of Claude Code's default 60 s instead of being killed silently.
+const RAW_TIMEOUT_MS = 10_000;
+const PRECOMPACT_TIMEOUT_MS = 55_000;
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseCommonArgs(process.argv.slice(2));
+  const mode = args.mode === 'precompact' ? 'precompact' : 'raw';
+  const client = args.client || hostname();
 
-  // Read all stdin
   let raw = '';
   try {
     const chunks = [];
@@ -121,56 +52,62 @@ async function main() {
   } catch {
     process.exit(0);
   }
-
   if (!raw) process.exit(0);
 
-  // Build endpoint URL
-  const base = args.url.replace(/\/$/, '');
-  const endpoint = args.mode === 'precompact' ? 'precompact' : 'events/raw';
-  const uri = `${base}/api/${endpoint}?client=${encodeURIComponent(args.client)}`;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Malformed JSON — shipped as-is below.
+  }
 
-  // A missing/relative base URL makes fetch() throw and silently drops every
-  // event. Stay fail-soft (exit 0) but say so loudly — this is a misconfiguration.
-  if (!base || !/^https?:\/\//i.test(base)) {
-    warnOnce(`MORI_SERVER_URL is unset or invalid ("${args.url}") — capture events are NOT being shipped. Configure the plugin's server URL.`, 'no-url');
-    logFailure(args.mode, uri, 'invalid base URL (MORI_SERVER_URL unset/invalid)');
+  // Another host running this plugin's hooks (Cursor): not ours to ship. Checked BEFORE the
+  // config so a host without our env doesn't log a config error per event.
+  if (isForeignEvent(parsed)) {
+    count('foreign-event');
     process.exit(0);
   }
 
-  // Attempt Stop-event enrichment (parse → enrich → re-serialise; fall back to raw string)
+  const cfg = resolveConfig(args);
+  const base = cfg.url.replace(/\/$/, '');
+  if (!base || !/^https?:\/\//i.test(base)) {
+    warnOnce(
+      'no-url',
+      `MORI_SERVER_URL is unset or invalid ("${cfg.url}") — capture events are NOT being shipped. Configure the plugin's server URL.`,
+    );
+    logLine('mori-ship', `${mode}: invalid base URL (MORI_SERVER_URL unset/invalid)`);
+    count('no-url');
+    process.exit(0);
+  }
+  if (cfg.problem) {
+    warnOnce('key-config', `${cfg.problem} — events are NOT being shipped.`);
+    logLine('mori-ship', `${mode}: key configuration problem`);
+    count('key-config');
+    process.exit(0);
+  }
+
   let body = raw;
-  try {
-    const parsed = JSON.parse(raw);
-    const enriched = enrichStopEvent(parsed, args.mode);
+  if (parsed) {
+    const enriched = enrichStopEvent(parsed, mode);
     if (enriched) body = JSON.stringify(enriched);
-  } catch {
-    // Malformed JSON — ship as-is
   }
 
-  // POST — await so precompact blocks until the server's dream completes
-  const headers = { 'Content-Type': 'application/json' };
-  if (args.apiKey) headers['X-Api-Key'] = args.apiKey;
-
-  try {
-    const resp = await fetch(uri, { method: 'POST', headers, body });
-    if (resp.status === 401 || resp.status === 403) {
-      // Config error — a fetch() that returns 401 does NOT throw, so this used to
-      // look like success. The key is wrong/missing; surface it.
-      logFailure(args.mode, uri, `HTTP ${resp.status}`);
-      warnOnce(`Mori server rejected the request (HTTP ${resp.status}) — check MORI_API_KEY. Events are not being recorded.`, 'auth');
-    } else if (!resp.ok) {
-      // Transient / server-side — log only, don't spam stderr.
-      logFailure(args.mode, uri, `HTTP ${resp.status}`);
-    }
-  } catch (err) {
-    // Transient (connection refused / timeout) — log only.
-    logFailure(args.mode, uri, String(err));
-  }
-
+  const endpoint = mode === 'precompact' ? 'precompact' : 'events/raw';
+  const uri = `${base}/api/${endpoint}?client=${encodeURIComponent(client)}`;
+  await postEvent({
+    url: uri,
+    apiKey: cfg.apiKey,
+    body,
+    timeoutMs: mode === 'precompact' ? PRECOMPACT_TIMEOUT_MS : RAW_TIMEOUT_MS,
+    tag: 'mori-ship',
+  });
   process.exit(0);
 }
 
+// Runs unconditionally: an "is this the main module?" guard can misfire when the plugin is
+// reached through a symlink (Node resolves the real path), and a hook that silently never runs
+// is the failure #88 is about. Testable logic lives in lib/ instead.
 main().catch((err) => {
-  try { logFailure('?', '?', String(err)); } catch { /* noop */ }
+  try { logLine('mori-ship', `unexpected: ${err && err.name ? err.name : 'error'}`); } catch { /* noop */ }
   process.exit(0);
 });

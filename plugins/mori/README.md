@@ -91,9 +91,12 @@ claude --plugin-dir plugins/mori
 against it.
 
 > **Optional telemetry hooks.** The SessionStart/event hooks ship session events to your
-> server. They read `MORI_SERVER_URL` and `MORI_API_KEY` (the **bare secret**) from the
-> environment — set those (shell profile, or `claudeCode.environmentVariables` in VS Code)
-> for auto-capture. The skills work without them.
+> server. They read `MORI_SERVER_URL` and the key from the environment — set those (shell
+> profile, or `claudeCode.environmentVariables` in VS Code) for auto-capture. The skills
+> work without them. For the key, prefer `MORI_API_KEY_FILE` — the path of a file holding
+> the **bare secret**, mode `0600`, owned by you, not a symlink — over `MORI_API_KEY`
+> (the bare secret itself). A key the server rejects is reported at the next session
+> start.
 
 **Alternative — project-scoped, no marketplace.** Instead of `claude mcp add`, copy
 `plugins/mori/` into your project's `.claude/plugins/mori/` and add the server to the
@@ -306,8 +309,15 @@ server's dream pipeline can extract assistant reasoning from the turn.
 `PreCompact` uses `--mode precompact` which **blocks** (awaits the response) so the
 server has time to persist state before the compaction snapshot is taken.
 
-All network failures are logged to `$TMPDIR/mori-hook.log` and the script exits 0 —
-hooks never interrupt the agent.
+Every failure is recorded and the script exits 0 — hooks never interrupt the agent. The
+HTTP status is checked: a rejected key (401/403), rate limit, other client or server error,
+timeout (10 s; 55 s for `PreCompact`) or network failure goes to a per-user log,
+`<tmpdir>/mori-<uid>/hook.log` (rotated at 100 KB), never with the key or the response
+body. A rejected key or a missing URL is also warned about on stderr (rate-limited), and a
+rejected key is shown at the next session start.
+
+Cursor also runs this plugin's hooks, with its own event names; the shipper ignores events
+it isn't wired for (Cursor's own mori hooks ship those).
 
 **Requirements**: Node.js 18+ (for global `fetch`). No npm packages; built-in ESM only.
 
@@ -322,20 +332,24 @@ After installing the plugin (MCP + skills), wire the telemetry and context hooks
 running the installer once:
 
 ```bash
-node plugins/mori/scripts/install-hooks-cursor.mjs \
+MORI_API_KEY=YOUR_BARE_SECRET \
+  node plugins/mori/scripts/install-hooks-cursor.mjs \
   --url http://YOUR-SERVER:8968 \
-  --api-key YOUR_BARE_SECRET
+  --api-key-file ~/.config/mori/api-key
 ```
 
-Or via environment variables:
+`MORI_API_KEY` is the bare secret. The installer writes it to the key file (mode `0600`, directory `0700`) and the hook commands carry `--api-key-file` with that path. The secret is not written into `hooks.json` and not passed as `--api-key`.
+
+Or with the URL in the environment as well:
 
 ```bash
 MORI_SERVER_URL=http://YOUR-SERVER:8968 MORI_API_KEY=YOUR_BARE_SECRET \
-  node plugins/mori/scripts/install-hooks-cursor.mjs
+  node plugins/mori/scripts/install-hooks-cursor.mjs \
+  --api-key-file ~/.config/mori/api-key
 ```
 
 Use `--dry-run` to preview the JSON that would be written without touching
-`~/.cursor/hooks.json`.
+`~/.cursor/hooks.json`. The preview names the key file and does not print the key.
 
 The installer merges three hook entries into `~/.cursor/hooks.json`:
 

@@ -27,7 +27,8 @@ function assert(condition, name, detail = '') {
 console.log('\n── install-hooks-cursor.mjs (minimal) ──\n');
 
 {
-  const { config } = buildHookConfig(false, SCRIPTS, 'http://127.0.0.1:8968', 'testkey');
+  const keyFile = '/tmp/mori-cursor-test/api-key';
+  const { config } = buildHookConfig(false, SCRIPTS, 'http://127.0.0.1:8968', keyFile);
   assert(Object.keys(config.hooks).length === 3, 'minimal: 3 events');
   assert('sessionStart' in config.hooks, 'minimal: sessionStart');
   assert('postToolUse' in config.hooks, 'minimal: postToolUse');
@@ -35,6 +36,14 @@ console.log('\n── install-hooks-cursor.mjs (minimal) ──\n');
   assert(
     config.hooks.postToolUse[0].command.includes('--event postToolUse'),
     'minimal: postToolUse event flag',
+  );
+  assert(
+    config.hooks.postToolUse[0].command.includes(`--api-key-file "${keyFile}"`),
+    'minimal: 4th arg is the key-file path, not the key',
+  );
+  assert(
+    !config.hooks.postToolUse[0].command.includes('--api-key "'),
+    'minimal: command does not embed --api-key',
   );
 }
 

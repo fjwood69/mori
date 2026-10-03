@@ -51,7 +51,8 @@ import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync } from 'fs
 import { homedir } from 'os';
 import { join } from 'path';
 import { checkServer, getCached, setCached } from './lib/health-gate.mjs';
-import { SETUP_MESSAGE, UNCONFIGURED_MESSAGE } from './lib/setup-message.mjs';
+import { SETUP_MESSAGE, UNCONFIGURED_MESSAGE, authRejectedMessage } from './lib/setup-message.mjs';
+import { recentAuthFailure } from './lib/state.mjs';
 
 function emit(additionalContext) {
   process.stdout.write(
@@ -165,6 +166,13 @@ async function main() {
       emit(SETUP_MESSAGE);
       process.exit(0);
     }
+  }
+
+  // ── Rejected key (#88): the shipper recorded a 401/403 in the last 24 h ──
+  const rejected = recentAuthFailure('mori-ship');
+  if (rejected) {
+    emit(authRejectedMessage(rejected.status, new Date(rejected.ts).toISOString()));
+    process.exit(0);
   }
 
   // ── Normal behaviour (server reachable, or hook telemetry not configured) ──

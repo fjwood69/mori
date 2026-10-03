@@ -1,5 +1,62 @@
 # Changelog
 
+## plugin v0.4.0 — event hooks: rejected keys are seen; Cursor's hooks carry a key (#88)
+
+> **Every client should update the Claude Code mori plugin to 0.4.0.** The plugin stayed at
+> 0.3.3 after the hook shipper gained HTTP status checks in June, so the plugin manager never
+> offered the update and installed clients kept the old hooks. **Cursor sessions on clients
+> installed without a key have shipped nothing; those events can't be recovered.** Re-run the
+> Cursor installer with `MORI_API_KEY` set (below).
+
+Measured on one machine over two days: every Cursor event was rejected with 401 (Cursor's hooks
+carried no key) and every run of the Claude Code plugin's hooks under Cursor failed locally
+(no server URL). Nothing reported either: `fetch` resolves on a 401, and the hooks exit 0.
+
+**Changes**
+
+- **Status checks reach installed clients.** Every event POST classifies the response — rejected
+  key (401/403), rate limit (429), other client error, server error, timeout, network — and
+  records it; a 2xx is the only success. The response body is never read (error pages can echo
+  request headers). Raw events time out after 10 s; `PreCompact`, which waits for the server's
+  dream, after 55 s (inside Claude Code's 60 s hook limit).
+- **A rejected key is visible.** The shipper warns on stderr (once an hour) and records it; the
+  tool's next session start shows "Mori rejected this client's API key … events are NOT being
+  recorded" (for 24 h, or until a post succeeds). The record is per tool, so Claude Code's
+  working key neither hides Cursor's rejection nor reports it as its own.
+- **Key files instead of keys on the command line.** The hooks take `--api-key-file <path>`
+  (or `MORI_API_KEY_FILE`). The file must be a regular file — not a symlink — owned by you with
+  mode `0600` or stricter, checked on the descriptor actually read; an empty file is an error, not
+  "no key". Key order: `--api-key-file` → `MORI_API_KEY_FILE` → `MORI_API_KEY` → `--api-key`
+  (deprecated: it puts the key in the process list; warned once a day). On Windows the mode check
+  is skipped and the file must be under your home directory.
+- **The Cursor installer writes the key to a file.** `install-hooks-cursor.mjs` takes the key
+  from `MORI_API_KEY` (an explicit `--api-key` wins over it, with a warning when the two differ),
+  stores it in `~/.config/mori/api-key` (`0600`, directory `0700`) and
+  references the file from `~/.cursor/hooks.json` (now `0600`). A key already embedded in
+  `hooks.json` by an older install is moved into the file; if it can't be read the installer
+  stops rather than lose it. A symlinked `hooks.json` keeps its link. To update:
+
+  ```bash
+  MORI_API_KEY="<bare secret>" ./scripts/install-mori-cursor-plugin.sh --url http://YOUR-SERVER:8968 --upgrade --force
+  ```
+- **The Claude Code shipper ignores other hosts' events.** Cursor runs Claude Code plugin hooks
+  with its own event names; the shipper now ships only the events `hooks/hooks.json` wires
+  (exact, case-sensitive match; a payload with no event name still ships). Cursor's own hooks
+  ship Cursor's events.
+- **Per-user state directory.** Hook logs moved from `/tmp/mori-hook.log` to
+  `<tmpdir>/mori-<uid>/hook.log` (directory `0700`, verified before use; files opened without
+  following symlinks), with a `counters.jsonl` of failure reasons. Falls back to
+  `~/.local/state/mori` if the temp directory can't be made safe.
+- **Plain http.** Sending a key over plain http to a non-loopback host is warned about once a day.
+- **Release guard.** New `scripts/check-artifact-versions.py`, run by a new CI job
+  (`version-guard`): a change under `plugins/mori/` must raise the plugin version (and
+  `.claude-plugin/marketplace.json` must match it); the same rule covers the Hermes memory
+  provider's four version sources. CI now also runs the plugin's hook harnesses.
+
+**Not changed:** the Antigravity hooks (they inherit the status checks through the shared POST
+helper; their logs move to the per-user directory); the repo-root legacy installers, which still
+put keys in hook commands, and the Cursor and Codex manifest versions (tracked separately).
+
 ## v2.3.12 — Security and correctness hardening
 
 > **Upgrade check for clients.** Send the API key in the `X-Api-Key` header only: a key in the

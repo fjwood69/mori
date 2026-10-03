@@ -33,3 +33,17 @@ export const UNCONFIGURED_MESSAGE =
   'Full quickstart: https://github.com/fjwood69/mori#quickstart . ' +
   'Then point the plugin at it by exporting MORI_SERVER_URL (e.g. http://localhost:8968) ' +
   'and MORI_API_KEY (name:secret), and reload.';
+
+/**
+ * #88: emitted at session start when a recent event POST was rejected (401/403). The hook
+ * itself can only warn on stderr, which hosts may not show; session-start context reaches
+ * the user. `when` is an ISO timestamp.
+ */
+export function authRejectedMessage(status, when) {
+  return (
+    `Mori rejected this client's API key (HTTP ${status}) at ${when} — session events are NOT ` +
+    'being recorded, so this work will not reach shared memory. Check the key: MORI_API_KEY, ' +
+    'MORI_API_KEY_FILE, or the --api-key-file your mori installer wrote (it must be the bare ' +
+    'secret from the server\'s MORI_API_KEYS, in a 0600 file).'
+  );
+}

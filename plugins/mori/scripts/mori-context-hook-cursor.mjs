@@ -35,7 +35,8 @@
 import { readFileSync, existsSync } from 'fs';
 import { runFailOpen } from './lib/fail-open.mjs';
 import { checkServer, getCached, setCached } from './lib/health-gate.mjs';
-import { SETUP_MESSAGE, UNCONFIGURED_MESSAGE } from './lib/setup-message.mjs';
+import { SETUP_MESSAGE, UNCONFIGURED_MESSAGE, authRejectedMessage } from './lib/setup-message.mjs';
+import { recentAuthFailure } from './lib/state.mjs';
 
 /** Parse --url <value> from argv. Returns '' if not found. */
 function parseUrl(argv) {
@@ -103,6 +104,14 @@ async function main() {
 
   if (healthState === 'unconfigured') {
     process.stdout.write(JSON.stringify({ additional_context: UNCONFIGURED_MESSAGE }) + '\n');
+    process.exit(0);
+  }
+
+  // ── Rejected key (#88): the shipper recorded a 401/403 in the last 24 h ───
+  const rejected = recentAuthFailure('mori-cursor');
+  if (rejected) {
+    const msg = authRejectedMessage(rejected.status, new Date(rejected.ts).toISOString());
+    process.stdout.write(JSON.stringify({ additional_context: msg }) + '\n');
     process.exit(0);
   }
 
