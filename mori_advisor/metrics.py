@@ -389,6 +389,17 @@ def set_dream_last_supersessions(counts: dict[str, int]) -> None:
         logger.debug("set_dream_last_supersessions failed", exc_info=True)
 
 
+# The time of the most recent repair, from dream_state — process-independent, so a repair in ANY
+# process (server, ingestion, cron dream) and a second repair on a later boot are both visible.
+# 0 = never repaired. Alert: time() - this < 3600.
+_sequence_last_repair = Gauge(
+    "mori_sequence_last_repair_timestamp_seconds",
+    "Unix time of the most recent boot-time sequence repair (any process; 0 = never)",
+    registry=prom_registry,
+)
+_sequence_last_repair.set(0)
+
+
 def record_sequence_repair(table: str) -> None:
     """Count one boot-time sequence repair. Fail-open."""
     try:
@@ -631,6 +642,19 @@ async def collect_metrics(store, nats_url: Optional[str] = None) -> bytes:
                 set_dream_last_supersessions(json.loads(sup))
     except Exception:
         pass
+
+    # Last boot-time sequence repair (persisted by whichever process repaired). A failed read must
+    # NOT reset the gauge to 0 ("never repaired") — that would silence MoriSequenceRepaired. Keep the
+    # last known value and say so. An absent key genuinely means never repaired.
+    try:
+        repaired_at = await _a(store.get_dream_state("last_sequence_repair_at"))
+    except Exception:
+        logger.warning(
+            "metrics: could not read last_sequence_repair_at; keeping the last known value",
+            exc_info=True,
+        )
+    else:
+        _sequence_last_repair.set(float(repaired_at) if repaired_at else 0)
 
     # Outbound LLM calls in flight (process-local; recomputed so oldest-age is current).
     try:

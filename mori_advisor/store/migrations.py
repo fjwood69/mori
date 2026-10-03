@@ -804,6 +804,9 @@ ORDER BY 1
 """
 
 
+SEQUENCE_REPAIR_STATE_KEY = "last_sequence_repair_at"
+
+
 async def repair_owned_sequences(conn: Any) -> list[tuple[str, int, int]]:
     """Raise every owned sequence that would hand out an id already in its column.
 
@@ -833,6 +836,19 @@ async def repair_owned_sequences(conn: Any) -> list[tuple[str, int, int]]:
         )
         record_sequence_repair(r["tbl"])
         repaired.append((r["tbl"], next_value, mx))
+    if repaired:
+        # Board condition (v2.3.11): the per-process counter cannot show a SECOND repair (each new
+        # process starts at 0 and repairs before its first scrape), and the repair may run in a
+        # process nobody scrapes (ingestion, a cron dream). So the event is persisted in the
+        # database, on this connection under the advisory lock; the server exports it at scrape
+        # time as mori_sequence_last_repair_timestamp_seconds.
+        # The database clock, not the repairing container's (board, tag-condition ruling).
+        await conn.execute(
+            "INSERT INTO dream_state (key, value, updated_at) "
+            "VALUES ($1, EXTRACT(EPOCH FROM NOW())::bigint::text, NOW()) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+            SEQUENCE_REPAIR_STATE_KEY,
+        )
     return repaired
 
 

@@ -568,3 +568,75 @@ def test_swallow_lint_catches_the_a_f_a1_shape():
         "            pass\n"
     )
     assert _swallows_in_txn(ok) == []
+
+
+@requires_pg
+def test_pg_a_second_repairing_boot_is_visible(tmp_path):
+    """Board condition (v2.3.11 build ruling): the per-process counter cannot show a SECOND repair —
+    each new process starts at 0 and repairs before its first scrape. The repair time is persisted
+    in dream_state and exported at scrape; a later repairing boot moves it forward, a clean boot
+    leaves it alone."""
+    import time
+
+    from mori_advisor.store.postgres_store import PostgresStore
+
+    def gauge():
+        return mx.prom_registry.get_sample_value("mori_sequence_last_repair_timestamp_seconds")
+
+    async def boot_with_lag(h, lag: bool):
+        if lag:
+            async with h.store.pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO eviction_queue (id, memory_name, reason) "
+                    "SELECT g, 'seed-' || g, 'orphan' FROM generate_series("
+                    "(SELECT COALESCE(max(id), 0) + 1 FROM eviction_queue), "
+                    "(SELECT COALESCE(max(id), 0) + 10 FROM eviction_queue)) g"
+                )
+                await conn.execute("SELECT setval('eviction_queue_id_seq', 1)")
+        booted = PostgresStore(PG_URL)
+        await booted.bootstrap()
+        await booted.pool.close()
+        await mx.collect_metrics(h.store)
+        return await _a(h.store.get_dream_state("last_sequence_repair_at"))
+
+    async def t(h):
+        await h.q("DELETE FROM dream_state WHERE key = 'last_sequence_repair_at'")
+        first = await boot_with_lag(h, lag=True)
+        assert first and abs(float(first) - time.time()) < 60
+        assert gauge() == float(first)
+        assert await boot_with_lag(h, lag=False) == first  # a clean boot changes nothing
+        time.sleep(1.1)
+        second = await boot_with_lag(h, lag=True)
+        assert float(second) > float(first)
+        assert gauge() == float(second)
+
+    run("postgres", tmp_path, t)
+
+
+def test_a_failed_repair_timestamp_read_keeps_the_last_known_value(tmp_path, monkeypatch, caplog):
+    """Board (tag-condition ruling): a failed dream_state read must not reset the gauge to 0
+    ("never repaired") — that would silence MoriSequenceRepaired. Positive control: a successful
+    read of an absent key does set 0."""
+    import logging
+
+    async def t(h):
+        real = h.store.get_dream_state
+
+        def failing(key, *a, **k):
+            if key == "last_sequence_repair_at":
+                raise RuntimeError("injected read failure")
+            return real(key, *a, **k)
+
+        mx._sequence_last_repair.set(1_791_000_000)
+        monkeypatch.setattr(h.store, "get_dream_state", failing)
+        with caplog.at_level(logging.WARNING):
+            await mx.collect_metrics(h.store)
+        sample = mx.prom_registry.get_sample_value("mori_sequence_last_repair_timestamp_seconds")
+        assert sample == 1_791_000_000
+        assert any("last_sequence_repair_at" in r.getMessage() for r in caplog.records)
+        monkeypatch.setattr(h.store, "get_dream_state", real)
+        await mx.collect_metrics(h.store)
+        sample = mx.prom_registry.get_sample_value("mori_sequence_last_repair_timestamp_seconds")
+        assert sample == 0  # control: never repaired on this store
+
+    run("sqlite", tmp_path, t)
