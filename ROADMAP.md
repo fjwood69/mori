@@ -107,10 +107,10 @@ Unattended promotion stays opt-in behind `MORI_INTAKE_PROMOTION_ENABLED`; these 
 - Dream-concurrency guard OPS-002 — dream lease vs B3 promotion worker on the canon write connection
 - E2E A→B1→B2→B3 test — full unattended round-trip before enabling auto-promotion
 
-### Policy-as-config seam — 🚧 seam built + parity-tested, cutover pending
+### Policy-as-config seam — planned (not yet on main)
 Simple declarative ruleset + tiny evaluator now. OPA/Rego as the enterprise evolution of the same seam — embedded in mori, not a separate engine. The pitch: regulated industries already maintain policy definitions; Mori makes those policies agent-aware without a separate governance committee. Roadmap OPA explicitly; build the seam, not the engine.
 
-In progress: a `PolicyEvaluator` interface (`TinyEvaluator` now, `OpaEvaluator` later) over declarative rule-sets, with the tier-capability matrix and the GOV-001 eligibility pipeline expressed as config and **parity-tested against the live code** (config-eval ≡ code-eval across the full matrix). Predicates are a closed structured vocabulary dispatched to native Python — no `eval`, no free-form regex. The **cutover** — routing the live decisions through the evaluator instead of hardcoded Python — is a separate, post-soak, board-gated step (the parity test is its safety guard).
+Planned: a `PolicyEvaluator` interface (`TinyEvaluator` first, `OpaEvaluator` later) over declarative rule-sets, with the tier-capability matrix and the GOV-001 eligibility pipeline expressed as config and **parity-tested against the live code** (config-eval ≡ code-eval across the full matrix). An unreviewed prototype exists off-main; nothing of the seam is on `main` yet, and it will land through the normal design-and-review flow. Predicates are a closed structured vocabulary dispatched to native Python — no `eval`, no free-form regex. The **cutover** — routing the live decisions through the evaluator instead of hardcoded Python — is a separate, post-soak, board-gated step (the parity test is its safety guard).
 
 ### TD review roll-up — ✅ shipped v2.2.18
 Near-duplicate review candidates are grouped by convention (deterministic, embedding-free
@@ -160,7 +160,7 @@ Near-zero coupling to core. Can ship any time.
 
 - ✅ **README "Why use mori?" section** (shipped) — inverted to lead with the gate + the benchmark table (incl. the auto-extraction≈CLAUDE.md row); the dream pipeline demoted to the proposal half. Second pass added the **"What you get" on-ramp**.
 - ✅ **Medium: "Everyone says memory makes AI coding agents smarter — nobody's showing the receipts"** (shipped 2026-06-21) — positioning piece built on the cross-vehicle benchmark + the curation null; argues "a note for the small stuff, a hard stop for the dangerous stuff." [link](https://medium.com/@fjwood/everyone-says-memory-makes-ai-coding-agents-smarter-07e9820b7d4e)
-- **`docs/concepts/claude-md-vs-mori.md`** — the unconditional floor vs the governed layer above it; CLAUDE.md and Mori are complementary, not competing (canon *compounding* is a stated design thesis, not asserted)
+- ✅ **`docs/concepts/claude-md-vs-mori.md`** (shipped) — the unconditional floor vs the governed layer above it; CLAUDE.md and Mori are complementary, not competing (canon *compounding* is a stated design thesis, not asserted)
 - **Demo video** — cheap, high-leverage; unblocks Product Hunt, HN Show HN, enterprise eval cycles. Still not shipped.
 - **Public roadmap page** — `moriapp.dev/roadmap` with feedback form; buried markdown helps nobody
 - **Bifrost interface contract** — OpenAPI + contract test; publish/document as standalone OSS. The real "extraction" — not a code fork, a documented interface
@@ -214,4 +214,4 @@ Decided on paper now. Open core stays thin.
 
 ---
 
-*Last updated: v2.3.11 — 2026-10-03*
+*Last updated: v2.3.12 — 2026-10-03*

@@ -389,16 +389,18 @@ def test_memory_rollback(backend, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_memory_export(backend, tmp_path, monkeypatch):
-    """memory_export must return a str and write a file to the given path."""
+    """memory_export returns the content as a str and writes no file (v2.3.12, D1)."""
     from mori_advisor.main import memory_export
 
     async def run(store):
         await _seed_memory(store, name="export-test")
-        out_path = str(tmp_path / "export-test.md")
+        before = sorted(p for p in tmp_path.rglob("*.md"))
 
-        result = await memory_export("export-test", output_path=out_path)
+        result = await memory_export("export-test")
         assert_no_coroutines(result)
         assert isinstance(result, str)
+        assert "name: export-test" in result
+        assert sorted(p for p in tmp_path.rglob("*.md")) == before
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
 
@@ -420,9 +422,13 @@ def test_memory_import(backend, tmp_path, monkeypatch):
     )
 
     async def run(store):
-        result = await memory_import(str(import_dir))
+        import mori_advisor.main as m
+
+        monkeypatch.setattr(m, "DATA_DIR", tmp_path)  # v2.3.12 (D8): fixed DATA_DIR/imports
+        result = await memory_import()
         assert_no_coroutines(result)
         assert isinstance(result, str)
+        assert "Imported 1" in result, result
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
 
@@ -503,12 +509,15 @@ def test_memory_export_all(backend, tmp_path, monkeypatch):
     from mori_advisor.main import memory_export_all
 
     async def run(store):
-        await _seed_memory(store, name="exportall-test")
-        out_dir = str(tmp_path / "exports")
+        import mori_advisor.main as m
 
-        result = await memory_export_all(output_dir=out_dir)
+        monkeypatch.setattr(m, "DATA_DIR", tmp_path)  # v2.3.12 (D1): fixed DATA_DIR/exports
+        await _seed_memory(store, name="exportall-test")
+
+        result = await memory_export_all()
         assert_no_coroutines(result)
         assert isinstance(result, str)
+        assert (tmp_path / "exports" / "exportall-test.md").is_file()
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
 

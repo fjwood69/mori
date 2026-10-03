@@ -35,10 +35,13 @@ Mori starts on port 8968. A notification will appear — click it to open the da
 
 ## Connect your agent
 
-Point Claude Code, Cursor, or Antigravity at the forwarded Codespaces URL:
+Point Claude Code, Cursor, or Antigravity at the forwarded Codespaces URL, with the key in
+the `X-Api-Key` header (a key in the URL is refused — URLs end up in logs):
 
-```
-https://<your-codespace-name>-8968.app.github.dev/mcp?api-key=<your-key>
+```bash
+claude mcp add --transport http mori \
+  https://<your-codespace-name>-8968.app.github.dev/mcp \
+  --header "X-Api-Key: <your-key>"
 ```
 
 Find the full URL in the **Ports** tab (port 8968).

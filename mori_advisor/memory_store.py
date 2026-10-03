@@ -22,7 +22,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from mori_advisor.metrics import record_classifier_verdict
+from mori_advisor.metrics import record_classifier_verdict, record_write_rejection
+from mori_advisor.names import confined_export_path, invalid_name_reason
+from mori_advisor.policy import protected_by, protected_rollback_message, protection_bypass
 from mori_advisor.provenance import (
     LEGACY,
     Provenance,
@@ -594,16 +596,26 @@ class MemoryStore:
         except sqlite3.Error:
             return default
 
-    def _is_trusted_client(self, client: str | None) -> bool:
-        """Check if a client hostname is in the trusted_dreamers list."""
-        if not client:
-            return False
+    def _trusted_clients(self) -> list[str]:
+        """The ``trusted_clients`` name list from dreamer_config (host-mode protection bypass)."""
         raw = self._get_config("trusted_clients", "[]")
         try:
             trusted = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
-            return False
-        return client in trusted
+            return []
+        return [t for t in trusted if isinstance(t, str)] if isinstance(trusted, list) else []
+
+    def _is_trusted_client(self, client: str | None) -> bool:
+        """Check if a client hostname is in the trusted_dreamers list."""
+        return bool(client) and client in self._trusted_clients()
+
+    def _protected_tag_prefixes(self) -> list[str]:
+        """The ``protected_tag_prefixes`` list from dreamer_config."""
+        try:
+            prefixes = json.loads(self._get_config("protected_tag_prefixes", "[]"))
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return [p for p in prefixes if isinstance(p, str)] if isinstance(prefixes, list) else []
 
     def _is_protected(self, name: str, tags: list[str], existing_row) -> bool:
         """Check if a memory write should be treated as protected.
@@ -754,12 +766,25 @@ class MemoryStore:
     ) -> WriteResult:
         """The pending SINK (split from the gate; never re-enters store.write). Used by BOTH the
         protection lane and the step-6 anatomy-enforce downgrade — one insert, one disposition."""
+        # #76: upsert the open pending row for the name (latest candidate wins), as Postgres does —
+        # a plain INSERT hit the partial unique index idx_pending_writes_name_pending.
         _pcur = conn.execute(
             """
             INSERT INTO pending_writes
                 (memory_name, title, description, type, body, tags,
                  origin_session_ids, origin_clients, proposed_by)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(memory_name) WHERE status = 'pending' DO UPDATE SET
+                title              = excluded.title,
+                description        = excluded.description,
+                type               = excluded.type,
+                body               = excluded.body,
+                tags               = excluded.tags,
+                origin_session_ids = excluded.origin_session_ids,
+                origin_clients     = excluded.origin_clients,
+                proposed_by        = excluded.proposed_by,
+                proposed_at        = datetime('now')
+            RETURNING id
             """,
             (
                 name,
@@ -773,6 +798,7 @@ class MemoryStore:
                 client or "unknown",
             ),
         )
+        pending_id = _pcur.fetchone()[0]
         if close_conn:
             conn.commit()
         return WriteResult(
@@ -780,7 +806,7 @@ class MemoryStore:
             intended_tier=intended_tier,
             stored_tier="pending",
             disposition=Disposition.DOWNGRADED_TO_PENDING,
-            pending_id=_pcur.lastrowid,
+            pending_id=pending_id,
             reason=reason,
         )
 
@@ -847,6 +873,25 @@ class MemoryStore:
 
             effective_type = self._ensure_type(type)
             effective_tier = self._ensure_tier(tier)
+
+            # v2.3.12 (D7): a name is a single plain path segment, or the write is refused.
+            name_problem = invalid_name_reason(effective_name)
+            if name_problem:
+                record_write_rejection("invalid_name", provenance.actor)
+                logger.warning(
+                    "WRITE-REJECTED name=%r actor=%s op=%s: %s",
+                    effective_name,
+                    provenance.ledger_actor,
+                    provenance.op,
+                    name_problem,
+                )
+                return WriteResult(
+                    memory_name=effective_name,
+                    intended_tier=effective_tier,
+                    stored_tier="",
+                    disposition=Disposition.REJECTED,
+                    reason=name_problem,
+                )
             tags_list = _coerce_tags(tags)
             tags_json = self._format_tags(tags_list)
 
@@ -947,7 +992,7 @@ class MemoryStore:
             # under MORI_ANATOMY_ENFORCE the bypass closes so protection bites the dreamer too.
             effective_skip = _skip_protection and anatomy_mode != "enforce"
             if not effective_skip and self._is_protected(effective_name, tags_list, existing_row):
-                if not self._is_trusted_client(client):
+                if not protection_bypass(client, provenance, self._trusted_clients()):
                     # Queue as pending write instead (shared sink).
                     return self._downgrade_to_pending(
                         conn,
@@ -1645,16 +1690,18 @@ class MemoryStore:
         cols = ["id", "ts", "actor_key_name", "op", "memory_name", "content_hash", "detail"]
         return [dict(zip(cols, r)) for r in rows]
 
-    def export(self, name: str, output_path: str | None = None) -> str:
-        """Export a memory to a .md file with YAML frontmatter.
+    def export(self, name: str) -> str:
+        """Return a memory as markdown with YAML frontmatter.
 
-        Default output: <datadir>/exports/<name>.md
+        v2.3.12 (D1): the content is RETURNED — the server never writes a file for a single
+        export (the old ``output_path`` let any caller write anywhere the process could). Active
+        incarnation only: a tombstoned namesake is never exported.
         """
         import sqlite3
 
         conn = self._get_conn()
         try:
-            cur = conn.execute("SELECT * FROM memories WHERE name = ?", (name,))
+            cur = conn.execute(f"SELECT * FROM memories WHERE name = ? AND {_ACTIVE}", (name,))
             row = cur.fetchone()
         except sqlite3.Error as e:
             return f"Database error: {e}"
@@ -1664,24 +1711,7 @@ class MemoryStore:
         if not row:
             return self._memory_not_found(name)
 
-        m = self._row_to_dict(row)
-
-        content = self._memory_to_frontmatter_md(m)
-
-        if output_path:
-            out = Path(output_path)
-            if not out.is_absolute():
-                return f"Export path must be absolute: {output_path}"
-        else:
-            export_dir = self.db_path.parent / DEFAULT_EXPORT_DIR
-            export_dir.mkdir(parents=True, exist_ok=True)
-            out = export_dir / f"{m['name']}.md"
-
-        try:
-            out.write_text(content, encoding="utf-8")
-            return f"Exported to {out}"
-        except OSError as e:
-            return f"Error writing export file: {e}"
+        return self._memory_to_frontmatter_md(self._row_to_dict(row))
 
     def _memory_to_frontmatter_md(self, m: dict) -> str:
         """Build a .md string with YAML frontmatter from a memory dict."""
@@ -1788,17 +1818,28 @@ class MemoryStore:
             if not version:
                 return f"Version {version_id} not found for '{name}'."
             active = conn.execute(
-                f"SELECT id, tier, superseded_by FROM memories WHERE name = ? AND {_ACTIVE}",
+                "SELECT id, tier, superseded_by, protected, tags "
+                f"FROM memories WHERE name = ? AND {_ACTIVE}",
                 (name,),
             ).fetchone()
             if not active:
                 return f"Memory '{name}' is not active — restore it first, then roll back."
-            active_id, active_tier, superseded_by = active
+            active_id, active_tier, superseded_by, active_protected, active_tags = active
             if version[5] is not None and version[5] != active_id:
                 return (
                     f"Version {version_id} belongs to an earlier incarnation of '{name}'; "
                     "not rolled back."
                 )
+            # v2.3.12 (R3): a protected memory is never rolled back — REJECTED on both backends,
+            # judged by the full predicate (flag OR a protected tag prefix on the active row or
+            # on the version being restored), so _write's protection lane is never reached.
+            why = protected_by(
+                bool(active_protected),
+                _coerce_tags(active_tags) + _coerce_tags(version[4]),
+                self._protected_tag_prefixes(),
+            )
+            if why:
+                return protected_rollback_message(name, why)
             # R6: canonical rollback needs the dreamer role, keyed off the row read here.
             if active_tier == "canonical" and not caller_is_dreamer:
                 return (
@@ -2157,7 +2198,7 @@ class MemoryStore:
 
         conn = self._get_conn()
         try:
-            cur = conn.execute("SELECT * FROM memories ORDER BY name")
+            cur = conn.execute(f"SELECT * FROM memories WHERE {_ACTIVE} ORDER BY name")
             rows = cur.fetchall()
         except sqlite3.Error as e:
             return f"Database error: {e}"
@@ -2167,13 +2208,16 @@ class MemoryStore:
         if not rows:
             return "No memories to export."
 
-        out = Path(output_dir)
+        out = Path(output_dir).resolve()
         out.mkdir(parents=True, exist_ok=True)
 
         exported = []
         for row in rows:
             m = self._row_to_dict(row)
-            file_path = out / f"{m['name']}.md"
+            file_path = confined_export_path(out, m["name"])
+            if file_path is None:
+                logger.warning("export_all: skipping %r — resolves outside %s", m["name"], out)
+                continue
             content = self._memory_to_frontmatter_md(m)
             try:
                 file_path.write_text(content, encoding="utf-8")
@@ -2194,12 +2238,15 @@ class MemoryStore:
 
         return f"Exported {len(exported)} memories to {output_dir}"
 
-    def import_memories(self, source_dir: str) -> str:
+    def import_memories(self, source_dir: str, *, provenance: Provenance | None = None) -> str:
         """Import .md files with YAML frontmatter from a directory.
 
         Upserts into memories table. Only processes files with valid YAML
-        frontmatter blocks (--- delimited).
+        frontmatter blocks (--- delimited). v2.3.12 (D8): the MCP tool passes the CALLER's
+        provenance (and the fixed ``DATA_DIR/imports`` directory); the ``import`` actor is the
+        default only for in-process callers.
         """
+        prov = provenance or Provenance(actor="import", source="store:import_memories", op="import")
         src = Path(source_dir)
         if not src.is_dir():
             return f"Directory not found: {source_dir}"
@@ -2215,12 +2262,7 @@ class MemoryStore:
                 if not parsed:
                     errors += 1
                     continue
-                result = self.write(
-                    **parsed,
-                    provenance=Provenance(
-                        actor="import", source="store:import_memories", op="import"
-                    ),
-                )
+                result = self.write(**parsed, provenance=prov)
                 if "written" in result:
                     imported += 1
                 else:
@@ -2605,12 +2647,16 @@ class MemoryStore:
                 ),
             }
 
-            # Apply the write within the same connection / transaction
-            result = self.write(
+            # Apply the write within the same connection / transaction. #71 (v2.3.12): the
+            # Postgres pattern, ported wholesale — _skip_protection (an approved change to a
+            # protected memory must not loop back to pending) and the pending row is marked
+            # approved ONLY when canon actually took the write.
+            result = self._write(
                 name=pw["memory_name"],
                 title=pw["title"],
                 description=pw["description"],
                 type=pw["type"],
+                tier=(rowd.get("tier") or "working"),
                 body=pw["body"],
                 tags=pw["tags"],
                 origin_session_ids=pw["origin_session_ids"],
@@ -2619,8 +2665,17 @@ class MemoryStore:
                 provenance=Provenance(
                     actor="governed-promotion", source="store:approve", op="approve"
                 ),
+                _skip_protection=True,
                 _conn=conn,
             )
+            if result.disposition is not Disposition.ACCEPTED:
+                # A downgrade wrote (or refreshed) the open pending row inside this transaction;
+                # roll it all back so the reviewed row stays exactly as it was, still pending.
+                conn.rollback()
+                return (
+                    f"Pending write #{write_id} NOT approved — the canon write was "
+                    f"{result.disposition.value}: {result.reason}. It stays pending."
+                )
 
             # Mark the pending write as approved in the same transaction
             conn.execute(
@@ -2633,7 +2688,7 @@ class MemoryStore:
                 (reviewer or "trusted-dreamer", note, write_id),
             )
             conn.commit()
-            return f"Pending write #{write_id} approved. {result}"
+            return f"Pending write #{write_id} approved. Memory '{result.memory_name}' written."
 
         except sqlite3.Error as e:
             try:
@@ -2692,42 +2747,52 @@ class MemoryStore:
         finally:
             conn.close()
 
-    def protect(self, name: str, domains: list[str] | None = None) -> str:
-        """Toggle protection on a memory. Trusted dreamers only."""
+    def protect(
+        self,
+        name: str,
+        domains: list[str] | None = None,
+        *,
+        protected: bool = True,
+        actor: str = "system",
+    ) -> str:
+        """SET protection on the active memory (v2.3.12, D3) — explicit, idempotent, audited.
+
+        ``protected=False`` unprotects and clears ``protected_domains``; ``domains=[]`` clears them
+        when protecting; ``domains=None`` keeps the current ones. Before v2.3.12 a call TOGGLED
+        the flag, so a repeated call flipped it back.
+        """
         import sqlite3
 
         conn = self._get_conn()
         try:
-            cur = conn.execute(
-                f"SELECT protected, protected_domains FROM memories WHERE name = ? AND {_ACTIVE}",
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                f"SELECT id, protected_domains FROM memories WHERE name = ? AND {_ACTIVE}",
                 (name,),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return self._memory_not_found(name)
+            if not protected:
+                new_domains = "[]"
+            elif domains is None:
+                new_domains = row[1] or "[]"
+            else:
+                new_domains = json.dumps([d for d in domains if isinstance(d, str)])
+            conn.execute(
+                "UPDATE memories SET protected = ?, protected_domains = ?, "
+                "updated_at = datetime('now') WHERE id = ?",
+                (1 if protected else 0, new_domains, row[0]),
             )
-            row = cur.fetchone()
+            op = "protect" if protected else "unprotect"
+            _audit_sqlite(conn, op, actor, name, detail=f"store:protect domains={new_domains}")
+            conn.commit()
+            return f"Memory '{name}' is now {'protected' if protected else 'unprotected'}."
         except sqlite3.Error as e:
+            conn.rollback()
             return f"Database error: {e}"
         finally:
             conn.close()
-
-        if not row:
-            return self._memory_not_found(name)
-
-        current_protected = bool(row[0]) if row else False
-        new_protected = 0 if current_protected else 1
-        new_domains = json.dumps(domains or []) if domains else (row[1] if row else "[]")
-
-        conn2 = self._get_conn()
-        try:
-            conn2.execute(
-                "UPDATE memories SET protected = ?, protected_domains = ?, updated_at = datetime('now') WHERE name = ?",
-                (new_protected, new_domains, name),
-            )
-            conn2.commit()
-            status = "protected" if new_protected else "unprotected"
-            return f"Memory '{name}' is now {status}."
-        except sqlite3.Error as e:
-            return f"Database error: {e}"
-        finally:
-            conn2.close()
 
     # ── Freshness and eviction ─────────────────────────────────────────
 
