@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from mori_advisor.bifrost_client import BifrostClient
+from mori_advisor.metrics import DREAM_WRITE_RESULTS
+from mori_advisor.names import normalise_name
 from mori_advisor.prompt_loader import OUTPUT_REMINDER, load_prompt
 from mori_advisor.provenance import DREAMER
 from mori_advisor.utils import ScanOutcome, parse_model_json_response, run_contradiction_scan
@@ -221,6 +223,8 @@ class DreamPipeline:
                 # v2.3.11 (B-C4): the per-run supersession outcome, so a cron run (a one-off
                 # process whose counters die on exit) still reaches /metrics.
                 ("last_run_supersessions", json.dumps(stats.get("supersessions", {}))),
+                # v2.3.12: the per-run write outcomes (accepted/rejected/downgraded/skipped/error).
+                ("last_run_writes", json.dumps(stats.get("writes", {}))),
             ):
                 await _a(self.store.set_dream_state(key, value))
         except Exception:
@@ -310,11 +314,15 @@ class DreamPipeline:
         async with _begin_txn(self.store) as txn_conn:
             written = 0
             errors = 0
+            # v2.3.12 (D7 caution): every outcome is counted and persisted, so a rejected dream
+            # write is visible on /metrics even from a cron run.
+            outcomes = dict.fromkeys(DREAM_WRITE_RESULTS, 0)
             written_mems: list[dict[str, Any]] = []  # ACCEPTED only — the scan's input (B-C2)
             for mem in memories:
                 if not isinstance(mem, dict) or "path" not in mem:
                     logger.warning("Skipping invalid memory entry: %s", mem)
                     errors += 1
+                    outcomes["skipped"] += 1
                     continue
 
                 path = mem["path"]
@@ -323,6 +331,7 @@ class DreamPipeline:
                 if not body:
                     logger.warning("Skipping memory with empty body: %s", path)
                     errors += 1
+                    outcomes["skipped"] += 1
                     continue
 
                 name = self._path_to_name(path)
@@ -352,12 +361,17 @@ class DreamPipeline:
                 except Exception as e:
                     logger.error("  ✗ %s %s — %s", action, name, e)
                     errors += 1
+                    outcomes["error"] += 1
                     continue
                 if result.disposition is Disposition.ACCEPTED:
                     logger.info("  ✓ %s %s", action, name)
                     written += 1
+                    outcomes["accepted"] += 1
                     written_mems.append({**mem, "name": name})
                 else:
+                    outcomes[
+                        "rejected" if result.disposition is Disposition.REJECTED else "downgraded"
+                    ] += 1
                     logger.warning(
                         "  ↷ %s %s not written — %s: %s",
                         action,
@@ -405,7 +419,7 @@ class DreamPipeline:
                 logger.warning("NATS eviction notice failed: %s", e)
 
         logger.info("Done: %s written, %s errors, watermark at id %s", written, errors, max_id)
-        self._note(written=written)
+        self._note(written=written, writes=outcomes)
         return memories
 
     # ── B3: intake promotion ──────────────────────────────────────────────
@@ -586,7 +600,8 @@ class DreamPipeline:
         return parse_model_json_response(text)
 
     def _path_to_name(self, path: str) -> str:
-        return path.replace(".md", "").replace("/", "-").replace("_", "-")
+        # v2.3.12 (D7): normalised to a valid memory name; an already-valid name is unchanged.
+        return normalise_name(path.replace(".md", "").replace("/", "-").replace("_", "-"))
 
     def _infer_type(self, path: str) -> str:
         if path.startswith("profile/"):

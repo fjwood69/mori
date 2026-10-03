@@ -157,10 +157,15 @@ curl http://localhost:8968/ready
 During migration, both homelab and GCP instances can run in parallel pointing
 at separate databases. Claude Code points at either one via `.mcp.json`.
 
-To copy memories from an existing instance:
-1. On the old instance: `mori-memory_export_all` → flat `.md` files
-2. On the new instance: `mori-memory_import` → loads into new DB
-3. Verify with `mori-memory_list`
+To copy memories from an existing instance (both tools need a `dreamer` key in api mode):
+1. On the old instance: `mori-memory_export_all` → flat `.md` files in its `<data dir>/exports/`
+2. Copy those files into the new instance's `<data dir>/imports/`
+3. On the new instance: `mori-memory_import` → loads them into the new DB. Each write is
+   attributed to your key, and a `tier:` in the frontmatter is a request judged by the tier
+   rules, not an authority.
+4. Verify with `mori-memory_list`
+
+Both directories are fixed (v2.3.12): the tools no longer take a server-side path.
 
 No downtime — both instances serve during the cutover.
 

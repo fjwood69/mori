@@ -501,9 +501,12 @@ def test_restore_simple(backend, tmp_path, monkeypatch):
         if asyncio.iscoroutine(r2):
             await r2
 
-        final_name, msg = store.restore_memory("restore-test")
-        if asyncio.iscoroutine((final_name, msg)):
-            final_name, msg = await store.restore_memory("restore-test")
+        # #70: the Postgres store is async — await it (the old check tested a tuple, never a
+        # coroutine, so the Postgres variants unpacked an un-awaited coroutine).
+        res = store.restore_memory("restore-test")
+        if asyncio.iscoroutine(res):
+            res = await res
+        final_name, msg = res
         assert final_name == "restore-test"
         assert "restored" in msg.lower()
 
@@ -538,9 +541,12 @@ def test_restore_with_collision_renames(backend, tmp_path, monkeypatch):
             await r3
 
         # 3. Restore — must rename since the name is taken.
-        final_name, msg = store.restore_memory("collision-test")
-        if asyncio.iscoroutine((final_name, msg)):
-            final_name, msg = await store.restore_memory("collision-test")
+        # #70: the Postgres store is async — await it (the old check tested a tuple, never a
+        # coroutine, so the Postgres variants unpacked an un-awaited coroutine).
+        res = store.restore_memory("collision-test")
+        if asyncio.iscoroutine(res):
+            res = await res
+        final_name, msg = res
 
         assert final_name != "collision-test"
         assert "_restored_" in final_name
@@ -597,9 +603,12 @@ def test_delete_endpoint_soft_by_default(backend, tmp_path, monkeypatch):
         assert data.get("status") == "soft_deleted"
 
         # Still in DB — restore is possible.
-        final_name, msg = store.restore_memory("del-soft-test")
-        if asyncio.iscoroutine((final_name, msg)):
-            final_name, msg = await store.restore_memory("del-soft-test")
+        # #70: the Postgres store is async — await it (the old check tested a tuple, never a
+        # coroutine, so the Postgres variants unpacked an un-awaited coroutine).
+        res = store.restore_memory("del-soft-test")
+        if asyncio.iscoroutine(res):
+            res = await res
+        final_name, msg = res
         assert final_name == "del-soft-test"
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
@@ -629,9 +638,12 @@ def test_delete_endpoint_hard_purges(backend, tmp_path, monkeypatch):
         assert data.get("status") == "hard_deleted"
 
         # Cannot restore — gone.
-        final_name, msg = store.restore_memory("del-hard-test")
-        if asyncio.iscoroutine((final_name, msg)):
-            final_name, msg = await store.restore_memory("del-hard-test")
+        # #70: the Postgres store is async — await it (the old check tested a tuple, never a
+        # coroutine, so the Postgres variants unpacked an un-awaited coroutine).
+        res = store.restore_memory("del-hard-test")
+        if asyncio.iscoroutine(res):
+            res = await res
+        final_name, msg = res
         assert "not found" in msg.lower() or "not deleted" in msg.lower()
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)

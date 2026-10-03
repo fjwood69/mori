@@ -546,20 +546,17 @@ def test_mcp_memory_rollback_read_key_denied_api_mode(backend, tmp_path, monkeyp
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_mcp_memory_import_read_key_denied_api_mode(backend, tmp_path, monkeypatch):
-    """memory_import requires write role; a read key is denied in api mode."""
+    """memory_import requires the dreamer role (v2.3.12, D8); read AND write keys are denied."""
     from mori_advisor.main import memory_import
     from mori_advisor.policy import Actor
 
     _patch_policy(monkeypatch, "api")
 
     async def run(store):
-        with _actor_context(Actor("ci", "read")):
-            result = await memory_import(str(tmp_path / "nonexistent"))
-        assert isinstance(result, str)
-        assert (
-            "role" in result.lower()
-            or "permission" in result.lower()
-            or "required" in result.lower()
-        )
+        for role in ("read", "write"):
+            with _actor_context(Actor("ci", role)):
+                result = await memory_import()
+            assert isinstance(result, str)
+            assert "'dreamer' is required" in result, (role, result)
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)

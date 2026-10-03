@@ -52,7 +52,10 @@ def _count(vk: str, outcome: str, provider: str) -> float:
 
 
 def test_retries_get_distinct_request_ids(monkeypatch):
-    """Bifrost keeps ONE log row per x-request-id, so a retry must not reuse the first id."""
+    """Bifrost keeps ONE log row per x-request-id, so a retry must not reuse the first id.
+
+    v2.3.12 (D5): the advisor no longer retries in the SDK, so this runs on the fast VK, which
+    keeps the SDK default (see test_v2312_consult_retries.py for the advisor's attempt count)."""
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -62,10 +65,10 @@ def test_retries_get_distinct_request_ids(monkeypatch):
         return httpx.Response(200, json=_COMPLETION)
 
     client = _client_over(monkeypatch, handler)
-    assert client.consult(system="s", user="u", vk="advisor") == "ok"
+    assert client.consult(system="s", user="u", vk="fast") == "ok"
 
     assert len(seen) == 2
-    assert seen[0].startswith("mori-advisor-")
+    assert seen[0].startswith("mori-fast-")
     assert seen[1] == seen[0] + ".r1"
 
 

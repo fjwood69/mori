@@ -32,7 +32,13 @@ from mori_advisor.memory_store import (
     _freshness_cache_lock,
     _freshness_verdict,
 )
-from mori_advisor.metrics import record_classifier_verdict, record_jsonb_unwrapped
+from mori_advisor.metrics import (
+    record_classifier_verdict,
+    record_jsonb_unwrapped,
+    record_write_rejection,
+)
+from mori_advisor.names import confined_export_path, invalid_name_reason
+from mori_advisor.policy import protected_by, protected_rollback_message, protection_bypass
 from mori_advisor.provenance import (
     LEGACY,
     Provenance,
@@ -128,6 +134,26 @@ def _tags_json(tags) -> str:
         except (json.JSONDecodeError, TypeError):
             return json.dumps([tags])
     return "[]"
+
+
+def _tags_or_empty(raw: object, name: str) -> list[Any]:
+    """Decode a stored tags value for the rollback protection check; [] if malformed (a malformed
+    version is refused later, with its own message). Pure decode — no database call — so it is
+    safe to use inside a transaction."""
+    try:
+        return _jsonb_array(raw, column="tags", memory_name=name)
+    except ValueError:
+        return []
+
+
+def _str_list(raw: object) -> list[str]:
+    """A dreamer_config JSON list of strings (``protected_tag_prefixes``, ``trusted_clients``);
+    anything malformed reads as empty."""
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
 
 
 def _coerce_msg_row(row) -> dict:
@@ -477,6 +503,25 @@ class PostgresStore(BaseStore):
 
             name = f"memory-{int(time.time())}"
 
+        # v2.3.12 (D7): a name is a single plain path segment, or the write is refused.
+        name_problem = invalid_name_reason(name)
+        if name_problem:
+            record_write_rejection("invalid_name", provenance.actor)
+            logger.warning(
+                "WRITE-REJECTED name=%r actor=%s op=%s: %s",
+                name,
+                provenance.ledger_actor,
+                provenance.op,
+                name_problem,
+            )
+            return WriteResult(
+                memory_name=name,
+                intended_tier=tier if tier in VALID_TIERS else "working",
+                stored_tier="",
+                disposition=Disposition.REJECTED,
+                reason=name_problem,
+            )
+
         # Completeness/anatomy chokepoint. Mirrors the SQLite seam: audit (default) logs +
         # counts the failed verdict and proceeds; enforce (MORI_ANATOMY_ENFORCE) DOWNGRADES to
         # pending review (board-chosen over hard-reject). `description` is the warrant.
@@ -565,6 +610,19 @@ class PostgresStore(BaseStore):
             bool(bypass_reason) and not verdict["valid"] and anatomy_mode == "enforce"
         )
 
+        # v2.3.12 (R5): the tag-prefix protection lane, at parity with SQLite — a write whose
+        # tags match dreamer_config protected_tag_prefixes is QUEUED for review unless the caller
+        # may bypass (api mode: a dreamer-role key; host mode: trusted_clients). Read once, before
+        # the transaction; skipped entirely for the internal writers that pass _skip_protection.
+        prefix_hit: str | None = None
+        if not effective_skip:
+            prefixes = _str_list(await self._config_value("protected_tag_prefixes", _conn))
+            prefix_hit = protected_by(False, json.loads(tags_v), prefixes)
+            if prefix_hit and protection_bypass(
+                client, provenance, _str_list(await self._config_value("trusted_clients", _conn))
+            ):
+                prefix_hit = None
+
         async def _do(conn):
             # ONE transaction per attempt (a savepoint when the caller's connection is already in
             # one): _retry re-runs _do after a serialization failure, so the transaction lives
@@ -586,6 +644,29 @@ class PostgresStore(BaseStore):
                     stored_tier="",
                     disposition=Disposition.REJECTED,
                     reason=f"Memory '{name}' is protected — use _skip_protection=True to override",
+                )
+            if prefix_hit:
+                await self.queue_pending_write(
+                    name=name,
+                    title=title,
+                    description=description,
+                    type=type,
+                    body=body,
+                    tags=json.loads(tags_v),
+                    origin_clients=json.loads(clients),
+                    proposed_by=provenance.ledger_actor,
+                    tier=tier,
+                    _conn=conn,
+                )
+                return WriteResult(
+                    memory_name=name,
+                    intended_tier=tier,
+                    stored_tier="pending",
+                    disposition=Disposition.DOWNGRADED_TO_PENDING,
+                    reason=(
+                        f"Memory '{name}' is protected (tag {prefix_hit}) — change queued as "
+                        "pending write (trusted dreamer review required)."
+                    ),
                 )
 
             # Compute merged origin arrays for upsert (mirrors SQLite's memory_store.py)
@@ -1209,41 +1290,55 @@ class PostgresStore(BaseStore):
         except Exception:
             return []  # table not yet created
 
-    async def export(self, name: str, output_path=None) -> str:
-        self._ensure_pool()
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM memories WHERE name = $1", name)
-        if not row:
-            return f"Memory '{name}' not found"
-        r = dict(row)
+    @staticmethod
+    def _export_md(r: dict[str, Any]) -> str:
         tags = json.loads(r.get("tags") or "[]")
-        content = (
+        return (
             f"---\nname: {r['name']}\ntitle: {r['title']}\ntype: {r['type']}\n"
             f"tier: {r['tier']}\ntags: {tags}\n---\n\n{r['body']}"
         )
-        if output_path:
-            Path(output_path).write_text(content)
-            return f"Exported to {output_path}"
-        return content
+
+    async def export(self, name: str) -> str:
+        """Return the active memory as markdown. v2.3.12 (D1): never writes a server-side file."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM memories WHERE name = $1 AND deleted_at IS NULL", name
+            )
+        if not row:
+            return f"Memory '{name}' not found"
+        return self._export_md(dict(row))
 
     async def export_all(self, output_dir: str) -> str:
+        """Write every ACTIVE memory to ``<output_dir>/<name>.md``. The MCP tool passes the fixed
+        ``DATA_DIR/exports``; each path is confined to that directory (v2.3.12, D7)."""
         self._ensure_pool()
-        out = Path(output_dir)
+        out = Path(output_dir).resolve()
         out.mkdir(parents=True, exist_ok=True)
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch("SELECT name, title, type, tier, tags, body FROM memories")
+            rows = await conn.fetch(
+                "SELECT name, title, type, tier, tags, body FROM memories "
+                "WHERE deleted_at IS NULL ORDER BY name"
+            )
+        exported = 0
         for row in rows:
             r = dict(row)
-            tags = json.loads(r.get("tags") or "[]")
-            content = (
-                f"---\nname: {r['name']}\ntitle: {r['title']}\ntype: {r['type']}\n"
-                f"tier: {r['tier']}\ntags: {tags}\n---\n\n{r['body']}"
-            )
-            (out / f"{r['name']}.md").write_text(content)
-        return f"Exported {len(rows)} memories to {output_dir}"
+            target = confined_export_path(out, r["name"])
+            if target is None:
+                logger.warning("export_all: skipping %r — resolves outside %s", r["name"], out)
+                continue
+            target.write_text(self._export_md(r))
+            exported += 1
+        return f"Exported {exported} memories to {output_dir}"
 
-    async def import_memories(self, source_dir: str) -> str:
+    async def import_memories(
+        self, source_dir: str, *, provenance: Provenance | None = None
+    ) -> str:
+        """Import .md files with YAML frontmatter. v2.3.12 (D8): the MCP tool passes the CALLER's
+        provenance (and the fixed ``DATA_DIR/imports``); the ``import`` actor is the default only
+        for in-process callers. The frontmatter tier is still judged by the tier pipeline."""
         self._ensure_pool()
+        prov = provenance or Provenance(actor="import", source="store:import_memories", op="import")
         src = Path(source_dir)
         files = list(src.glob("*.md"))
         imported = 0
@@ -1263,7 +1358,7 @@ class PostgresStore(BaseStore):
                 tier=meta.get("tier", "working"),
                 tags=meta.get("tags", []),
                 body=body,
-                provenance=Provenance(actor="import", source="store:import_memories", op="import"),
+                provenance=prov,
             )
             imported += 1
         return f"Imported {imported} memories from {source_dir}"
@@ -1615,7 +1710,7 @@ class PostgresStore(BaseStore):
                 if not version:
                     return f"Version {version_id} not found for '{name}'."
                 active = await conn.fetchrow(
-                    "SELECT id, tier, superseded_by FROM memories "
+                    "SELECT id, tier, superseded_by, protected, tags FROM memories "
                     "WHERE name = $1 AND deleted_at IS NULL FOR UPDATE",
                     name,
                 )
@@ -1626,6 +1721,16 @@ class PostgresStore(BaseStore):
                         f"Version {version_id} belongs to an earlier incarnation of '{name}'; "
                         "not rolled back."
                     )
+                # v2.3.12 (R3): a protected memory is never rolled back — REJECTED on both
+                # backends, by the full predicate (flag OR a protected tag prefix on the active
+                # row or the version being restored), before _write's protection lane is reached.
+                why = protected_by(
+                    bool(active["protected"]),
+                    _tags_or_empty(active["tags"], name) + _tags_or_empty(version["tags"], name),
+                    _str_list(await self._config_value("protected_tag_prefixes", conn)),
+                )
+                if why:
+                    return protected_rollback_message(name, why)
                 return await _rollback_via_chokepoint(
                     self, conn, name, version_id, version, active, prov, caller_is_dreamer
                 )
@@ -2024,16 +2129,47 @@ class PostgresStore(BaseStore):
                 _now_utc(),
             )
 
-    async def protect(self, name: str, domains=None) -> str:
+    async def protect(
+        self, name: str, domains=None, *, protected: bool = True, actor: str = "system"
+    ) -> str:
+        """SET protection on the active memory (v2.3.12, D3) — explicit, idempotent, audited.
+
+        ``protected=False`` unprotects and clears ``protected_domains``; ``domains=[]`` clears them
+        when protecting; ``domains=None`` keeps the current ones. Not-found when no active row
+        (before v2.3.12 a missing name reported success, and the flag could only be set)."""
         self._ensure_pool()
-        domains_v = _tags_json(domains)
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE memories SET protected=TRUE, protected_domains=$2::jsonb WHERE name=$1 AND deleted_at IS NULL",
-                name,
-                domains_v,
-            )
-        return f"Memory '{name}' protected"
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT id, protected_domains FROM memories "
+                    "WHERE name = $1 AND deleted_at IS NULL FOR UPDATE",
+                    name,
+                )
+                if row is None:
+                    return f"Memory '{name}' not found"
+                if not protected:
+                    domains_v = "[]"
+                elif domains is None:
+                    domains_v = json.dumps(
+                        _jsonb_array(
+                            row["protected_domains"], column="protected_domains", memory_name=name
+                        )
+                    )
+                else:
+                    domains_v = json.dumps([d for d in domains if isinstance(d, str)])
+                await conn.execute(
+                    "UPDATE memories SET protected = $2, protected_domains = $3::jsonb, "
+                    "updated_at = $4 WHERE id = $1",
+                    row["id"],
+                    protected,
+                    domains_v,
+                    _now_utc(),
+                )
+                op = "protect" if protected else "unprotect"
+                await _audit_in_txn(
+                    conn, op, actor, name, detail=f"store:protect domains={domains_v}"
+                )
+        return f"Memory '{name}' is now {'protected' if protected else 'unprotected'}."
 
     # ── Freshness and eviction ─────────────────────────────────────────────
 
@@ -2225,6 +2361,14 @@ class PostgresStore(BaseStore):
         return "\n".join(parts)
 
     # ── Internal helpers (transitional) ────────────────────────────────────
+
+    async def _config_value(self, key: str, conn: Any = None) -> str:
+        """A dreamer_config value ("[]" if absent), read on *conn* when the caller holds one — so a
+        write on a caller's transaction never takes a second pool connection."""
+        if conn is None:
+            return await self.get_config(key, "[]")
+        value = await conn.fetchval("SELECT value FROM dreamer_config WHERE key = $1", key)
+        return value if value is not None else "[]"
 
     async def get_config(self, key: str, default: str = "") -> str:
         self._ensure_pool()
@@ -3149,13 +3293,7 @@ async def _rollback_via_chokepoint(
         _anatomy_bypass=bypass,
     )
     if result.disposition is not Disposition.ACCEPTED:
-        reason = result.reason
-        if "is protected" in (reason or ""):
-            reason = (
-                f"Memory '{name}' is protected. To roll back: unprotect, roll back, re-protect "
-                "(each step audited)."
-            )
-        return f"Memory '{name}' NOT rolled back — {result.disposition.value}: {reason}"
+        return f"Memory '{name}' NOT rolled back — {result.disposition.value}: {result.reason}"
     msg = f"Memory '{name}' rolled back to version {version_id}."
     if active["superseded_by"]:
         msg += f" Note: it is still superseded by '{active['superseded_by']}'."

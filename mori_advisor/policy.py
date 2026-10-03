@@ -43,6 +43,10 @@ import logging
 import os
 from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mori_advisor.provenance import Provenance
 
 logger = logging.getLogger(__name__)
 
@@ -226,3 +230,57 @@ def require_role(min_role: str) -> None:
             f"Key '{actor.key_name}' has role '{actor.role}' but '{min_role}' is required "
             f"for this operation."
         )
+
+
+# ── Protection (v2.3.12) ──────────────────────────────────────────────────────
+
+# Actor classes whose ``actor_detail`` is an authenticated key name (set at the request boundary).
+_REQUEST_ACTORS = frozenset({"mcp", "rest"})
+
+
+def protection_bypass(
+    client: str | None, provenance: Provenance, trusted_clients: list[str]
+) -> bool:
+    """May this write pass the protection lane (queued as pending otherwise)?
+
+    api mode: only a request whose authenticated key holds the ``dreamer`` role — a key that is
+    merely NAMED like a ``trusted_clients`` entry gains nothing (v2.3.12 consult fold).
+    host mode: the legacy ``trusted_clients`` name list, keyed on the self-declared client.
+    """
+    if _mode() == "api":
+        if getattr(provenance, "actor", None) not in _REQUEST_ACTORS:
+            return False
+        key = getattr(provenance, "actor_detail", "") or ""
+        return bool(key) and role_for(key) == "dreamer"
+    return bool(client) and client in trusted_clients
+
+
+def protected_by(flag: bool, tags: list[str], prefixes: list[str]) -> str | None:
+    """The ONE protection predicate (flag OR a tag matching a protected prefix).
+
+    Returns ``"flag"``, ``"prefix:<p>"`` or None. Both backends' rollback checks call this so a
+    rollback is never judged by a weaker predicate than the write path's (v2.3.12, R3).
+    """
+    if flag:
+        return "flag"
+    for tag in tags or []:
+        for prefix in prefixes or []:
+            if isinstance(tag, str) and prefix and tag.startswith(prefix):
+                return f"prefix:{prefix}"
+    return None
+
+
+def protected_rollback_message(name: str, why: str) -> str:
+    """The rejection text for a rollback of a protected memory (same on both backends)."""
+    if why == "flag":
+        return (
+            f"Memory '{name}' is protected — NOT rolled back. Unprotect it first "
+            f"(memory_protect('{name}', protected=false)), roll back, then re-protect; "
+            "each step is audited."
+        )
+    prefix = why.split(":", 1)[1] if ":" in why else why
+    return (
+        f"Memory '{name}' is protected by the tag prefix '{prefix}' (dreamer_config "
+        "protected_tag_prefixes) — NOT rolled back. memory_protect cannot lift a tag-prefix "
+        "protection; restore the content with a reviewed write instead."
+    )

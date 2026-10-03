@@ -238,7 +238,8 @@ def test_rollback_leaves_a_tombstoned_namesake_untouched(backend, tmp_path):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_rollback_of_a_protected_memory_follows_the_ratified_fork(backend, tmp_path):
-    """R2: Postgres REJECTED with the actionable reason; SQLite queues pending. Never silent."""
+    """v2.3.11 R2 forked (Postgres rejected, SQLite queued); v2.3.12 R3 makes it ONE behaviour:
+    REJECTED on both backends with the unprotect guidance, and nothing is queued."""
 
     async def t(h):
         await h.write("pr", "ONE")
@@ -246,14 +247,10 @@ def test_rollback_of_a_protected_memory_follows_the_ratified_fork(backend, tmp_p
         vid = await _version_id(h, "pr", "ONE")
         await h.q("UPDATE memories SET protected = $1 WHERE name = $2", True, "pr")
         msg = await _a(h.store.rollback("pr", vid))
-        assert msg.startswith("Memory 'pr' NOT rolled back"), msg
+        assert "NOT rolled back" in msg and "memory_protect('pr', protected=false)" in msg, msg
         assert (await h.row("pr"))["body"] == "TWO"
-        if h.pg:
-            assert "rejected" in msg and "unprotect, roll back, re-protect" in msg
-        else:
-            assert "downgraded_to_pending" in msg
-            pend = await h.q("SELECT body FROM pending_writes WHERE memory_name = $1", "pr")
-            assert [p["body"] for p in pend] == ["ONE"]
+        pend = await h.q("SELECT body FROM pending_writes WHERE memory_name = $1", "pr")
+        assert pend == []
 
     run(backend, tmp_path, t)
 

@@ -38,6 +38,10 @@
 | `MORI_POST_COMPACT_WINDOW` | `6h` | Default `since` window for `/brief --post-compact` when the client supplies no marker/session boundary. Accepts `6h`/`30m`/`7d` or ISO-8601. |
 | `MORI_CONSULT_CAPTURE` | `true` | Set to `false` to suppress automatic capture of `consult_advisor` responses as working-tier memories |
 | `MORI_CAPTURE_THINKING` | `false` | Set to `true` to also capture the assistant's thinking blocks (not just text) when extracting reasoning from the `Stop` hook |
+| `MORI_SESSION_IDLE_TTL_S` | `43200` (12 h) | An MCP session unused for this long is refused with 404; the client re-initialises. Positive integer seconds. See [Sessions](#sessions). |
+| `MORI_SESSION_MAX_AGE_S` | `604800` (7 d) | Absolute lifetime of an MCP session, however active. |
+| `MORI_SESSION_CAP` | `10000` | Live sessions held per process; the least recently used is evicted beyond it. |
+| `MORI_ADVISOR_MAX_RETRIES` | `0` | OpenAI-SDK retries for **advisor (consult)** calls only. `0`: a consult call is never re-sent by the SDK (the gateway owns failover). Fast/dream calls keep the SDK default. |
 | `MORI_CORS_ORIGINS` | `*` | Comma-separated allowed origins for the read REST API (`GET /api/memories`, `GET /api/memories/{name}`, `GET /api/events`) — set to your dashboard origin(s) in production. Routes remain API-key gated regardless. |
 
 ## Authentication
@@ -61,13 +65,32 @@ Generate a secret:
 python3 -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-Or use the MCP tool (requires an existing valid key to call):
+Or use the MCP tool (requires a `dreamer` key in api mode):
 ```
 mori-key_generate name="newclient"
 ```
 
 The output line goes into `MORI_API_KEYS` on the server. The secret goes into
 the client's MCP config as `X-Api-Key`.
+
+**Header only.** The key is accepted only in the `X-Api-Key` header. A request carrying
+`?api-key=` or `?api_key=` in its URL is refused with **400** on every path (open ones
+included) — URLs end up in access logs. The access log also redacts such values.
+
+### Sessions
+
+An MCP session is bound to the key that opened it (v2.3.12):
+
+- **Every** request on a session must carry that same key in `X-Api-Key` — no key, or a
+  different valid key, is refused with 401. Claude Code, Cursor, Antigravity, Cline and
+  opencode send the configured header on every request.
+- Identity is decided **per request**: the tool sees the actor of the current request, and the
+  rate limiter counts session requests like any other.
+- Sessions expire after `MORI_SESSION_IDLE_TTL_S` idle or `MORI_SESSION_MAX_AGE_S` in total. An
+  expired or unknown session id gets **404** — the MCP signal for "start a new session"; clients
+  re-initialise on their own.
+- Session ids are logged only as a short hash. `mori_mcp_sessions` and
+  `mori_session_rejections_total{reason}` (`no_key`, `wrong_key`, `expired`) are on `/metrics`.
 
 ### Web dashboard
 
@@ -105,9 +128,12 @@ Setting `MORI_API_KEY_ROLES` alone has no effect — the mode switch must be exp
 
 | Role | Allowed operations |
 |------|-------------------|
-| `read` | All read operations — `memory_read`, `memory_list`, `memory_search`, `brief`, `pensieve`, `GET /api/memories`, `GET /api/events`, etc. |
-| `write` | Read + `memory_write`, `memory_import`, `memory_delete`, `memory_rollback`, `POST /api/memories`, `GET /api/pending` |
-| `dreamer` | Write + `memory_approve`, `memory_reject`, `memory_protect`, `POST /api/memories/{name}/approve`, `POST /api/memories/{name}/reject`, `DELETE /api/memories/{name}` |
+| `read` | All read operations — `memory_read`, `memory_list`, `memory_search`, `memory_export` (returns the content), `brief`, `pensieve`, `GET /api/memories`, `GET /api/events`, etc. |
+| `write` | Read + `memory_write`, `memory_delete`, `memory_rollback`, `mori_ingest`, `dream_run`, `consult_advisor`, `nats_pub`, `msg_send`, `POST /api/memories`, `POST /api/events`, `POST /api/events/raw`, `POST /api/precompact`, `/api/dream/run`, `POST /api/git/ingest`, `GET /api/pending` |
+| `dreamer` | Write + `memory_approve`, `memory_reject`, `memory_protect`, `memory_import`, `memory_export_all`, `key_generate`, `standards_reload`, `POST /api/memories/{name}/approve`, `POST /api/memories/{name}/reject`, `DELETE /api/memories/{name}` |
+
+v2.3.12 put a role on every state-changing surface: the event, precompact, dream and git-ingest
+routes and the ingest/dream/consult/bus tools were previously reachable by any valid key.
 
 Hierarchy: `read < write < dreamer`. A dreamer key may call any operation.
 
