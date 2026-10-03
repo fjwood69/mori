@@ -1,5 +1,45 @@
 # Changelog
 
+## v2.3.10 — Postgres write path: stop re-encoding JSONB; orphan scan never deletes
+
+A memory UPDATE on the Postgres backend JSON-encoded `protected_domains` as it came back from
+asyncpg — a `str`, since no JSONB codec is registered — so every update nested the array one
+JSON-string level deeper, roughly doubling it. A row updated on every deployment reached a ~1 GiB
+bind parameter and exhausted a 2 GB host's memory. This release fixes the encoding, repairs
+existing data and makes the bad state impossible to store.
+
+- **One decoder for JSONB arrays read back on the write path** (`protected_domains`,
+  `origin_session_ids`, `origin_clients`). Legacy nesting is unwrapped (up to 64 levels, at most
+  1 MB decoded), logged at WARNING with memory, column and depth, and counted in
+  `mori_jsonb_unwrapped_total{column}` (pre-initialised at zero). A value that does not decode to
+  a list returns a `REJECTED` write result instead of raising. Any row that gets updated is
+  rewritten in the correct form.
+- **Migration 16 (Postgres only).**
+  1. A `protected_domains` value stored larger than 4 KB is replaced with `[]` without being read —
+     reading it is what exhausts memory.
+  2. String-nested values in `protected_domains`, `tags`, `origin_session_ids` and
+     `origin_clients` are unwrapped; anything that does not end as an array becomes `[]`.
+  3. `CHECK (jsonb_typeof(col) = 'array')` constraints are added to those four columns (added
+     `NOT VALID`, then validated; `lock_timeout` 5 s).
+
+  Fresh installs get the constraints from the schema. Once the constraints exist, an encoding bug
+  fails the write instead of silently growing it.
+- **`scan_orphans` on Postgres no longer deletes** (behaviour change). It matches the SQLite
+  backend: non-canonical (`tier IS NULL OR tier != 'canonical'`), unprotected, active memories
+  that have been retrieved before but not within the window are queued in `eviction_queue`
+  (reason `orphan`) for review. Never-retrieved memories are not orphans. Previously a
+  non-dry-run scan permanently deleted every unprotected working memory not retrieved in the
+  window, including ones never retrieved. Like SQLite, repeated scans do not de-duplicate: a
+  still-stale memory is queued again on each non-dry-run scan.
+- **`approve` (Postgres) marks a pending write approved only if the canon write was accepted**;
+  a rejected or downgraded write leaves it pending.
+- **Deployment contract:** the probe memory's write must succeed (a non-2xx write now fails the
+  contract instead of skipping), and on Postgres the store must show that write landed in this
+  run (`updated_at` at or after the store clock read just before it) with `protected_domains`
+  exactly `[]`.
+- **Start-up refuses to serve if migration 16 fails**: the migration rolls back and the server
+  does not start on an unmigrated schema.
+
 ## v2.3.9 — Fail-closed one-word classifiers
 
 The gateway route behind the `fast` VK began serving a reasoning model. With the

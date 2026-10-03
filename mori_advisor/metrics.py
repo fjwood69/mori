@@ -299,6 +299,30 @@ _llm_slots_active = Gauge(
 _llm_slots_queued = Gauge(
     "mori_llm_slots_queued", "Consults waiting for a free LLM slot", registry=prom_registry
 )
+
+# JSONB array values read back on the Postgres write path that arrived NESTED in JSON strings
+# (the pre-v2.3.10 double-encoding bug). After migration 16 the CHECK constraints make that state
+# unrepresentable, so ANY increment means the encoding bug is back. Pre-initialised at zero so the
+# first event after a restart is visible to increase().
+JSONB_UNWRAP_COLUMNS = ("protected_domains", "origin_session_ids", "origin_clients")
+_jsonb_unwrapped = Counter(
+    "mori_jsonb_unwrapped_total",
+    "JSONB array values found nested in JSON strings and unwrapped on the Postgres write path",
+    ["column"],
+    registry=prom_registry,
+)
+for _col in JSONB_UNWRAP_COLUMNS:
+    _jsonb_unwrapped.labels(column=_col)
+
+
+def record_jsonb_unwrapped(column: str) -> None:
+    """Count one unwrap of a nested JSONB value. Fail-open."""
+    try:
+        _jsonb_unwrapped.labels(column=column).inc()
+    except Exception:
+        logger.debug("record_jsonb_unwrapped failed", exc_info=True)
+
+
 # finish_reason == "length": the reply hit max_tokens. Routine for some advisor/dream calls, so
 # this is a dashboard signal, not an alert — the classifier counter below carries the alert.
 _llm_truncated = Counter(

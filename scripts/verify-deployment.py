@@ -86,6 +86,118 @@ def _request(method, url, key=None, body=None):
         return 0
 
 
+SOFTDEL_PROBE = "verify-deployment-softdel-probe"
+
+
+def _store_dsn() -> str:
+    import os
+
+    dsn = os.environ.get("MORI_DATABASE_URL", "")
+    return dsn if dsn.startswith(("postgres://", "postgresql://")) else ""
+
+
+def _store_query(sql: str, *args):
+    """One row from the store (Postgres, inside the container). Raises on any failure."""
+    import asyncio
+
+    import asyncpg
+
+    async def _q():
+        conn = await asyncpg.connect(_store_dsn(), ssl=False)
+        try:
+            return await conn.fetchrow(sql, *args)
+        finally:
+            await conn.close()
+
+    return asyncio.run(_q())
+
+
+def _probe_row_canary(name: str, written_after) -> bool:
+    """True iff THIS run's write landed on the probe row and left protected_domains exactly '[]'.
+
+    ``written_after`` is the store's clock read just before the contract's own write: the row's
+    ``updated_at`` must be at or after it, so a write that silently did not happen cannot pass on
+    the row's previous (post-migration) state. Postgres only; SQLite never had the bug.
+    """
+    if not _store_dsn():
+        print("  --  probe-row canary SKIP (not a Postgres backend)")
+        return True
+    if written_after is None:
+        print("  XX  probe-row canary: could not read the store clock before the write")
+        return False
+    try:
+        row = _store_query(
+            "SELECT jsonb_typeof(protected_domains) AS t, "
+            "protected_domains = '[]'::jsonb AS empty, "
+            "pg_column_size(protected_domains) AS size, "
+            "updated_at >= $2 AS written_now "
+            "FROM memories WHERE name = $1 AND deleted_at IS NULL",
+            name,
+            written_after,
+        )
+    except Exception as e:  # the canary must never pass silently
+        print(f"  XX  probe-row canary could not query the store: {type(e).__name__}: {e}")
+        return False
+    if row is None:
+        print(f"  XX  probe-row canary: no active row '{name}'")
+        return False
+    ok = bool(row["written_now"]) and row["t"] == "array" and bool(row["empty"])
+    print(
+        f"  {'OK' if ok else 'XX'}  probe-row canary (written this run={row['written_now']} "
+        f"protected_domains type={row['t']} empty={row['empty']} stored_bytes={row['size']})"
+    )
+    return ok
+
+
+def _softdel_probe_and_canary(base: str, key: str) -> int:
+    """Write the probe row (an UPDATE on every deploy after the first), soft-delete and restore
+    it, then run the canary. Returns 1 on failure.
+
+    The probe WRITE must succeed (v2.3.10): the update path is exactly what this contract tests —
+    the 2026-10-02 incident was an UPDATE re-encoding JSONB — so a non-2xx write FAILS rather than
+    skipping, which would leave the canary to pass on the row's untouched state.
+    """
+    written_after = None
+    if _store_dsn():
+        try:
+            written_after = _store_query("SELECT now() AS t")["t"]
+        except Exception as e:
+            print(f"  XX  probe-row canary could not read the store clock: {type(e).__name__}: {e}")
+            return 1
+
+    post = _request(
+        "POST",
+        base + "/api/memories",
+        key=key,
+        body={"name": SOFTDEL_PROBE, "title": "Softdel probe", "body": "probe"},
+    )
+    if post not in (200, 201):
+        print(f"  XX  soft-delete + restore probe: the probe WRITE returned {post} (need 200/201)")
+        return 1
+    sd_noauth = _request("DELETE", f"{base}/api/memories/{SOFTDEL_PROBE}")
+    sd_del = _request("DELETE", f"{base}/api/memories/{SOFTDEL_PROBE}", key=key)
+    restore_noauth = _request("POST", f"{base}/api/memories/{SOFTDEL_PROBE}/restore")
+    restore = _request("POST", f"{base}/api/memories/{SOFTDEL_PROBE}/restore", key=key)
+    detail = (
+        f"(post={post} del_noauth={sd_noauth} del={sd_del} "
+        f"restore_noauth={restore_noauth} restore={restore})"
+    )
+    fail = 0
+    if (
+        sd_noauth == 401
+        and sd_del in (200, 404)
+        and restore_noauth == 401
+        and restore in (200, 404)
+    ):
+        print(f"  OK  soft-delete + restore probe {detail}")
+    else:
+        print(f"  XX  soft-delete + restore probe {detail}")
+        fail = 1
+    if not _probe_row_canary(SOFTDEL_PROBE, written_after):
+        fail = 1
+    return fail
+
+
 def main():
     if len(sys.argv) != 3:
         print("usage: verify-deployment.py <base_url> <api_key>", file=sys.stderr)
@@ -196,42 +308,9 @@ def main():
     else:
         print("  --  GET /api/memories/{name} SKIP (store empty, cannot probe)")
 
-    # Soft-delete + restore round-trip (#23 B):
-    # Write a throwaway memory, soft-delete it, then restore it.
-    # Proves: soft-delete route registered + auth-gated, restore route registered +
-    # auth-gated, restore returns 200 on a genuinely deleted memory.
-    _sd_name = "verify-deployment-softdel-probe"
-    _sd_post = _request(
-        "POST",
-        base + "/api/memories",
-        key=key,
-        body={"name": _sd_name, "title": "Softdel probe", "body": "probe"},
-    )
-    if _sd_post in (200, 201, 202):
-        _sd_noauth = _request("DELETE", f"{base}/api/memories/{_sd_name}")
-        _sd_del = _request("DELETE", f"{base}/api/memories/{_sd_name}", key=key)
-        _restore_noauth = _request("POST", f"{base}/api/memories/{_sd_name}/restore")
-        _restore = _request("POST", f"{base}/api/memories/{_sd_name}/restore", key=key)
-        if (
-            _sd_noauth == 401
-            and _sd_del in (200, 404)
-            and _restore_noauth == 401
-            and _restore in (200, 404)
-        ):
-            print(
-                f"  OK  soft-delete + restore probe "
-                f"(post={_sd_post} del_noauth={_sd_noauth} del={_sd_del} "
-                f"restore_noauth={_restore_noauth} restore={_restore})"
-            )
-        else:
-            print(
-                f"  XX  soft-delete + restore probe "
-                f"(post={_sd_post} del_noauth={_sd_noauth} del={_sd_del} "
-                f"restore_noauth={_restore_noauth} restore={_restore})"
-            )
-            fail = 1
-    else:
-        print(f"  --  soft-delete + restore probe SKIP (write returned {_sd_post})")
+    # Soft-delete + restore round-trip (#23 B) + the v2.3.10 probe-row canary.
+    if _softdel_probe_and_canary(base, key):
+        fail = 1
 
     print("PASS" if fail == 0 else "FAIL")
     return fail

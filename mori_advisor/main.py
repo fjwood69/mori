@@ -475,7 +475,8 @@ async def _orphan_scan_loop():
 
     Runs dry_run=True (flag only, no eviction queue writes) by default — the eviction
     queue is human-reviewed, so silently enqueueing rows on every scan would be
-    surprising.  Set MORI_ORPHAN_SCAN_DRY_RUN=false to enable queue writes.
+    surprising.  Set MORI_ORPHAN_SCAN_DRY_RUN=false to enable queue writes — on BOTH
+    backends this only queues for review; nothing is deleted (Postgres hard-deleted before v2.3.10).
     Interval controlled by MORI_ORPHAN_SCAN_INTERVAL_SEC (default: daily).
     """
     interval = int(os.environ.get("MORI_ORPHAN_SCAN_INTERVAL_SEC", "86400"))
