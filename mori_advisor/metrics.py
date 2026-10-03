@@ -10,11 +10,12 @@ via standard OTel env vars:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from opentelemetry import metrics
 from opentelemetry.sdk.metrics import MeterProvider
@@ -323,6 +324,90 @@ def record_jsonb_unwrapped(column: str) -> None:
         logger.debug("record_jsonb_unwrapped failed", exc_info=True)
 
 
+# Owned sequences raised at boot because they would have handed out an id already in use (v2.3.11).
+# The v2.3.11 deploy repairs eviction_queue once; any later repair means another out-of-band import
+# or restore — alert on it. Pre-initialised for every table with an owned sequence (2026-10-03 prod).
+SEQUENCE_TABLES = (
+    "delegate_tasks",
+    "eviction_queue",
+    "ingestion_log",
+    "memories",
+    "memory_versions",
+    "pending_writes",
+    "session_events",
+    "write_audit",
+)
+_sequence_repairs = Counter(
+    "mori_sequence_repairs_total",
+    "Owned sequences raised at boot because their next value was <= max(id)",
+    ["table"],
+    registry=prom_registry,
+)
+for _tbl in SEQUENCE_TABLES:
+    _sequence_repairs.labels(table=_tbl)
+
+
+SUPERSESSION_MODES = ("report_only", "write")
+SUPERSESSION_RESULTS = ("applied", "proposed", "failed", "already_decided")
+_supersessions = Counter(
+    "mori_supersessions_total",
+    "Contradiction-scan outcomes per supersession mode: applied (superseded_by written), proposed "
+    "(queued for review), failed (write/insert failed), already_decided (pair skipped unclassified)",
+    ["mode", "result"],
+    registry=prom_registry,
+)
+for _mode in SUPERSESSION_MODES:
+    for _res in SUPERSESSION_RESULTS:
+        _supersessions.labels(mode=_mode, result=_res)
+
+# The scheduled dream runs in a one-off process whose counters die on exit; its per-run outcome is
+# persisted in dream_state and exported here at scrape time (board B-C4).
+_dream_last_supersessions = Gauge(
+    "mori_dream_last_run_supersessions",
+    "Supersession outcomes of the most recent dream run (from dream_state; covers cron runs)",
+    ["result"],
+    registry=prom_registry,
+)
+for _res in SUPERSESSION_RESULTS:
+    _dream_last_supersessions.labels(result=_res)
+
+
+def record_supersession(mode: str, result: str) -> None:
+    """Count one contradiction-scan outcome. Fail-open."""
+    try:
+        _supersessions.labels(mode=mode, result=result).inc()
+    except Exception:
+        logger.debug("record_supersession failed", exc_info=True)
+
+
+def set_dream_last_supersessions(counts: dict[str, int]) -> None:
+    """Export the last dream run's persisted supersession outcomes. Fail-open."""
+    try:
+        for res in SUPERSESSION_RESULTS:
+            _dream_last_supersessions.labels(result=res).set(int(counts.get(res, 0)))
+    except Exception:
+        logger.debug("set_dream_last_supersessions failed", exc_info=True)
+
+
+# The time of the most recent repair, from dream_state — process-independent, so a repair in ANY
+# process (server, ingestion, cron dream) and a second repair on a later boot are both visible.
+# 0 = never repaired. Alert: time() - this < 3600.
+_sequence_last_repair = Gauge(
+    "mori_sequence_last_repair_timestamp_seconds",
+    "Unix time of the most recent boot-time sequence repair (any process; 0 = never)",
+    registry=prom_registry,
+)
+_sequence_last_repair.set(0)
+
+
+def record_sequence_repair(table: str) -> None:
+    """Count one boot-time sequence repair. Fail-open."""
+    try:
+        _sequence_repairs.labels(table=table).inc()
+    except Exception:
+        logger.debug("record_sequence_repair failed", exc_info=True)
+
+
 # finish_reason == "length": the reply hit max_tokens. Routine for some advisor/dream calls, so
 # this is a dashboard signal, not an alert — the classifier counter below carries the alert.
 _llm_truncated = Counter(
@@ -495,7 +580,7 @@ def reset_brief_counts() -> None:
     _brief_counts["confirmed"] = 0
 
 
-async def _a(val):
+async def _a(val: Any) -> Any:
     """Await val if it's a coroutine, else return as-is."""
     import inspect
 
@@ -552,8 +637,24 @@ async def collect_metrics(store, nats_url: Optional[str] = None) -> bytes:
             last_outcome = await _a(store.get_dream_state("last_run_outcome"))
             for outcome in DREAM_OUTCOMES:
                 _dream_last_outcome.labels(outcome=outcome).set(1 if outcome == last_outcome else 0)
+            sup = await _a(store.get_dream_state("last_run_supersessions"))
+            if sup:
+                set_dream_last_supersessions(json.loads(sup))
     except Exception:
         pass
+
+    # Last boot-time sequence repair (persisted by whichever process repaired). A failed read must
+    # NOT reset the gauge to 0 ("never repaired") — that would silence MoriSequenceRepaired. Keep the
+    # last known value and say so. An absent key genuinely means never repaired.
+    try:
+        repaired_at = await _a(store.get_dream_state("last_sequence_repair_at"))
+    except Exception:
+        logger.warning(
+            "metrics: could not read last_sequence_repair_at; keeping the last known value",
+            exc_info=True,
+        )
+    else:
+        _sequence_last_repair.set(float(repaired_at) if repaired_at else 0)
 
     # Outbound LLM calls in flight (process-local; recomputed so oldest-age is current).
     try:

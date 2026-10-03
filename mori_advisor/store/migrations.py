@@ -611,6 +611,15 @@ MIGRATIONS: tuple[Migration, ...] = (
         # and never had the bug). Body in _jsonb_arrays_postgres — see its ordering comment.
         postgres_fn=lambda conn: _jsonb_arrays_postgres(conn),
     ),
+    Migration(
+        id=17,
+        name="recovery_path_keys",
+        # v2.3.11: memory_versions.memory_id (history keyed to a row, not a name) and
+        # eviction_queue.counterpart/resolution (supersession pairs keyed by column, not by parsing
+        # `detail`). Both backends. Bodies in _recovery_keys_{sqlite,postgres}.
+        sqlite_fn=lambda conn, db_path: _recovery_keys_sqlite(conn, db_path),
+        postgres_fn=lambda conn: _recovery_keys_postgres(conn),
+    ),
 )
 
 
@@ -692,6 +701,155 @@ async def _jsonb_arrays_postgres(conn: Any) -> None:
         )
     for n in names:
         await conn.execute(f"ALTER TABLE memories VALIDATE CONSTRAINT {n}")
+
+
+# ── Migration 17 — recovery-path keys (v2.3.11) ───────────────────────────────────
+# memory_versions.memory_id: history keyed to the row (incarnation), not the reusable name. Backfill
+# ONLY where the name has exactly one incarnation (live or deleted); a name with several stays NULL
+# and its historical versions remain name-keyed. Do not claim old rows are incarnation-scoped.
+# eviction_queue.counterpart: the OTHER memory of a supersession pair (the superseding / proposing
+# memory); resolution: applied | dismissed | unsuperseded (NULL = open). Backfill parses the two
+# detail formats the scan has ever written. The partial unique index covers OPEN pair rows only, so a
+# resolved unsupersede never blocks a later proposal for the same pair.
+_PAIR_REASONS_SQL = "('superseded', 'supersession_proposed')"
+
+
+def _recovery_keys_sqlite(conn: sqlite3.Connection, db_path: Path) -> None:
+    def cols(table: str) -> set[str]:
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+    if "memory_id" not in cols("memory_versions"):
+        conn.execute("ALTER TABLE memory_versions ADD COLUMN memory_id INTEGER")
+    conn.execute(
+        "UPDATE memory_versions SET memory_id = ("
+        "  SELECT m.id FROM memories m WHERE m.name = memory_versions.memory_name) "
+        "WHERE memory_id IS NULL AND ("
+        "  SELECT COUNT(*) FROM memories m WHERE m.name = memory_versions.memory_name) = 1"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mem_versions_memory_id ON memory_versions(memory_id)"
+    )
+    eq = cols("eviction_queue")
+    if "counterpart" not in eq:
+        conn.execute("ALTER TABLE eviction_queue ADD COLUMN counterpart TEXT")
+    if "resolution" not in eq:
+        conn.execute("ALTER TABLE eviction_queue ADD COLUMN resolution TEXT")
+    # 'Superseded by ' is 14 chars -> name starts at 16; 'Proposed: superseded by ' is 24 -> 26.
+    conn.execute(
+        "UPDATE eviction_queue SET counterpart = substr(detail, 16, length(detail) - 16) "
+        "WHERE counterpart IS NULL AND reason = 'superseded' "
+        "AND detail LIKE 'Superseded by ''%''' "
+    )
+    conn.execute(
+        "UPDATE eviction_queue SET counterpart = substr(detail, 26, length(detail) - 26) "
+        "WHERE counterpart IS NULL AND reason = 'supersession_proposed' "
+        "AND detail LIKE 'Proposed: superseded by ''%''' "
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_evict_open_pair "
+        "ON eviction_queue(memory_name, counterpart) "
+        f"WHERE reason IN {_PAIR_REASONS_SQL} AND resolved = 0"
+    )
+
+
+async def _recovery_keys_postgres(conn: Any) -> None:
+    await conn.execute("SET LOCAL lock_timeout = '5s'")
+    await conn.execute("ALTER TABLE memory_versions ADD COLUMN IF NOT EXISTS memory_id BIGINT")
+    await conn.execute(
+        "UPDATE memory_versions v SET memory_id = m.id FROM memories m "
+        "WHERE v.memory_id IS NULL AND m.name = v.memory_name "
+        "AND (SELECT COUNT(*) FROM memories m2 WHERE m2.name = v.memory_name) = 1"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_versions_memory_id ON memory_versions (memory_id)"
+    )
+    await conn.execute(
+        "ALTER TABLE eviction_queue "
+        "ADD COLUMN IF NOT EXISTS counterpart TEXT, ADD COLUMN IF NOT EXISTS resolution TEXT"
+    )
+    await conn.execute(
+        "UPDATE eviction_queue SET counterpart = substring(detail from '^Superseded by ''(.*)''$') "
+        "WHERE counterpart IS NULL AND reason = 'superseded'"
+    )
+    await conn.execute(
+        "UPDATE eviction_queue "
+        "SET counterpart = substring(detail from '^Proposed: superseded by ''(.*)''$') "
+        "WHERE counterpart IS NULL AND reason = 'supersession_proposed'"
+    )
+    await conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_evict_open_pair "
+        "ON eviction_queue (memory_name, counterpart) "
+        f"WHERE reason IN {_PAIR_REASONS_SQL} AND resolved = FALSE"
+    )
+
+
+# ── Owned-sequence invariant (v2.3.11, board R5) ───────────────────────────────────
+# Every sequence owned by a column must hand out a value above that column's max. The 4 June
+# SQLite→Postgres import copied eviction_queue ids 1–77 and left its sequence at 4, so every insert
+# collided and rolled back the supersession with it, silently, for four months. This runs on every
+# boot (inside apply_postgres, after the standby guard, under the advisory lock) because the class
+# recurs with any out-of-band import or restore; a one-shot migration would heal only today's.
+# RAISE-ONLY: it never lowers a sequence. A repair on any boot after the v2.3.11 deploy means
+# another out-of-band import or restore has happened — the alert on mori_sequence_repairs_total.
+_OWNED_SEQUENCES_SQL = """
+SELECT s.oid::regclass::text AS seq, t.oid::regclass::text AS tbl, a.attname AS col
+FROM pg_class s
+JOIN pg_namespace n ON n.oid = s.relnamespace
+JOIN pg_depend d ON d.objid = s.oid AND d.classid = 'pg_class'::regclass
+                AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')
+JOIN pg_class t ON t.oid = d.refobjid
+JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+WHERE s.relkind = 'S' AND n.nspname = current_schema()
+ORDER BY 1
+"""
+
+
+SEQUENCE_REPAIR_STATE_KEY = "last_sequence_repair_at"
+
+
+async def repair_owned_sequences(conn: Any) -> list[tuple[str, int, int]]:
+    """Raise every owned sequence that would hand out an id already in its column.
+
+    Returns ``(table, old_next_value, new_last_value)`` per repair. Logs a WARNING and counts
+    ``mori_sequence_repairs_total{table}`` for each.
+    """
+    from mori_advisor.metrics import record_sequence_repair
+
+    repaired: list[tuple[str, int, int]] = []
+    for r in await conn.fetch(_OWNED_SEQUENCES_SQL):
+        col = '"' + r["col"].replace('"', '""') + '"'
+        mx = await conn.fetchval(f"SELECT max({col}) FROM {r['tbl']}")
+        if mx is None:
+            continue
+        state = await conn.fetchrow(f"SELECT last_value, is_called FROM {r['seq']}")
+        next_value = state["last_value"] + 1 if state["is_called"] else state["last_value"]
+        if mx < next_value:
+            continue
+        await conn.execute("SELECT setval($1::regclass, $2, true)", r["seq"], mx)
+        logger.warning(
+            "SEQUENCE-REPAIR %s.%s: next value %d was <= max(id) %d; raised to %d",
+            r["tbl"],
+            r["col"],
+            next_value,
+            mx,
+            mx,
+        )
+        record_sequence_repair(r["tbl"])
+        repaired.append((r["tbl"], next_value, mx))
+    if repaired:
+        # Board condition (v2.3.11): the per-process counter cannot show a SECOND repair (each new
+        # process starts at 0 and repairs before its first scrape), and the repair may run in a
+        # process nobody scrapes (ingestion, a cron dream). So the event is persisted in the
+        # database, on this connection under the advisory lock; the server exports it at scrape
+        # time as mori_sequence_last_repair_timestamp_seconds.
+        # The database clock, not the repairing container's (board, tag-condition ruling).
+        await conn.execute(
+            "INSERT INTO dream_state (key, value, updated_at) "
+            "VALUES ($1, EXTRACT(EPOCH FROM NOW())::bigint::text, NOW()) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+            SEQUENCE_REPAIR_STATE_KEY,
+        )
+    return repaired
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -886,6 +1044,9 @@ async def apply_postgres(store, migrations: tuple[Migration, ...]) -> None:
                 if m.id in applied:
                     continue
                 await _apply_one_postgres(conn, m)
+            # Every boot, after migrations, still under the advisory lock: one container of a boot
+            # wave repairs, the rest see the raised sequence and no-op (board R5).
+            await repair_owned_sequences(conn)
         finally:
             await conn.execute("SELECT pg_advisory_unlock($1)", _PG_ADVISORY_LOCK_KEY)
     finally:

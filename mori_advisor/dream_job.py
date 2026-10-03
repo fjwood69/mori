@@ -73,6 +73,9 @@ async def async_main():
     )
 
     logger.info("Dream job started")
+    from mori_advisor.utils import supersession_mode
+
+    logger.info("Supersession mode: %s", supersession_mode())
     status_before = await pipeline.get_status()
     logger.info("Pre-run status: %s", status_before.replace("\n", " | "))
 

@@ -14,7 +14,9 @@ from __future__ import annotations
 import sqlite3
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import Generator
+from typing import Any, Awaitable, Generator
+
+from mori_advisor.provenance import Provenance
 
 
 class BaseStore(ABC):
@@ -85,13 +87,13 @@ class BaseStore(ABC):
     def delete(self, name: str) -> str: ...
 
     @abstractmethod
-    def soft_delete(self, name: str) -> str: ...
+    def soft_delete(self, name: str, *, actor: str = "system") -> str: ...
 
     @abstractmethod
-    def hard_delete(self, name: str) -> str: ...
+    def hard_delete(self, name: str, *, actor: str = "system") -> str: ...
 
     @abstractmethod
-    def restore_memory(self, name: str) -> tuple: ...
+    def restore_memory(self, name: str, *, actor: str = "system") -> tuple: ...
 
     @abstractmethod
     def insert_audit(
@@ -148,7 +150,16 @@ class BaseStore(ABC):
     def diff(self, name: str, from_version: int, to_version: int) -> str: ...
 
     @abstractmethod
-    def rollback(self, name: str, version_id: int) -> str: ...
+    def rollback(
+        self,
+        name: str,
+        version_id: int,
+        *,
+        provenance: Provenance | None = None,
+        caller_is_dreamer: bool = False,
+    ) -> str:
+        """Restore content to a stored version through the write chokepoint (v2.3.11). A
+        canonical row needs ``caller_is_dreamer`` (board R6)."""
 
     # ── Counts / observability ─────────────────────────────────────────────
 
@@ -179,6 +190,7 @@ class BaseStore(ABC):
         confidence: float | None = None,
         focus_mode: str = "",
         tier: str = "",
+        _conn: Any = None,
     ) -> str: ...
 
     @abstractmethod
@@ -338,6 +350,23 @@ class BaseStore(ABC):
 
     @abstractmethod
     def get_superseded_memories(self) -> list: ...
+
+    @abstractmethod
+    def unsupersede(
+        self, name: str, *, note: str = "", actor: str = "system"
+    ) -> str | Awaitable[str]:
+        """Clear superseded_by on the active row (NULL), resolve the pair as 'unsuperseded',
+        audit it — one transaction (v2.3.11, D5)."""
+
+    @abstractmethod
+    def decide_supersession(
+        self, queue_id: int, decision: str, *, note: str = "", actor: str = "system"
+    ) -> str | Awaitable[str]:
+        """Apply or dismiss one supersession_proposed queue row (v2.3.11, D5)."""
+
+    @abstractmethod
+    def get_supersession_pair_summary(self) -> dict[str, int] | Awaitable[dict[str, int]]:
+        """Supersession pair rows counted by reason:state (R4 visibility)."""
 
     @abstractmethod
     def get_eviction_summary(self) -> list: ...

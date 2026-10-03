@@ -26,6 +26,7 @@ from mori_advisor.memory_store import (
     _FRESHNESS_CACHE_TTL,
     _IN_FLIGHT_SENTINEL,
     FRESHNESS_CHECK_PROMPT,
+    MAX_VERSIONS_PER_MEMORY,
     VALID_TIERS,
     _freshness_cache,
     _freshness_cache_lock,
@@ -40,7 +41,7 @@ from mori_advisor.provenance import (
     tier_decision,
     validate_provenance,
 )
-from mori_advisor.utils import classifier_reasoning_effort
+from mori_advisor.utils import SUPERSEDED_DETAIL, classifier_reasoning_effort
 from mori_advisor.write_result import Disposition, WriteResult, accepted
 
 from .base import BaseStore
@@ -150,6 +151,9 @@ def _coerce_msg_row(row) -> dict:
     return result
 
 
+_RETRYABLE_SQLSTATES = frozenset({"40001", "40P01"})
+
+
 async def _retry(coro_fn, *args, **kwargs):
     """Run coro_fn(*args, **kwargs), retrying on serialization errors."""
     last_exc = None
@@ -157,8 +161,10 @@ async def _retry(coro_fn, *args, **kwargs):
         try:
             return await coro_fn(*args, **kwargs)
         except Exception as e:
-            # asyncpg raises asyncpg.exceptions.SerializationError
-            if "40001" in str(e) or "serialization" in str(e).lower():
+            # By SQLSTATE, not by message substring (v2.3.11): 40001 serialization_failure and
+            # 40P01 deadlock_detected are the retryable transaction conflicts. The transaction
+            # lives inside coro_fn, so each retry starts a fresh one.
+            if getattr(e, "sqlstate", None) in _RETRYABLE_SQLSTATES:
                 last_exc = e
                 await asyncio.sleep(_RETRY_DELAY_BASE * (2**attempt))
                 continue
@@ -213,9 +219,11 @@ CREATE TABLE IF NOT EXISTS memory_versions (
     origin_session_ids  JSONB NOT NULL DEFAULT '[]',
     origin_clients      JSONB NOT NULL DEFAULT '[]',
     version_note        TEXT NOT NULL DEFAULT '',
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    memory_id           BIGINT
 );
 CREATE INDEX IF NOT EXISTS idx_memory_versions_name ON memory_versions (memory_name);
+CREATE INDEX IF NOT EXISTS idx_memory_versions_memory_id ON memory_versions (memory_id);
 
 CREATE TABLE IF NOT EXISTS pending_writes (
     id                  BIGSERIAL PRIMARY KEY,
@@ -244,8 +252,12 @@ CREATE TABLE IF NOT EXISTS eviction_queue (
     detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     resolved    BOOLEAN NOT NULL DEFAULT FALSE,
     resolved_at TIMESTAMPTZ,
-    note        TEXT NOT NULL DEFAULT ''
+    note        TEXT NOT NULL DEFAULT '',
+    counterpart TEXT,
+    resolution  TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_evict_open_pair ON eviction_queue (memory_name, counterpart)
+    WHERE reason IN ('superseded', 'supersession_proposed') AND resolved = FALSE;
 
 CREATE TABLE IF NOT EXISTS ingestion_log (
     id               BIGSERIAL PRIMARY KEY,
@@ -392,7 +404,7 @@ class PostgresStore(BaseStore):
                 ssl=False,
             )
 
-    def _ensure_pool(self):
+    def _ensure_pool(self) -> None:
         if self.pool is None:
             raise RuntimeError(
                 "PostgresStore not connected — call await store.connect() or await store.bootstrap() first"
@@ -446,7 +458,15 @@ class PostgresStore(BaseStore):
         provenance: Provenance = LEGACY,
         _skip_protection=False,
         _conn=None,
+        _version_note: str = "updated",
+        _anatomy_bypass: str | None = None,
     ) -> WriteResult:
+        """The Postgres write chokepoint. Every write runs in ONE transaction (a savepoint on a
+        caller's transaction): version snapshot, upsert and audit row commit together or not at
+        all (v2.3.11). ``_version_note`` labels the snapshot of the prior state. ``_anatomy_bypass``
+        is honoured ONLY for ``provenance.op == "rollback"`` (board amendment: a dreamer restoring
+        an exact stored version is not downgraded for content that predates the anatomy gate); the
+        caller (``rollback``) establishes the other conditions and passes the audited reason."""
         self._ensure_pool()
         from mori_advisor.memory_store import _slugify
 
@@ -466,11 +486,20 @@ class PostgresStore(BaseStore):
             body, description, seam="store.write:postgres", name=name, log=logger
         )
         anatomy_mode = anatomy_enforce_mode(provenance.actor)
+        bypass_reason = _anatomy_bypass if provenance.op == "rollback" else None
         if not verdict["valid"]:
             from mori_advisor.metrics import record_anatomy_decision
 
             record_anatomy_decision(provenance.actor, verdict["reason"], anatomy_mode)
-            if anatomy_mode == "enforce":
+            if anatomy_mode == "enforce" and bypass_reason:
+                logger.warning(
+                    "ANATOMY-BYPASS name=%s actor=%s op=rollback reason=%s verdict=%s",
+                    name,
+                    provenance.ledger_actor,
+                    bypass_reason,
+                    verdict["reason"],
+                )
+            elif anatomy_mode == "enforce":
                 await self.queue_pending_write(
                     name=name,
                     title=title,
@@ -480,6 +509,7 @@ class PostgresStore(BaseStore):
                     tags=tags,
                     origin_clients=origin_clients,
                     proposed_by=provenance.ledger_actor,
+                    _conn=_conn,
                 )
                 return WriteResult(
                     memory_name=name,
@@ -531,9 +561,22 @@ class PostgresStore(BaseStore):
         clients = _tags_json(origin_clients or ([client] if client else []))
         now = _now_utc()
 
+        anatomy_bypassed = (
+            bool(bypass_reason) and not verdict["valid"] and anatomy_mode == "enforce"
+        )
+
         async def _do(conn):
+            # ONE transaction per attempt (a savepoint when the caller's connection is already in
+            # one): _retry re-runs _do after a serialization failure, so the transaction lives
+            # INSIDE the retried callable and each attempt starts clean.
+            async with conn.transaction():
+                return await _do_in_txn(conn)
+
+        async def _do_in_txn(conn: Any) -> WriteResult:
             existing = await conn.fetchrow(
-                "SELECT id, protected, protected_domains, tier, origin_session_ids, origin_clients FROM memories WHERE name = $1 AND deleted_at IS NULL",
+                "SELECT id, protected, protected_domains, tier, origin_session_ids, origin_clients, "
+                "title, description, type, body, tags "
+                "FROM memories WHERE name = $1 AND deleted_at IS NULL",
                 name,
             )
             if existing and existing["protected"] and not effective_skip:
@@ -563,6 +606,7 @@ class PostgresStore(BaseStore):
                         column="protected_domains",
                         memory_name=name,
                     )
+                    existing_tags = _jsonb_array(existing["tags"], column="tags", memory_name=name)
                 except ValueError as e:
                     return WriteResult(
                         memory_name=name,
@@ -571,6 +615,51 @@ class PostgresStore(BaseStore):
                         disposition=Disposition.REJECTED,
                         reason=f"Memory '{name}' has a malformed stored value — {e}",
                     )
+                # Board amendment, made unable-not-to-fire: an anatomy bypass stands only if the
+                # content being written equals a stored version of THIS incarnation exactly.
+                if anatomy_bypassed and not await conn.fetchval(
+                    "SELECT 1 FROM memory_versions WHERE memory_id = $1 AND title = $2 "
+                    "AND description = $3 AND type = $4 AND body = $5 AND tags = $6::jsonb "
+                    "LIMIT 1",
+                    existing["id"],
+                    title,
+                    description,
+                    type,
+                    body,
+                    tags_v,
+                ):
+                    return WriteResult(
+                        memory_name=name,
+                        intended_tier=tier,
+                        stored_tier="",
+                        disposition=Disposition.REJECTED,
+                        reason="anatomy bypass refused: content is not an exact stored version",
+                    )
+                # Version snapshot of the PRIOR state (v2.3.11 — Postgres wrote none before), from
+                # the row already fetched, keyed to this incarnation by memory_id; prune to the
+                # newest MAX_VERSIONS_PER_MEMORY of the incarnation (version_id order is total).
+                await conn.execute(
+                    "INSERT INTO memory_versions (memory_name, title, description, type, body, "
+                    "tags, origin_session_ids, origin_clients, version_note, memory_id) "
+                    "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)",
+                    name,
+                    existing["title"],
+                    existing["description"],
+                    existing["type"],
+                    existing["body"],
+                    json.dumps(existing_tags),
+                    json.dumps(existing_ids),
+                    json.dumps(existing_clients),
+                    _version_note,
+                    existing["id"],
+                )
+                await conn.execute(
+                    "DELETE FROM memory_versions WHERE version_id IN ("
+                    "  SELECT version_id FROM memory_versions WHERE memory_id = $1 "
+                    "  ORDER BY version_id DESC OFFSET $2)",
+                    existing["id"],
+                    MAX_VERSIONS_PER_MEMORY,
+                )
                 merged_ids = json.dumps(sorted(set(json.loads(sess_ids) + existing_ids)))
                 merged_clients = json.dumps(sorted(set(json.loads(clients) + existing_clients)))
                 # Don't downgrade canonical tier
@@ -582,6 +671,14 @@ class PostgresStore(BaseStore):
                 protect = existing.get("protected", False)
                 protect_domains_raw = json.dumps(existing_domains)
             else:
+                if anatomy_bypassed:  # no incarnation -> no stored version to restore
+                    return WriteResult(
+                        memory_name=name,
+                        intended_tier=tier,
+                        stored_tier="",
+                        disposition=Disposition.REJECTED,
+                        reason="anatomy bypass refused: no active row to restore",
+                    )
                 merged_ids = sess_ids
                 merged_clients = clients
                 result_tier = tier
@@ -625,20 +722,21 @@ class PostgresStore(BaseStore):
             # Universal, in-transaction audit (identity-aware chokepoint, Phase 1):
             # same conn as the upsert = atomic; covers every writer incl. the dreamer.
             # (legacy/unknown-actor warnings fire earlier in validate_provenance.)
-            try:
-                await conn.execute(
-                    "INSERT INTO write_audit "
-                    "(actor_key_name, op, memory_name, content_hash, detail) "
-                    "VALUES ($1, $2, $3, $4, $5)",
-                    provenance.ledger_actor,
-                    provenance.op,
-                    name,
-                    content_hash(body),
-                    provenance.source,
-                )
-            except Exception as ae:  # pre-migration test DB may lack write_audit
-                if "does not exist" not in str(ae).lower():
-                    raise
+            # NO swallow here (v2.3.11, A-F-A1): inside the transaction a swallowed error turns the
+            # COMMIT into a silent ROLLBACK while this function returns ACCEPTED. write_audit is
+            # created by migration 8; its absence is a boot-order bug and must fail the write.
+            await conn.execute(
+                "INSERT INTO write_audit "
+                "(actor_key_name, op, memory_name, content_hash, detail, reason_code) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                provenance.ledger_actor,
+                provenance.op,
+                name,
+                content_hash(body),
+                provenance.source
+                + (f" | anatomy bypassed: {bypass_reason}" if anatomy_bypassed else ""),
+                "anatomy_bypass_rollback" if anatomy_bypassed else None,
+            )
             return accepted(name, result_tier)
 
         if _conn:
@@ -720,7 +818,12 @@ class PostgresStore(BaseStore):
         tags are normalised to a list.
         """
         self._ensure_pool()
-        clauses = ["deleted_at IS NULL", "tier = ANY($1)"]
+        # R7 (v2.3.11): canon export never propagates superseded content.
+        clauses = [
+            "deleted_at IS NULL",
+            "(superseded_by IS NULL OR superseded_by = '')",
+            "tier = ANY($1)",
+        ]
         params: list = [list(tiers)]
         if type_filter:
             params.append(type_filter)
@@ -939,69 +1042,108 @@ class PostgresStore(BaseStore):
         """Soft-delete a memory.  Use hard_delete() for permanent removal."""
         return await self.soft_delete(name)
 
-    async def soft_delete(self, name: str) -> str:
-        """Set deleted_at = now on the active row.  Idempotent if already deleted."""
+    async def soft_delete(self, name: str, *, actor: str = "system") -> str:
+        """Set deleted_at = now on the active row.  Idempotent if already deleted.
+
+        v2.3.11: the audit row is written in the same transaction (a stated exception to the
+        write chokepoint — no content changes)."""
         self._ensure_pool()
         async with self.pool.acquire() as conn:
-            result = await conn.execute(
-                "UPDATE memories SET deleted_at = NOW(), updated_at = NOW() "
-                "WHERE name = $1 AND deleted_at IS NULL",
-                name,
-            )
-        updated = int(result.split()[-1])
+            async with conn.transaction():
+                result = await conn.execute(
+                    "UPDATE memories SET deleted_at = NOW(), updated_at = NOW() "
+                    "WHERE name = $1 AND deleted_at IS NULL",
+                    name,
+                )
+                updated = int(result.split()[-1])
+                if updated:
+                    await _audit_in_txn(conn, "soft_delete", actor, name)
         return f"Memory '{name}' soft-deleted." if updated else f"Memory '{name}' not found."
 
-    async def hard_delete(self, name: str) -> str:
+    async def hard_delete(self, name: str, *, actor: str = "system") -> str:
         """Permanently remove a memory row (active or tombstoned) and its versions.
 
         memory_versions FK was dropped by migration 9 (partial indexes cannot be FK
-        targets). Versions are cleaned up here to prevent orphans.
+        targets). Versions are cleaned up here to prevent orphans. Audited in-transaction.
         """
         self._ensure_pool()
         async with self.pool.acquire() as conn:
-            await conn.execute("DELETE FROM memory_versions WHERE memory_name = $1", name)
-            result = await conn.execute("DELETE FROM memories WHERE name = $1", name)
-        deleted = int(result.split()[-1])
+            async with conn.transaction():
+                await conn.execute("DELETE FROM memory_versions WHERE memory_name = $1", name)
+                result = await conn.execute("DELETE FROM memories WHERE name = $1", name)
+                deleted = int(result.split()[-1])
+                if deleted:
+                    await _audit_in_txn(conn, "hard_delete", actor, name)
         return f"Memory '{name}' permanently deleted." if deleted else f"Memory '{name}' not found."
 
-    async def restore_memory(self, name: str) -> tuple[str, str]:
-        """Restore a soft-deleted memory; rename to {name}_restored_{ts} on collision."""
+    async def restore_memory(self, name: str, *, actor: str = "system") -> tuple[str, str]:
+        """Restore a soft-deleted memory; rename to {name}_restored_{ts} on collision.
+
+        v2.3.11, one transaction: undelete (or rename), re-point the incarnation's version history
+        to the restored row, write the audit row. ``superseded_by`` is NOT cleared — that would be
+        an unaudited unsupersede — but the message says so (use memory_unsupersede).
+        """
         self._ensure_pool()
         from datetime import datetime, timezone
 
+        import asyncpg
+
+        try:
+            return await self._restore_memory_txn(name, actor, datetime, timezone)
+        except asyncpg.exceptions.UniqueViolationError:
+            # Raised out of the transaction (it rolled back) — never swallowed inside it.
+            return name, "Restore failed: name collision could not be resolved."
+
+    async def _restore_memory_txn(
+        self, name: str, actor: str, datetime: Any, timezone: Any
+    ) -> tuple[str, str]:
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT id FROM memories WHERE name = $1 AND deleted_at IS NOT NULL "
-                "ORDER BY deleted_at DESC LIMIT 1",
-                name,
-            )
-            if not row:
-                return name, f"Memory '{name}' not found or not deleted."
-
-            row_id = row["id"]
-            collision = await conn.fetchval(
-                "SELECT 1 FROM memories WHERE name = $1 AND deleted_at IS NULL", name
-            )
-
-            if collision:
-                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-                final_name = f"{name}_restored_{ts}"
-                try:
-                    await conn.execute(
-                        "UPDATE memories SET name = $1, deleted_at = NULL, updated_at = NOW() "
-                        "WHERE id = $2",
-                        final_name,
-                        row_id,
-                    )
-                except Exception:
-                    return name, "Restore failed: name collision could not be resolved."
-                return final_name, f"Restored '{name}' as '{final_name}' (name taken)."
-            else:
-                await conn.execute(
-                    "UPDATE memories SET deleted_at = NULL, updated_at = NOW() WHERE id = $1",
-                    row_id,
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT id, created_at, deleted_at, superseded_by FROM memories "
+                    "WHERE name = $1 AND deleted_at IS NOT NULL "
+                    "ORDER BY deleted_at DESC LIMIT 1",
+                    name,
                 )
-                return name, f"Memory '{name}' restored."
+                if not row:
+                    return name, f"Memory '{name}' not found or not deleted."
+                collision = await conn.fetchval(
+                    "SELECT 1 FROM memories WHERE name = $1 AND deleted_at IS NULL", name
+                )
+                final_name = name
+                if collision:
+                    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+                    final_name = f"{name}_restored_{ts}"
+                await conn.execute(
+                    "UPDATE memories SET name = $1, deleted_at = NULL, updated_at = NOW() "
+                    "WHERE id = $2",
+                    final_name,
+                    row["id"],
+                )
+                if final_name != name:
+                    # Re-point this incarnation's history: by memory_id where set; legacy rows
+                    # (memory_id NULL) by the incarnation's lifetime window.
+                    await conn.execute(
+                        "UPDATE memory_versions SET memory_name = $1 WHERE memory_id = $2",
+                        final_name,
+                        row["id"],
+                    )
+                    await conn.execute(
+                        "UPDATE memory_versions SET memory_name = $1, memory_id = $2 "
+                        "WHERE memory_id IS NULL AND memory_name = $3 "
+                        "AND created_at BETWEEN $4 AND $5",
+                        final_name,
+                        row["id"],
+                        name,
+                        row["created_at"],
+                        row["deleted_at"],
+                    )
+                op = "restore_renamed" if final_name != name else "restore"
+                await _audit_in_txn(conn, op, actor, final_name, detail=f"original={name}")
+                note = await _superseded_note(conn, row["superseded_by"])
+        if final_name != name:
+            return final_name, f"Restored '{name}' as '{final_name}' (name taken).{note}"
+        return name, f"Memory '{name}' restored.{note}"
 
     async def insert_audit(
         self,
@@ -1447,29 +1589,46 @@ class PostgresStore(BaseStore):
         diff = "".join(difflib.unified_diff(a_lines, b_lines, fromfile="before", tofile="after"))
         return diff or "(no differences)"
 
-    async def rollback(self, name: str, version_id: int) -> str:
+    async def rollback(
+        self,
+        name: str,
+        version_id: int,
+        *,
+        provenance: Provenance | None = None,
+        caller_is_dreamer: bool = False,
+    ) -> str:
+        """Restore a memory's content to a stored version — THROUGH the write chokepoint (v2.3.11).
+
+        One transaction: read the version and the active row (locked), check authority, then
+        ``_write`` the version's content on the same connection, so snapshot, protection, anatomy,
+        audit and active-row scoping all apply and commit together.
+        """
         self._ensure_pool()
+        prov = provenance or Provenance(actor="system", source="store:rollback", op="rollback")
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM memory_versions WHERE version_id = $1 AND memory_name = $2",
-                version_id,
-                name,
-            )
-            if not row:
-                return f"Version {version_id} not found for '{name}'."
-            await conn.execute(
-                "UPDATE memories SET title=$2, description=$3, type=$4, tier=$5, body=$6, "
-                "tags=$7::jsonb, updated_at=$8 WHERE name=$1",
-                name,
-                row["title"],
-                row["description"],
-                row["type"],
-                row["tier"],
-                row["body"],
-                row["tags"],
-                _now_utc(),
-            )
-        return f"Memory '{name}' rolled back to version {version_id}."
+            async with conn.transaction():
+                version = await conn.fetchrow(
+                    "SELECT * FROM memory_versions WHERE version_id = $1 AND memory_name = $2",
+                    version_id,
+                    name,
+                )
+                if not version:
+                    return f"Version {version_id} not found for '{name}'."
+                active = await conn.fetchrow(
+                    "SELECT id, tier, superseded_by FROM memories "
+                    "WHERE name = $1 AND deleted_at IS NULL FOR UPDATE",
+                    name,
+                )
+                if not active:
+                    return f"Memory '{name}' is not active — restore it first, then roll back."
+                if version["memory_id"] is not None and version["memory_id"] != active["id"]:
+                    return (
+                        f"Version {version_id} belongs to an earlier incarnation of '{name}'; "
+                        "not rolled back."
+                    )
+                return await _rollback_via_chokepoint(
+                    self, conn, name, version_id, version, active, prov, caller_is_dreamer
+                )
 
     # ── Counts / observability ─────────────────────────────────────────────
 
@@ -1525,6 +1684,7 @@ class PostgresStore(BaseStore):
         confidence: float | None = None,
         focus_mode: str = "",
         tier: str = "",
+        _conn: Any = None,
     ) -> str:
         """Insert or update a pending write proposal for an existing memory.
 
@@ -1546,59 +1706,127 @@ class PostgresStore(BaseStore):
         else:
             provenance_str = provenance
 
-        # Capture existing_body for diff.
-        existing_body: str | None = None
-        try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow("SELECT body FROM memories WHERE name = $1", name)
-                if row:
-                    existing_body = row["body"]
-        except Exception:
-            pass  # non-fatal
-
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO pending_writes
-                    (memory_name, title, description, type, body, tags,
-                     origin_session_ids, origin_clients, proposed_by, proposed_at,
-                     source, provenance, confidence, focus_mode, existing_body, tier)
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10,
-                        $11, $12, $13, $14, $15, $16)
-                ON CONFLICT (memory_name) WHERE status = 'pending'
-                DO UPDATE SET
-                    title          = EXCLUDED.title,
-                    description    = EXCLUDED.description,
-                    type           = EXCLUDED.type,
-                    body           = EXCLUDED.body,
-                    tags           = EXCLUDED.tags,
-                    origin_clients = EXCLUDED.origin_clients,
-                    proposed_by    = EXCLUDED.proposed_by,
-                    proposed_at    = EXCLUDED.proposed_at,
-                    source         = EXCLUDED.source,
-                    provenance     = EXCLUDED.provenance,
-                    confidence     = EXCLUDED.confidence,
-                    focus_mode     = EXCLUDED.focus_mode,
-                    existing_body  = EXCLUDED.existing_body,
-                    tier           = EXCLUDED.tier
-                """,
+        # v2.3.11 (A-F-A2): on a caller's connection, run IN its transaction. A second pooled
+        # connection would block on the caller's own row lock (approve holds FOR UPDATE on this
+        # pending row) — an indefinite self-hang — and would commit outside the caller's
+        # transaction. On the caller's connection nothing may be swallowed: an error inside a
+        # transaction aborts it, and a swallowed one turns the caller's COMMIT into a silent ROLLBACK.
+        if _conn is not None:
+            return await self._queue_pending_write_on(
+                _conn,
                 name,
                 title,
                 description,
                 type,
                 body,
                 tags_v,
-                "[]",
                 clients_v,
                 proposed_by,
                 now,
-                source or "",
+                source,
                 provenance_str,
                 confidence,
-                focus_mode or "",
-                existing_body,
-                tier or "",
+                focus_mode,
+                tier,
+                swallow_existing_read=False,
             )
+        async with self.pool.acquire() as conn:
+            return await self._queue_pending_write_on(
+                conn,
+                name,
+                title,
+                description,
+                type,
+                body,
+                tags_v,
+                clients_v,
+                proposed_by,
+                now,
+                source,
+                provenance_str,
+                confidence,
+                focus_mode,
+                tier,
+                swallow_existing_read=True,
+            )
+
+    async def _queue_pending_write_on(
+        self,
+        conn: Any,
+        name: str,
+        title: str,
+        description: str,
+        type: str,
+        body: str,
+        tags_v: str,
+        clients_v: str,
+        proposed_by: str,
+        now: Any,
+        source: str,
+        provenance_str: str | None,
+        confidence: float | None,
+        focus_mode: str,
+        tier: str,
+        *,
+        swallow_existing_read: bool,
+    ) -> str:
+        # Capture existing_body for diff (non-fatal only on our own autocommit connection).
+        existing_body: str | None = None
+        existing_sql = "SELECT body FROM memories WHERE name = $1 AND deleted_at IS NULL"
+        if swallow_existing_read:
+            try:
+                row = await conn.fetchrow(existing_sql, name)
+                if row:
+                    existing_body = row["body"]
+            except Exception:
+                pass  # non-fatal on an autocommit connection
+        else:
+            row = await conn.fetchrow(existing_sql, name)
+            if row:
+                existing_body = row["body"]
+
+        await conn.execute(
+            """
+            INSERT INTO pending_writes
+                (memory_name, title, description, type, body, tags,
+                 origin_session_ids, origin_clients, proposed_by, proposed_at,
+                 source, provenance, confidence, focus_mode, existing_body, tier)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10,
+                    $11, $12, $13, $14, $15, $16)
+            ON CONFLICT (memory_name) WHERE status = 'pending'
+            DO UPDATE SET
+                title          = EXCLUDED.title,
+                description    = EXCLUDED.description,
+                type           = EXCLUDED.type,
+                body           = EXCLUDED.body,
+                tags           = EXCLUDED.tags,
+                origin_clients = EXCLUDED.origin_clients,
+                proposed_by    = EXCLUDED.proposed_by,
+                proposed_at    = EXCLUDED.proposed_at,
+                source         = EXCLUDED.source,
+                provenance     = EXCLUDED.provenance,
+                confidence     = EXCLUDED.confidence,
+                focus_mode     = EXCLUDED.focus_mode,
+                existing_body  = EXCLUDED.existing_body,
+                tier           = EXCLUDED.tier
+            """,
+            name,
+            title,
+            description,
+            type,
+            body,
+            tags_v,
+            "[]",
+            clients_v,
+            proposed_by,
+            now,
+            source or "",
+            provenance_str,
+            confidence,
+            focus_mode or "",
+            existing_body,
+            tier or "",
+        )
         return (
             f"Memory '{name}' queued as pending write "
             "(dreamer review required via review.html or POST /api/memories/{name}/approve)."
@@ -2493,6 +2721,134 @@ class PostgresStore(BaseStore):
             for r in rows
         ]
 
+    # ── Supersession review (v2.3.11, D5) ──────────────────────────────────────
+    # Stated exceptions to the write chokepoint: they change a lifecycle flag, not content, so a
+    # snapshot would add an identical version. Each is ONE transaction with its own audit row.
+
+    async def unsupersede(self, name: str, *, note: str = "", actor: str = "system") -> str:
+        """Clear ``superseded_by`` on the ACTIVE row (by id) to NULL — never '' — bump updated_at,
+        mark the pair's open ``superseded`` row(s) resolved as ``unsuperseded`` (writing a marker
+        row if none exists, so the pair is propose-only from now on — board R3), audit it."""
+        self._ensure_pool()
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT id, superseded_by FROM memories "
+                    "WHERE name = $1 AND deleted_at IS NULL FOR UPDATE",
+                    name,
+                )
+                if not row:
+                    return f"Memory '{name}' not found."
+                prev = row["superseded_by"]
+                if not prev:
+                    return f"Memory '{name}' is not superseded — nothing to do."
+                await conn.execute(
+                    "UPDATE memories SET superseded_by = NULL, updated_at = NOW() WHERE id = $1",
+                    row["id"],
+                )
+                resolved = await conn.execute(
+                    "UPDATE eviction_queue SET resolved = TRUE, resolved_at = NOW(), "
+                    "resolution = 'unsuperseded', note = $3 "
+                    "WHERE memory_name = $1 AND counterpart = $2 AND reason = 'superseded' "
+                    "AND resolved = FALSE",
+                    name,
+                    prev,
+                    f"unsuperseded: {note}",
+                )
+                if int(resolved.split()[-1]) == 0:
+                    await conn.execute(
+                        "INSERT INTO eviction_queue (memory_name, reason, detail, counterpart, "
+                        "resolved, resolved_at, resolution, note) "
+                        "VALUES ($1, 'superseded', $2, $3, TRUE, NOW(), 'unsuperseded', $4)",
+                        name,
+                        SUPERSEDED_DETAIL.format(prev),
+                        prev,
+                        f"unsuperseded (no open queue row): {note}",
+                    )
+                await _audit_in_txn(
+                    conn, "unsupersede", actor, name, detail=f"was superseded by '{prev}'; {note}"
+                )
+        return f"Memory '{name}' unsuperseded (was superseded by '{prev}')."
+
+    async def decide_supersession(
+        self, queue_id: int, decision: str, *, note: str = "", actor: str = "system"
+    ) -> str:
+        """Apply or dismiss ONE ``supersession_proposed`` queue row (the reviewer's lever in
+        report-only mode). Race-safe: the row is locked and resolved only if still open."""
+        if decision not in ("apply", "dismiss"):
+            return f"Unknown decision '{decision}' — use 'apply' or 'dismiss'."
+        self._ensure_pool()
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                q = await conn.fetchrow(
+                    "SELECT id, memory_name, counterpart, reason, resolved FROM eviction_queue "
+                    "WHERE id = $1 FOR UPDATE",
+                    queue_id,
+                )
+                if not q:
+                    return f"Queue row {queue_id} not found."
+                if q["reason"] != "supersession_proposed":
+                    return f"Queue row {queue_id} is a '{q['reason']}' row, not a proposal."
+                if q["resolved"]:
+                    return f"Queue row {queue_id} was already decided."
+                cand_name, new_name = q["memory_name"], q["counterpart"]
+                if decision == "apply":
+                    cand = await conn.fetchrow(
+                        "SELECT id, superseded_by FROM memories "
+                        "WHERE name = $1 AND deleted_at IS NULL FOR UPDATE",
+                        cand_name,
+                    )
+                    new = await conn.fetchrow(
+                        "SELECT superseded_by FROM memories WHERE name = $1 AND deleted_at IS NULL",
+                        new_name,
+                    )
+                    if not cand or cand["superseded_by"]:
+                        return f"Not applied: '{cand_name}' is gone or already superseded."
+                    if not new or new["superseded_by"]:
+                        return f"Not applied: '{new_name}' is gone or is itself superseded."
+                    await conn.execute(
+                        "UPDATE memories SET superseded_by = $1, updated_at = NOW() WHERE id = $2",
+                        new_name,
+                        cand["id"],
+                    )
+                await conn.execute(
+                    "UPDATE eviction_queue SET resolved = TRUE, resolved_at = NOW(), "
+                    "resolution = $2, note = $3 WHERE id = $1 AND resolved = FALSE",
+                    queue_id,
+                    "applied" if decision == "apply" else "dismissed",
+                    f"{decision}: {note}",
+                )
+                if decision == "apply":
+                    await conn.execute(
+                        "INSERT INTO eviction_queue (memory_name, reason, detail, counterpart) "
+                        "VALUES ($1, 'superseded', $2, $3)",
+                        cand_name,
+                        SUPERSEDED_DETAIL.format(new_name),
+                        new_name,
+                    )
+                op = "supersede" if decision == "apply" else "supersession_dismiss"
+                await _audit_in_txn(
+                    conn, op, actor, cand_name, detail=f"by '{new_name}' (queue {queue_id}); {note}"
+                )
+        if decision == "apply":
+            return f"Applied: '{cand_name}' is now superseded by '{new_name}'."
+        return f"Dismissed: '{cand_name}' is not superseded by '{new_name}'."
+
+    async def get_supersession_pair_summary(self) -> dict[str, int]:
+        """Counts of supersession pair rows by state — the visibility R4 requires for suppressed
+        pairs (dismissed = closed; applied; unsuperseded = propose-only; open = awaiting review)."""
+        self._ensure_pool()
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT COALESCE(resolution, CASE WHEN resolved THEN 'resolved' ELSE 'open' END) "
+                "AS state, reason, COUNT(*) AS n FROM eviction_queue "
+                "WHERE reason IN ('superseded', 'supersession_proposed') GROUP BY 1, 2"
+            )
+        return {f"{r['reason']}:{r['state']}": r["n"] for r in rows}
+
     async def get_eviction_summary(self) -> list:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
@@ -2746,3 +3102,94 @@ class PostgresStore(BaseStore):
             }
             for r in rows
         ]
+
+
+async def _rollback_via_chokepoint(
+    store: PostgresStore,
+    conn: Any,
+    name: str,
+    version_id: int,
+    version: Any,
+    active: Any,
+    prov: Provenance,
+    caller_is_dreamer: bool,
+) -> str:
+    """Postgres rollback body, inside the caller's transaction (see PostgresStore.rollback)."""
+    # R6: rolling back a canonical row needs the dreamer role — keyed off the row read in this
+    # transaction, independent of MORI_TIER_ENFORCE.
+    if active["tier"] == "canonical" and not caller_is_dreamer:
+        return (
+            f"Memory '{name}' is canonical — rolling it back requires the dreamer role. "
+            "Not rolled back."
+        )
+    try:
+        tags = _jsonb_array(version["tags"], column="tags", memory_name=name)
+    except ValueError as e:
+        return f"Version {version_id} of '{name}' has a malformed stored value — {e}"
+    # Rollback is content-only: the tier never changes. A canonical row is passed as "working"
+    # and kept canonical by _write's don't-downgrade guard, so the tier gate judges no transition
+    # that is not happening (R6 above is the canonical authority).
+    tier = "working" if active["tier"] == "canonical" else active["tier"]
+    # Board amendment: the anatomy downgrade is bypassed only for a dreamer restoring EXACT
+    # stored content of THIS incarnation (memory_id matches; legacy name-keyed rows never qualify).
+    bypass = None
+    if caller_is_dreamer and version["memory_id"] == active["id"]:
+        bypass = f"dreamer rollback to stored version {version_id}"
+    result = await store._write(
+        name=name,
+        title=version["title"],
+        description=version["description"],
+        type=version["type"],
+        tier=tier,
+        body=version["body"],
+        tags=tags,
+        provenance=prov,
+        _conn=conn,
+        _version_note=f"before rollback to v{version_id}",
+        _anatomy_bypass=bypass,
+    )
+    if result.disposition is not Disposition.ACCEPTED:
+        reason = result.reason
+        if "is protected" in (reason or ""):
+            reason = (
+                f"Memory '{name}' is protected. To roll back: unprotect, roll back, re-protect "
+                "(each step audited)."
+            )
+        return f"Memory '{name}' NOT rolled back — {result.disposition.value}: {reason}"
+    msg = f"Memory '{name}' rolled back to version {version_id}."
+    if active["superseded_by"]:
+        msg += f" Note: it is still superseded by '{active['superseded_by']}'."
+    return msg
+
+
+async def _audit_in_txn(conn: Any, op: str, actor: str, name: str, *, detail: str = "") -> None:
+    """write_audit row on the caller's (transactional) connection — NOT swallowed: an error here
+    must abort the operation it audits (v2.3.11; see _write)."""
+    await conn.execute(
+        "INSERT INTO write_audit (actor_key_name, op, memory_name, content_hash, detail) "
+        "VALUES ($1, $2, $3, $4, $5)",
+        actor,
+        op,
+        name,
+        "",
+        detail,
+    )
+
+
+async def _superseded_note(conn: Any, superseded_by: str | None) -> str:
+    """' — still superseded by X (state); use memory_unsupersede' or '' (v2.3.11, F6)."""
+    if not superseded_by:
+        return ""
+    other = await conn.fetchrow(
+        "SELECT superseded_by FROM memories WHERE name = $1 AND deleted_at IS NULL", superseded_by
+    )
+    if other is None:
+        state = "which no longer exists"
+    elif other["superseded_by"]:
+        state = "which is itself superseded"
+    else:
+        state = "active"
+    return (
+        f" Note: it is still superseded by '{superseded_by}' ({state}); "
+        "use memory_unsupersede to clear it."
+    )

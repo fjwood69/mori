@@ -20,6 +20,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
 from mori_advisor.metrics import record_classifier_verdict
 from mori_advisor.provenance import (
@@ -215,6 +216,24 @@ def _merge_json_arrays(existing: str, new_items: list[str]) -> str:
     return json.dumps(merged)
 
 
+def _coerce_tags(tags: object) -> list[Any]:
+    """The ONE tags normaliser for the SQLite chokepoint (v2.3.11, A-F-B1): a list, or a JSON-array
+    string (how memory_versions stores them), becomes a list; any other string becomes ``[str]``.
+    Same semantics as Postgres ``_tags_json`` — without it a rollback of stored TEXT tags would be
+    json.dumps'd again, nesting one level per rollback."""
+    if tags is None:
+        return []
+    if isinstance(tags, list):
+        return tags
+    if isinstance(tags, str):
+        try:
+            parsed = json.loads(tags)
+        except (json.JSONDecodeError, TypeError):
+            return [tags]
+        return parsed if isinstance(parsed, list) else [tags]
+    return []
+
+
 class MemoryStore:
     """SQLite-backed persistent memory store with WAL mode.
 
@@ -288,7 +307,8 @@ class MemoryStore:
             "  origin_session_ids TEXT NOT NULL DEFAULT '[]',"
             "  origin_clients TEXT NOT NULL DEFAULT '[]',"
             "  version_note TEXT NOT NULL DEFAULT '',"
-            "  created_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            "  created_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            "  memory_id INTEGER"
             ")"
         )
         conn.execute(
@@ -340,7 +360,9 @@ class MemoryStore:
             "  detected_at TEXT NOT NULL DEFAULT (datetime('now')),"
             "  resolved INTEGER NOT NULL DEFAULT 0,"
             "  resolved_at TEXT,"
-            "  note TEXT NOT NULL DEFAULT ''"
+            "  note TEXT NOT NULL DEFAULT '',"
+            "  counterpart TEXT,"
+            "  resolution TEXT"
             ")"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evict_memory ON eviction_queue(memory_name)")
@@ -380,7 +402,7 @@ class MemoryStore:
 
     # ── connection management ──────────────────────────────────────────
 
-    def _get_conn(self):
+    def _get_conn(self) -> sqlite3.Connection:
         """Open a short-lived connection with WAL and busy timeout.
 
         Close after use. WAL mode makes repeated open/close fast
@@ -617,9 +639,11 @@ class MemoryStore:
     def _snapshot_to_versions(
         self, name: str, version_note: str = "", *, _conn: sqlite3.Connection
     ):
-        """Snapshot current memory state into memory_versions before upsert.
+        """Snapshot the ACTIVE row's current state into memory_versions before an upsert.
 
-        Requires a connection (caller always provides one from write()).
+        v2.3.11: scoped to the active incarnation (``deleted_at IS NULL`` — a tombstoned namesake
+        is never snapshotted), keyed by ``memory_id``, pruned per incarnation by ``version_id``
+        (total order; ``created_at`` ties at one-second resolution). Requires a connection.
         """
         import sqlite3
 
@@ -627,8 +651,8 @@ class MemoryStore:
 
         try:
             cur = conn.execute(
-                "SELECT title, description, type, body, tags, origin_session_ids, origin_clients "
-                "FROM memories WHERE name = ?",
+                "SELECT title, description, type, body, tags, origin_session_ids, origin_clients, "
+                f"id FROM memories WHERE name = ? AND {_ACTIVE}",
                 (name,),
             )
             row = cur.fetchone()
@@ -642,25 +666,51 @@ class MemoryStore:
             """
             INSERT INTO memory_versions
                 (memory_name, title, description, type, body, tags,
-                 origin_session_ids, origin_clients, version_note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 origin_session_ids, origin_clients, version_note, memory_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (name, row[0], row[1], row[2], row[3], row[4], row[5], row[6], version_note),
+            (name, row[0], row[1], row[2], row[3], row[4], row[5], row[6], version_note, row[7]),
         )
 
-        # Prune oldest versions if over limit
+        # Prune the incarnation's oldest versions beyond the cap.
         conn.execute(
             """
             DELETE FROM memory_versions
             WHERE version_id IN (
                 SELECT version_id FROM memory_versions
-                WHERE memory_name = ?
-                ORDER BY created_at DESC
+                WHERE memory_id = ?
+                ORDER BY version_id DESC
                 LIMIT -1 OFFSET ?
             )
             """,
-            (name, MAX_VERSIONS_PER_MEMORY),
+            (row[7], MAX_VERSIONS_PER_MEMORY),
         )
+
+    @staticmethod
+    def _is_exact_stored_version(
+        conn: sqlite3.Connection,
+        existing_row: Any,
+        title: str,
+        description: str,
+        type_: str,
+        body: str,
+        tags_list: list[Any],
+    ) -> bool:
+        """True iff a memory_versions row of the active incarnation equals this content exactly
+        (tags compared as parsed lists)."""
+        if not existing_row:
+            return False
+        rows = conn.execute(
+            "SELECT title, description, type, tags FROM memory_versions "
+            "WHERE memory_id = ? AND body = ?",
+            (existing_row[0], body),
+        ).fetchall()
+        for r_title, r_desc, r_type, r_tags in rows:
+            if (r_title, r_desc, r_type) == (title, description, type_) and (
+                _coerce_tags(r_tags) == list(tags_list)
+            ):
+                return True
+        return False
 
     def _version_has_origin(self, version_id: int) -> bool:
         """Check if a version_id exists in memory_versions."""
@@ -760,9 +810,15 @@ class MemoryStore:
         provenance: Provenance = LEGACY,
         _skip_protection: bool = False,
         _conn: sqlite3.Connection | None = None,
+        _version_note: str = "updated",
+        _anatomy_bypass: str | None = None,
     ) -> WriteResult:
         """Create or update a memory entry (upsert by name). Returns a WriteResult — the
         chokepoint outcome. The public ``write()`` adapter formats the legacy message string.
+
+        ``_version_note`` labels the snapshot of the prior state. ``_anatomy_bypass`` is honoured
+        ONLY for ``provenance.op == "rollback"`` (board amendment, v2.3.11); ``rollback`` checks
+        the other conditions (dreamer, active incarnation, exact stored content).
 
         If name is omitted, auto-derive from title.
 
@@ -791,7 +847,7 @@ class MemoryStore:
 
             effective_type = self._ensure_type(type)
             effective_tier = self._ensure_tier(tier)
-            tags_list = tags or []
+            tags_list = _coerce_tags(tags)
             tags_json = self._format_tags(tags_list)
 
             # Phase 2 authorization pipeline: stage 1 validate provenance, stage 2 tier-target
@@ -832,11 +888,22 @@ class MemoryStore:
                 body, description, seam="store.write:sqlite", name=effective_name, log=logger
             )
             anatomy_mode = anatomy_enforce_mode(provenance.actor)
+            bypass_reason = _anatomy_bypass if provenance.op == "rollback" else None
+            anatomy_bypassed = False
             if not verdict["valid"]:
                 from mori_advisor.metrics import record_anatomy_decision
 
                 record_anatomy_decision(provenance.actor, verdict["reason"], anatomy_mode)
-                if anatomy_mode == "enforce":
+                if anatomy_mode == "enforce" and bypass_reason:
+                    anatomy_bypassed = True
+                    logger.warning(
+                        "ANATOMY-BYPASS name=%s actor=%s op=rollback reason=%s verdict=%s",
+                        effective_name,
+                        provenance.ledger_actor,
+                        bypass_reason,
+                        verdict["reason"],
+                    )
+                elif anatomy_mode == "enforce":
                     return self._downgrade_to_pending(
                         conn,
                         close_conn,
@@ -862,6 +929,19 @@ class MemoryStore:
                 existing_row = existing_cur.fetchone()
             except sqlite3.Error:
                 existing_row = None
+
+            # Board amendment, made unable-not-to-fire: an anatomy bypass stands only if the
+            # content equals a stored version of THIS (active) incarnation exactly.
+            if anatomy_bypassed and not self._is_exact_stored_version(
+                conn, existing_row, title, description, effective_type, body, tags_list
+            ):
+                return WriteResult(
+                    memory_name=effective_name,
+                    intended_tier=effective_tier,
+                    stored_tier="",
+                    disposition=Disposition.REJECTED,
+                    reason="anatomy bypass refused: content is not an exact stored version",
+                )
 
             # Step 6: the `_skip_protection` trapdoor is honoured ONLY in anatomy-audit mode;
             # under MORI_ANATOMY_ENFORCE the bypass closes so protection bites the dreamer too.
@@ -889,7 +969,7 @@ class MemoryStore:
                     )
 
             # Snapshot current state before upsert
-            self._snapshot_to_versions(effective_name, version_note="updated", _conn=conn)
+            self._snapshot_to_versions(effective_name, version_note=_version_note, _conn=conn)
 
             # Merge origin arrays for attribution
             if existing_row:
@@ -973,14 +1053,16 @@ class MemoryStore:
                 try:
                     conn.execute(
                         "INSERT INTO write_audit "
-                        "(actor_key_name, op, memory_name, content_hash, detail) "
-                        "VALUES (?, ?, ?, ?, ?)",
+                        "(actor_key_name, op, memory_name, content_hash, detail, reason_code) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
                         (
                             provenance.ledger_actor,
                             provenance.op,
                             effective_name,
                             content_hash(body),
-                            provenance.source,
+                            provenance.source
+                            + (f" | anatomy bypassed: {bypass_reason}" if anatomy_bypassed else ""),
+                            "anatomy_bypass_rollback" if anatomy_bypassed else None,
                         ),
                     )
                 except sqlite3.OperationalError as ae:
@@ -1083,7 +1165,12 @@ class MemoryStore:
         try:
             conn.row_factory = sqlite3.Row
             placeholders = ",".join("?" for _ in tiers)
-            clauses = [_ACTIVE, f"tier IN ({placeholders})"]
+            # R7 (v2.3.11): canon export never propagates superseded content.
+            clauses = [
+                _ACTIVE,
+                "(superseded_by IS NULL OR superseded_by = '')",
+                f"tier IN ({placeholders})",
+            ]
             params: list = list(tiers)
             if type_filter:
                 clauses.append("type = ?")
@@ -1375,11 +1462,12 @@ class MemoryStore:
         """Soft-delete a memory (sets deleted_at).  Use hard_delete() for permanent removal."""
         return self.soft_delete(name)
 
-    def soft_delete(self, name: str) -> str:
+    def soft_delete(self, name: str, *, actor: str = "system") -> str:
         """Soft-delete: set deleted_at = now on the active row with this name.
 
         The row remains in the database; restore_memory() reverses it.
         Does nothing if the name is already tombstoned or does not exist.
+        v2.3.11: audited in the same transaction.
         """
         import sqlite3
 
@@ -1390,20 +1478,23 @@ class MemoryStore:
                 f"WHERE name = ? AND {_ACTIVE}",
                 (name,),
             )
-            conn.commit()
             if cur.rowcount == 0:
+                conn.rollback()
                 return self._memory_not_found(name)
+            _audit_sqlite(conn, "soft_delete", actor, name)
+            conn.commit()
             return f"Memory '{name}' soft-deleted."
         except sqlite3.Error as e:
+            conn.rollback()
             return f"Database error: {e}"
         finally:
             conn.close()
 
-    def hard_delete(self, name: str) -> str:
+    def hard_delete(self, name: str, *, actor: str = "system") -> str:
         """Permanently remove a memory row (active or tombstoned) and its versions.
 
         memory_versions FK was dropped by migration 9 (partial indexes cannot be FK
-        targets). Versions are cleaned up here to prevent orphans.
+        targets). Versions are cleaned up here to prevent orphans. Audited in-transaction.
         """
         import sqlite3
 
@@ -1411,20 +1502,27 @@ class MemoryStore:
         try:
             conn.execute("DELETE FROM memory_versions WHERE memory_name = ?", (name,))
             cur = conn.execute("DELETE FROM memories WHERE name = ?", (name,))
-            conn.commit()
             if cur.rowcount == 0:
+                conn.rollback()
                 return self._memory_not_found(name)
+            _audit_sqlite(conn, "hard_delete", actor, name)
+            conn.commit()
             return f"Memory '{name}' permanently deleted."
         except sqlite3.Error as e:
+            conn.rollback()
             return f"Database error: {e}"
         finally:
             conn.close()
 
-    def restore_memory(self, name: str) -> tuple[str, str]:
+    def restore_memory(self, name: str, *, actor: str = "system") -> tuple[str, str]:
         """Restore a soft-deleted memory.
 
         If an active memory already holds ``name``, the restored row is renamed
         to ``{name}_restored_{ts}`` (no clobber of the superseding row).
+
+        v2.3.11, one transaction: undelete (or rename), re-point the incarnation's version history,
+        write the audit row. ``superseded_by`` is NOT cleared (that would be an unaudited
+        unsupersede); the message says so.
 
         Returns (final_name, message) so callers can audit with the real name.
         """
@@ -1433,44 +1531,51 @@ class MemoryStore:
 
         conn = self._get_conn()
         try:
-            # Find most-recently deleted row with this name.
             row = conn.execute(
-                "SELECT id FROM memories WHERE name = ? AND deleted_at IS NOT NULL "
+                "SELECT id, created_at, deleted_at, superseded_by FROM memories "
+                "WHERE name = ? AND deleted_at IS NOT NULL "
                 "ORDER BY deleted_at DESC LIMIT 1",
                 (name,),
             ).fetchone()
             if not row:
                 return name, f"Memory '{name}' not found or not deleted."
-
-            row_id = row[0]
-
-            # Check for active collision.
+            row_id, created_at, deleted_at, superseded_by = row
             collision = conn.execute(
                 f"SELECT 1 FROM memories WHERE name = ? AND {_ACTIVE}", (name,)
             ).fetchone()
-
+            final_name = name
             if collision:
                 ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
                 final_name = f"{name}_restored_{ts}"
-                try:
-                    conn.execute(
-                        "UPDATE memories SET name = ?, deleted_at = NULL, "
-                        "updated_at = datetime('now') WHERE id = ?",
-                        (final_name, row_id),
-                    )
-                    conn.commit()
-                except sqlite3.IntegrityError:
-                    return name, "Restore failed: name collision could not be resolved."
-                return final_name, f"Restored '{name}' as '{final_name}' (name taken)."
-            else:
+            try:
                 conn.execute(
-                    "UPDATE memories SET deleted_at = NULL, updated_at = datetime('now') "
-                    "WHERE id = ?",
-                    (row_id,),
+                    "UPDATE memories SET name = ?, deleted_at = NULL, "
+                    "updated_at = datetime('now') WHERE id = ?",
+                    (final_name, row_id),
                 )
-                conn.commit()
-                return name, f"Memory '{name}' restored."
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                return name, "Restore failed: name collision could not be resolved."
+            if final_name != name:
+                conn.execute(
+                    "UPDATE memory_versions SET memory_name = ? WHERE memory_id = ?",
+                    (final_name, row_id),
+                )
+                conn.execute(
+                    "UPDATE memory_versions SET memory_name = ?, memory_id = ? "
+                    "WHERE memory_id IS NULL AND memory_name = ? "
+                    "AND created_at BETWEEN ? AND ?",
+                    (final_name, row_id, name, created_at, deleted_at),
+                )
+            op = "restore_renamed" if final_name != name else "restore"
+            _audit_sqlite(conn, op, actor, final_name, detail=f"original={name}")
+            note = _superseded_note_sqlite(conn, superseded_by)
+            conn.commit()
+            if final_name != name:
+                return final_name, f"Restored '{name}' as '{final_name}' (name taken).{note}"
+            return name, f"Memory '{name}' restored.{note}"
         except sqlite3.Error as e:
+            conn.rollback()
             return name, f"Database error: {e}"
         finally:
             conn.close()
@@ -1608,7 +1713,7 @@ class MemoryStore:
                 SELECT version_id, version_note, created_at
                 FROM memory_versions
                 WHERE memory_name = ?
-                ORDER BY created_at DESC
+                ORDER BY version_id DESC
                 LIMIT ?
                 """,
                 (name, limit),
@@ -1655,61 +1760,86 @@ class MemoryStore:
         body_a, body_b = rows[0][1], rows[1][1]
         return _make_diff(body_a, body_b)
 
-    def rollback(self, name: str, version_id: int) -> str:
-        """Restore a memory to a previous version.
+    def rollback(
+        self,
+        name: str,
+        version_id: int,
+        *,
+        provenance: Provenance | None = None,
+        caller_is_dreamer: bool = False,
+    ) -> str:
+        """Restore a memory's content to a stored version — THROUGH the write chokepoint (v2.3.11).
 
-        Creates a new version entry (rollbacks are themselves versioned).
+        One connection, one transaction: read the version and the active row, check authority,
+        then ``_write`` the version's content, so snapshot, protection, anatomy, audit and
+        active-row scoping all apply. The content (incl. tags, stored as TEXT) is passed exactly as
+        stored; ``_write`` normalises tags once.
         """
         import sqlite3
 
+        prov = provenance or Provenance(actor="system", source="store:rollback", op="rollback")
         conn = self._get_conn()
         try:
-            cur = conn.execute(
-                """
-                SELECT title, description, type, body, tags, origin_session_ids, origin_clients
-                FROM memory_versions WHERE version_id = ? AND memory_name = ?
-                """,
+            version = conn.execute(
+                "SELECT title, description, type, body, tags, memory_id "
+                "FROM memory_versions WHERE version_id = ? AND memory_name = ?",
                 (version_id, name),
+            ).fetchone()
+            if not version:
+                return f"Version {version_id} not found for '{name}'."
+            active = conn.execute(
+                f"SELECT id, tier, superseded_by FROM memories WHERE name = ? AND {_ACTIVE}",
+                (name,),
+            ).fetchone()
+            if not active:
+                return f"Memory '{name}' is not active — restore it first, then roll back."
+            active_id, active_tier, superseded_by = active
+            if version[5] is not None and version[5] != active_id:
+                return (
+                    f"Version {version_id} belongs to an earlier incarnation of '{name}'; "
+                    "not rolled back."
+                )
+            # R6: canonical rollback needs the dreamer role, keyed off the row read here.
+            if active_tier == "canonical" and not caller_is_dreamer:
+                return (
+                    f"Memory '{name}' is canonical — rolling it back requires the dreamer role. "
+                    "Not rolled back."
+                )
+            # Content-only: canonical is kept by _write's don't-downgrade guard (see Postgres twin).
+            tier = "working" if active_tier == "canonical" else active_tier
+            bypass = None
+            if caller_is_dreamer and version[5] == active_id:
+                bypass = f"dreamer rollback to stored version {version_id}"
+            result = self._write(
+                name=name,
+                title=version[0],
+                description=version[1],
+                type=version[2],
+                tier=tier,
+                body=version[3],
+                tags=version[4],
+                provenance=prov,
+                _conn=conn,
+                _version_note=f"before rollback to v{version_id}",
+                _anatomy_bypass=bypass,
             )
-            version_row = cur.fetchone()
+            if result.disposition in (Disposition.ACCEPTED, Disposition.DOWNGRADED_TO_PENDING):
+                conn.commit()
+            else:
+                conn.rollback()
+            if result.disposition is not Disposition.ACCEPTED:
+                return (
+                    f"Memory '{name}' NOT rolled back — {result.disposition.value}: {result.reason}"
+                )
+            msg = f"Memory '{name}' rolled back to version {version_id}."
+            if superseded_by:
+                msg += f" Note: it is still superseded by '{superseded_by}'."
+            return msg
         except sqlite3.Error as e:
-            return f"Database error: {e}"
-        finally:
-            conn.close()
-
-        if not version_row:
-            return f"Version {version_id} not found for '{name}'."
-
-        # Snapshot current state before rollback
-        self._snapshot_to_versions(name, version_note=f"before rollback to v{version_id}")
-
-        conn2 = self._get_conn()
-        try:
-            conn2.execute(
-                """
-                UPDATE memories
-                SET title = ?, description = ?, type = ?, body = ?, tags = ?,
-                    origin_session_ids = ?, origin_clients = ?,
-                    updated_at = datetime('now')
-                WHERE name = ?
-                """,
-                (
-                    version_row[0],
-                    version_row[1],
-                    version_row[2],
-                    version_row[3],
-                    version_row[4],
-                    version_row[5],
-                    version_row[6],
-                    name,
-                ),
-            )
-            conn2.commit()
-            return f"Memory '{name}' rolled back to version {version_id}."
-        except sqlite3.Error as e:
+            conn.rollback()
             return f"Database error during rollback: {e}"
         finally:
-            conn2.close()
+            conn.close()
 
     # ── Attribution ────────────────────────────────────────────────────
 
@@ -2800,3 +2930,34 @@ class MemoryStore:
 
         parts.append(f"\nTotal: {len(rows)} orphan{'s' if len(rows) != 1 else ''} flagged")
         return "\n".join(parts)
+
+
+def _audit_sqlite(
+    conn: sqlite3.Connection, op: str, actor: str, name: str, *, detail: str = ""
+) -> None:
+    """write_audit row on the caller's connection, inside its transaction (v2.3.11). Not
+    swallowed: an error aborts the audited operation."""
+    conn.execute(
+        "INSERT INTO write_audit (actor_key_name, op, memory_name, content_hash, detail) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (actor, op, name, "", detail),
+    )
+
+
+def _superseded_note_sqlite(conn: sqlite3.Connection, superseded_by: str | None) -> str:
+    """' Note: it is still superseded by X (state); …' or '' (v2.3.11, F6)."""
+    if not superseded_by:
+        return ""
+    other = conn.execute(
+        f"SELECT superseded_by FROM memories WHERE name = ? AND {_ACTIVE}", (superseded_by,)
+    ).fetchone()
+    if other is None:
+        state = "which no longer exists"
+    elif other[0]:
+        state = "which is itself superseded"
+    else:
+        state = "active"
+    return (
+        f" Note: it is still superseded by '{superseded_by}' ({state}); "
+        "use memory_unsupersede to clear it."
+    )

@@ -24,6 +24,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.clustering import cluster_keys
@@ -40,7 +41,8 @@ from mori_advisor.parsers.exceptions import (
 from mori_advisor.parsers.text_parser import parse_directory as parse_text_directory
 from mori_advisor.prompt_loader import OUTPUT_REMINDER, load_prompt
 from mori_advisor.provenance import Provenance
-from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
+from mori_advisor.utils import ScanOutcome, parse_model_json_response, run_contradiction_scan
+from mori_advisor.write_result import Disposition
 
 logger = logging.getLogger(__name__)
 
@@ -275,8 +277,9 @@ class IngestionPipeline:
                 all_memories.extend(batch_memories)
 
                 # Write memories (unless dry run)
+                written_batch: list[dict[str, Any]] = []
                 if not dry_run and batch_memories:
-                    await self._write_memories(
+                    written_batch = await self._write_memories(
                         batch_memories,
                         tier,
                         all_tags,
@@ -295,9 +298,9 @@ class IngestionPipeline:
                     )
 
                 # Contradiction scan (unless dry run)
-                if not dry_run and batch_memories:
+                if not dry_run and written_batch:
                     try:
-                        await self._contradiction_scan(batch_memories)
+                        await self._contradiction_scan(written_batch)
                     except Exception as e:
                         logger.warning("Contradiction scan failed: %s", e)
 
@@ -515,8 +518,9 @@ class IngestionPipeline:
                 all_memories.extend(batch_memories)
 
                 # Write (unless dry run)
+                written_batch: list[dict[str, Any]] = []
                 if not dry_run and batch_memories:
-                    await self._write_memories(
+                    written_batch = await self._write_memories(
                         batch_memories,
                         tier,
                         tags,
@@ -536,9 +540,9 @@ class IngestionPipeline:
                     )
 
                 # Contradiction scan (unless dry run)
-                if not dry_run and batch_memories:
+                if not dry_run and written_batch:
                     try:
-                        await self._contradiction_scan(batch_memories)
+                        await self._contradiction_scan(written_batch)
                     except Exception as e:
                         logger.warning("Contradiction scan failed: %s", e)
 
@@ -805,8 +809,12 @@ class IngestionPipeline:
         tags: list[str],
         source_uri: str = "",
         focus_mode: str = "",
-    ) -> None:
-        """Write memory candidates to the store.
+    ) -> list[dict[str, Any]]:
+        """Write memory candidates to the store; return the ones actually WRITTEN (ACCEPTED).
+
+        Only the returned list may be contradiction-scanned (v2.3.11, B-C2): a low-confidence
+        skip, a curated canonical candidate routed to TD review, or a downgraded write is NOT in
+        canon and must not be able to supersede it.
 
         Routing predicate (Deliverable 3 — #15):
           - tier == "working"              → direct write (unchanged, low-stakes, high-volume)
@@ -819,6 +827,7 @@ class IngestionPipeline:
         import os
 
         curate = os.environ.get("MORI_CURATE", "true").lower() != "false"
+        written: list[dict[str, Any]] = []
 
         for mem in memories:
             if not isinstance(mem, dict):
@@ -869,9 +878,9 @@ class IngestionPipeline:
                     confidence or 0.0,
                 )
             else:
-                # working tier (or curate=false): direct write as before.
-                await _a(
-                    self.memory_store.write(
+                # working tier (or curate=false): direct write through the chokepoint.
+                result = await _a(
+                    self.memory_store._write(
                         name=name,
                         title=mem.get("title", name),
                         description=mem.get("description", ""),
@@ -884,6 +893,16 @@ class IngestionPipeline:
                         ),
                     )
                 )
+                if result.disposition is Disposition.ACCEPTED:
+                    written.append({**mem, "name": name})
+                else:
+                    logger.warning(
+                        "ingestion: %s not written — %s: %s",
+                        name,
+                        result.disposition.value,
+                        result.reason,
+                    )
+        return written
 
     def _derive_name(self, mem: dict) -> str:
         title = mem.get("title", "")
@@ -976,7 +995,7 @@ class IngestionPipeline:
 
     # ── Contradiction scan ─────────────────────────────────────────────────
 
-    async def _contradiction_scan(self, new_memories: list[dict]) -> int:
+    async def _contradiction_scan(self, new_memories: list[dict[str, Any]]) -> ScanOutcome:
         def consult_fn(system, user, vk, max_tokens, temperature, reasoning_effort=None):
             return self.client.consult(
                 system=system,
