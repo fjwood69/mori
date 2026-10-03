@@ -27,6 +27,9 @@ from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_http_request
+from fastmcp.server.middleware import CallNext, MiddlewareContext
+from fastmcp.server.middleware import Middleware as FastMCPMiddleware
 from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
@@ -48,6 +51,7 @@ from mori_advisor.metrics import (
     pending_writes_gauge,
     record_brief_injection,
 )
+from mori_advisor.names import invalid_name_reason, normalise_name
 from mori_advisor.policy import PermissionDenied, current_actor, require_role
 from mori_advisor.provenance import INIT, Provenance, request_provenance
 from mori_advisor.store import get_store as _get_store
@@ -622,6 +626,31 @@ async def _lifespan(server):
 
 
 mcp = FastMCP(MCP_SERVER_NAME, lifespan=_lifespan)
+
+
+class _RequestActorMiddleware(FastMCPMiddleware):
+    """v2.3.12 (board R2): the actor of EVERY MCP message is the one the HTTP middleware resolved
+    for THAT request. Tools run in the session's long-lived task, whose context was copied at
+    ``initialize`` — without this they would see the opener's actor for the session's lifetime,
+    whatever the current request carried. No HTTP request (stdio) → left as is."""
+
+    async def on_message(
+        self, context: MiddlewareContext[Any], call_next: CallNext[Any, Any]
+    ) -> Any:
+        try:
+            actor = getattr(get_http_request().state, "actor", None)
+        except RuntimeError:
+            actor = None
+        if actor is None:
+            return await call_next(context)
+        token = current_actor.set(actor)
+        try:
+            return await call_next(context)
+        finally:
+            current_actor.reset(token)
+
+
+mcp.add_middleware(_RequestActorMiddleware())
 bifrost = BifrostClient(base_url=BIFROST_BASE_URL, timeout=BIFROST_TIMEOUT)
 session_log = _backend._log if hasattr(_backend, "_log") else _backend
 memory_store = _backend._mem if hasattr(_backend, "_mem") else _backend
@@ -1384,6 +1413,10 @@ async def consult_advisor(
     Returns:
         JSON: {"job_id": "...", "status": "pending"}
     """
+    try:
+        require_role("write")  # v2.3.12: role on every state-changing tool
+    except PermissionDenied as exc:
+        return str(exc)
     if files is None:
         files = []
 
@@ -1498,7 +1531,7 @@ async def import_standards(standards_dir: str | None = None) -> str:
 
         # Derive kebab name from relative path
         rel = file_path.relative_to(src_path)
-        name = str(rel.with_suffix("")).replace("/", "-").replace("_", "-")
+        name = normalise_name(str(rel.with_suffix("")).replace("/", "-").replace("_", "-"))
 
         # Tag: always "standard" + parent directory name
         category = rel.parent.name if rel.parent.name != "." else "general"
@@ -1539,6 +1572,10 @@ async def standards_reload() -> str:
     Only trusted dreamers can call this. After reload, call
     memory_list with type_filter=standard to see what's available.
     """
+    try:
+        require_role("dreamer")  # v2.3.12: role on every state-changing tool
+    except PermissionDenied as exc:
+        return str(exc)
     return await import_standards()
 
 
@@ -1550,6 +1587,10 @@ async def key_generate(name: str) -> str:
     and the secret stored on the client side (e.g. in ~/.claude/.secrets).
     The server must be restarted to pick up new keys.
     """
+    try:
+        require_role("dreamer")  # v2.3.12: role on every state-changing tool
+    except PermissionDenied as exc:
+        return str(exc)
     secret = generate_key()
     return f"Add to server MORI_API_KEYS: {name}:{secret}"
 
@@ -1836,6 +1877,10 @@ async def nats_pub(message: str, subject: str = "") -> str:
         subject: NATS subject (e.g. cc.<hostname>). Auto-derived if empty.
     """
     try:
+        require_role("write")  # v2.3.12: role on every state-changing tool
+    except PermissionDenied as exc:
+        return str(exc)
+    try:
         import json
         import socket
 
@@ -2000,6 +2045,10 @@ async def msg_send(
         reply_to: UUID of the message being replied to (for reply/ack/done types).
     """
     try:
+        require_role("write")  # v2.3.12: role on every state-changing tool
+    except PermissionDenied as exc:
+        return str(exc)
+    try:
         from .msg import MsgType, build_message, publish_message
 
         valid_types: list[MsgType] = [
@@ -2146,6 +2195,10 @@ async def mori_ingest(
         max_cost: Abort if estimated cost exceeds this threshold in USD.
         force: Re-ingest even if previously ingested.
     """
+    try:
+        require_role("write")  # v2.3.12: role on every state-changing tool
+    except PermissionDenied as exc:
+        return str(exc)
     parsed_tags = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
     if tier not in ("working", "canonical", "ephemeral"):
@@ -2240,6 +2293,10 @@ async def dream_run(dry_run: bool = False) -> str:
     Args:
         dry_run: Preview what would be produced without writing anything.
     """
+    try:
+        require_role("write")  # v2.3.12: role on every state-changing tool
+    except PermissionDenied as exc:
+        return str(exc)
     try:
         memories = await dream_pipeline.run(dry_run=dry_run)
         if dry_run:
@@ -2525,14 +2582,20 @@ async def export_canon(
 
 
 @mcp.tool()
-async def memory_export(name: str, output_path: str | None = None) -> str:
-    """Export a memory entry to a markdown file with YAML frontmatter.
+async def memory_export(name: str) -> str:
+    """Return a memory as markdown with YAML frontmatter (write the file client-side if needed).
+
+    v2.3.12: the server no longer writes a file — the former ``output_path`` argument let any
+    caller write anywhere the server process could.
 
     Args:
         name: The unique kebab-case name of the memory to export.
-        output_path: Absolute path for the output file (optional).
     """
-    return await _a(memory_store.export(name, output_path=output_path))
+    try:
+        require_role("read")
+    except PermissionDenied as exc:
+        return str(exc)
+    return await _a(memory_store.export(name))
 
 
 # ── Versioning tools ─────────────────────────────────────────────────────
@@ -2754,29 +2817,44 @@ async def memory_session_summary(session_id: str) -> str:
 
 
 @mcp.tool()
-async def memory_export_all(output_dir: str | None = None) -> str:
-    """Export all memories to CC auto-memory .md files with YAML frontmatter.
+async def memory_export_all() -> str:
+    """Export every active memory to .md files (YAML frontmatter) in the server's fixed
+    ``DATA_DIR/exports/`` directory, plus a MEMORY.md index. Dreamer only.
 
-    Args:
-        output_dir: Absolute path to write .md files (default: /data/mori-advisor/exports/).
+    v2.3.12: the directory is fixed — the former ``output_dir`` argument let any caller write the
+    whole store into any directory the server process could reach.
     """
-    if output_dir is None:
-        output_dir = str(DATA_DIR / "exports")
-    return await _a(memory_store.export_all(output_dir))
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return str(exc)
+    return await _a(memory_store.export_all(str(DATA_DIR / "exports")))
 
 
 @mcp.tool()
-async def memory_import(source_dir: str) -> str:
-    """Import .md files with YAML frontmatter from a directory.
+async def memory_import() -> str:
+    """Import .md files (YAML frontmatter) from the server's fixed ``DATA_DIR/imports/``
+    directory. Dreamer only; each write is attributed to the caller and judged by the normal
+    tier pipeline (the frontmatter ``tier`` is a request, not an authority).
 
-    Args:
-        source_dir: Absolute path to directory containing .md files.
+    v2.3.12: the former ``source_dir`` argument read any server directory.
     """
     try:
-        require_role("write")
+        require_role("dreamer")
     except PermissionDenied as exc:
         return str(exc)
-    return await _a(memory_store.import_memories(source_dir))
+    actor = current_actor.get()
+    imports_dir = DATA_DIR / "imports"
+    if not imports_dir.is_dir():
+        return f"Nothing to import: {imports_dir} does not exist."
+    return await _a(
+        memory_store.import_memories(
+            str(imports_dir),
+            provenance=request_provenance(
+                "mcp", actor.key_name if actor else "mcp", "main.py:memory_import", op="import"
+            ),
+        )
+    )
 
 
 # ── Trusted Dreamer tools ────────────────────────────────────────────────
@@ -2847,18 +2925,32 @@ async def memory_reject(write_id: int, note: str = "", reviewer: str = "", reaso
 
 
 @mcp.tool()
-async def memory_protect(name: str, domains: list[str] | None = None) -> str:
-    """Toggle protection on a memory. Trusted dreamers only.
+async def memory_protect(
+    name: str, domains: list[str] | None = None, protected: bool = True
+) -> str:
+    """SET protection on a memory (idempotent; audited). Trusted dreamers only.
+
+    v2.3.12: sets rather than toggles — a repeated call no longer flips the flag back.
+    ``protected=false`` unprotects (and clears the domains).
 
     Args:
         name: The kebab-case name of the memory to protect/unprotect.
-        domains: Tag prefixes that trigger auto-protection.
+        domains: Protected domains to record; ``[]`` clears them, omitted keeps them.
+        protected: True to protect (default), False to unprotect.
     """
     try:
         require_role("dreamer")
     except PermissionDenied as exc:
         return str(exc)
-    return await _a(memory_store.protect(name, domains=domains))
+    actor = current_actor.get()
+    return await _a(
+        memory_store.protect(
+            name,
+            domains=domains,
+            protected=protected,
+            actor=actor.key_name if actor else "mcp",
+        )
+    )
 
 
 # ── Event log API (HTTP, not MCP) ────────────────────────────────────────
@@ -3184,6 +3276,10 @@ async def get_events(request: Request) -> JSONResponse:
 async def log_event(request: Request) -> JSONResponse:
     """Receive a lifecycle event from a hook and persist it."""
     try:
+        require_role("write")  # v2.3.12 route audit: no state change without a role
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+    try:
         raw = await request.body()
         body = json.loads(raw.decode("utf-8", errors="replace"))
         if not body:
@@ -3257,6 +3353,10 @@ async def _nats_publish_git_push(payload: dict) -> None:
 @mcp.custom_route("/api/events/raw", methods=["POST"])
 async def log_event_raw(request: Request) -> JSONResponse:
     """Accept raw CC hook stdin JSON and map to structured event."""
+    try:
+        require_role("write")  # v2.3.12 route audit: no state change without a role
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
     try:
         raw = await request.body()
         body = json.loads(raw.decode("utf-8", errors="replace"))
@@ -3464,6 +3564,10 @@ async def precompact(request: Request) -> JSONResponse:  # noqa: C901
     PreCompact fires once per long session so blocking briefly is acceptable.
     """
     try:
+        require_role("write")  # v2.3.12 route audit: no state change without a role
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+    try:
         body = await request.json()
         if not body:
             return JSONResponse({"status": "skipped", "reason": "empty body"}, status_code=200)
@@ -3521,6 +3625,10 @@ async def precompact(request: Request) -> JSONResponse:  # noqa: C901
 async def dream_trigger(request: Request) -> JSONResponse:
     """Cron-triggerable dream run."""
     try:
+        require_role("write")  # v2.3.12 route audit: no state change without a role
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+    try:
         result = await dream_pipeline.run()
         count = len(result) if result else 0
         logger.info("Cron dream: %s memories written", count)
@@ -3575,6 +3683,10 @@ async def ingest_git(request: Request) -> JSONResponse:
         status, ingested (int), skipped (int), watermark (str|null)
     """
     try:
+        require_role("write")  # v2.3.12 route audit: no state change without a role
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+    try:
         payload = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid JSON body"}, status_code=400)
@@ -3616,7 +3728,7 @@ async def ingest_git(request: Request) -> JSONResponse:
             mem_body += f"\n\n{commit_body}"
         mem_body += f"\n\nCommit {short_sha} by {author} at {timestamp}"
 
-        mem_name = f"commit-{repo}-{short_sha}"
+        mem_name = normalise_name(f"commit-{repo}-{short_sha}")  # v2.3.12 (D7)
         await _a(
             store.write(
                 name=mem_name,
@@ -3762,6 +3874,11 @@ def _validate_write_payload(payload: dict) -> tuple[str | None, int]:
             "(alphanumeric, hyphens, underscores; 1–128 chars)",
             400,
         )
+    # v2.3.12 (D7): the store's name rule as well (no leading '-'/'_'; fullmatch, so a trailing
+    # newline — which `$` above lets through — is refused here, not at the chokepoint).
+    name_problem = invalid_name_reason(name)
+    if name_problem:
+        return f"Field 'name': {name_problem}", 400
 
     body = payload.get("body", "")
     if isinstance(body, str) and len(body.encode("utf-8", errors="replace")) > _BODY_MAX_BYTES:
@@ -4464,7 +4581,9 @@ if __name__ == "__main__":
     from starlette.middleware import Middleware
     from starlette.middleware.cors import CORSMiddleware
 
-    from mori_advisor.middleware import ApiKeyMiddleware
+    from mori_advisor.middleware import ApiKeyMiddleware, install_access_log_redaction
+
+    install_access_log_redaction()  # v2.3.12 (D2): a key in a URL never reaches the access log
 
     # CORS must sit OUTSIDE the auth middleware: a browser dashboard sends an OPTIONS
     # preflight with the custom X-Api-Key header, which ApiKeyMiddleware would 401.

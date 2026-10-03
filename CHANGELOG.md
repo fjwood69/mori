@@ -1,5 +1,82 @@
 # Changelog
 
+## v2.3.12 — Security and correctness hardening
+
+> **Upgrade check for clients.** Send the API key in the `X-Api-Key` header only: a key in the
+> URL (`?api-key=` / `?api_key=`) is now refused with 400. Every request on an MCP session must
+> carry the key that opened the session. Claude Code, Cursor, Antigravity, Cline and opencode
+> configured with a header already do both.
+
+Measured before this release, in api mode: an MCP session opened with a **read** key, followed by
+a request with **no key at all**, wrote a file on the server through `memory_export`. A session id
+was a bearer credential that never expired and skipped the rate limiter. This release closes that
+and the related file-system and authority gaps found while auditing it.
+
+**Behaviour changes**
+
+- **Export never writes a server-side file for a single memory.** `memory_export(name)` returns the
+  content; the `output_path` argument is gone (passing it is an error, not a silent ignore).
+  `memory_export_all()` takes no directory: it writes to the server's fixed `<data dir>/exports/`
+  and needs the `dreamer` role. Exports contain active memories only — deleted ones are excluded.
+- **Import reads only `<data dir>/imports/`** and needs the `dreamer` role; the `source_dir`
+  argument is gone. Each imported write is attributed to the calling key (previously the generic
+  actor `import`), and a `tier:` in the frontmatter is judged by the tier rules like any other
+  write — with `MORI_TIER_ENFORCE=enforce` an import can no longer land canonical memories.
+- **API keys in the URL are refused** (400) on every path, including the open ones. The access log
+  redacts such values.
+- **MCP sessions are bound to the key that opened them.** Every request on a session must carry
+  that key (else 401); identity and role are decided per request; the rate limiter counts session
+  requests. Sessions expire after 12 hours idle or 7 days in total (`MORI_SESSION_IDLE_TTL_S`,
+  `MORI_SESSION_MAX_AGE_S`); an expired or unknown session gets 404 and the client re-initialises.
+  In open mode (no keys configured) sessions bind to `anonymous` and need no key.
+- **`memory_protect` sets rather than toggles.** `memory_protect(name)` protects,
+  `memory_protect(name, protected=false)` unprotects; a repeated call no longer flips the flag (a
+  change on SQLite). Unprotecting clears the protected domains; `domains=[]` clears them; omitting
+  `domains` keeps them. A name with no active memory is reported not found (Postgres previously
+  reported success). Both are audited (`op = protect` / `unprotect`) with the calling key.
+- **Rolling back a protected memory is refused on both backends**, with the steps to follow. In
+  v2.3.11 SQLite queued it instead. "Protected" means the flag **or** a tag matching
+  `protected_tag_prefixes` — on the live memory or on the version being restored. A tag-prefix
+  protection cannot be lifted with `memory_protect`; restore the content with a reviewed write.
+- **Postgres honours `protected_tag_prefixes` on ordinary writes**, as SQLite always has: a write
+  whose tags match one is queued for review instead of applied. In api mode only a `dreamer`-role
+  key bypasses this (and the same rule now applies on SQLite, where a key merely *named* like a
+  `trusted_clients` entry used to bypass it). Host mode keeps the `trusted_clients` list. The dream
+  pipeline and standards import are unaffected. Check your prefixes: a prefix such as `infra`
+  also matches `infrastructure`.
+- **Memory names are validated at the write chokepoint:** `^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$` and
+  no `..`. Anything else is refused and counted (`mori_write_rejections_total{reason}`). Names the
+  dream and ingestion derive from free text are normalised to this form; a name that was already
+  valid is unchanged.
+- **Roles on every state-changing surface.** `write`: `POST /api/events`, `/api/events/raw`,
+  `/api/precompact`, `/api/dream/run`, `/api/git/ingest`, and the `mori_ingest`, `dream_run`,
+  `consult_advisor`, `nats_pub` and `msg_send` tools. `dreamer`: `key_generate` and
+  `standards_reload`. `memory_export` is explicitly `read`.
+- **Consult calls are not retried by the OpenAI SDK** (`max_retries=0` for the advisor in both
+  provider modes). A retried consult re-sent a call its caller had already abandoned — one ran for
+  43 minutes over three attempts. Set `MORI_ADVISOR_MAX_RETRIES` to restore retries. Fast and dream
+  calls keep the SDK default.
+- **SQLite `approve` (#71, #76).** A pending write is marked approved only when the memory was
+  actually written, and an approved change to a protected memory is applied rather than queued
+  again — as on Postgres. Under `MORI_ANATOMY_ENFORCE=enforce` an incomplete pending write stays
+  pending and the message says so. An approved write now lands at the tier recorded on the pending
+  row. A second queued write for the same name updates the open pending row instead of failing.
+
+**Fixes**
+
+- The four Postgres variants of the soft-delete/restore tests never awaited the store, and CI's
+  Postgres job did not run that file (#70). Both fixed.
+- The dream's per-run write outcomes (accepted / rejected / downgraded / skipped / error) are
+  persisted and exported as `mori_dream_last_run_writes{result}`, so a rejected write from a
+  scheduled run is visible on `/metrics`.
+
+**Notes**
+
+- No database migration. `/metrics` carries no key names (tested).
+- New metrics: `mori_mcp_sessions`, `mori_session_rejections_total{reason}`,
+  `mori_url_key_rejections_total`, `mori_write_rejections_total{reason,actor}`,
+  `mori_dream_last_run_writes{result}`.
+
 ## v2.3.11 — Restore the recovery path; supersession is report-only by default
 
 > **SQLite users: the dream has written no memories since v2.3.0 (22 June 2026).** On the default

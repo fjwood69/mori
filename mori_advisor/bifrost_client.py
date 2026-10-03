@@ -16,7 +16,7 @@ import uuid
 from typing import Literal
 
 import httpx
-from openai import APITimeoutError, DefaultHttpxClient, OpenAI
+from openai import DEFAULT_MAX_RETRIES, APITimeoutError, DefaultHttpxClient, OpenAI
 
 from mori_advisor import metrics as _metrics
 
@@ -114,6 +114,18 @@ class BifrostClient:
         self.dream_model = os.environ.get("MORI_DREAM_MODEL", "moonshotai/kimi-k2.6")
         self.fast_model = os.environ.get("MORI_FAST_MODEL", "Novita/deepseek/deepseek-v4-flash")
 
+        # v2.3.12 (D5): the advisor (consult) client does not retry in the SDK. A consult call runs
+        # for many minutes; an SDK retry re-sent an abandoned call (one consult ran 2,606 s over 3
+        # attempts). Bifrost owns failover. Fast/dream keep the SDK default — Bifrost's providers
+        # have max_retries 0, so the SDK is their only defence against a transient connection error,
+        # and their calls are short. MORI_ADVISOR_MAX_RETRIES restores retries without a redeploy.
+        raw_retries = os.environ.get("MORI_ADVISOR_MAX_RETRIES", "0").strip()
+        if not raw_retries.isdigit():
+            raise ValueError(
+                f"MORI_ADVISOR_MAX_RETRIES must be a non-negative integer, got {raw_retries!r}"
+            )
+        self.advisor_max_retries = int(raw_retries)
+
         if self.mode == "direct" and not self.direct_api_key:
             logger.warning(
                 "MORI_PROVIDER_MODE=direct but MORI_API_KEY is not set. API calls will likely fail."
@@ -131,6 +143,8 @@ class BifrostClient:
             if call_id
             else None
         )
+        # Keyed on vk in BOTH provider modes; fast/dream keep the SDK's own default.
+        max_retries = self.advisor_max_retries if vk == "advisor" else DEFAULT_MAX_RETRIES
         if self.mode == "direct":
             model = self.direct_dream_model if vk == "dream" else self.direct_model
             return OpenAI(
@@ -138,6 +152,7 @@ class BifrostClient:
                 api_key=self.direct_api_key,
                 timeout=self.timeout,
                 http_client=http_client,
+                max_retries=max_retries,
             ), model
         else:
             key_map = {
@@ -157,6 +172,7 @@ class BifrostClient:
                 api_key=effective_key,
                 timeout=self.timeout,
                 http_client=http_client,
+                max_retries=max_retries,
             ), model
 
     def _send(self, vk: str, kwargs: dict, ref: str | None):

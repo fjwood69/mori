@@ -180,14 +180,14 @@ class SQLiteStore(BaseStore):
     def get_audit_log(self, memory_name: str = "", actor: str = "", limit: int = 100) -> list:
         return self._mem.get_audit_log(memory_name=memory_name, actor=actor, limit=limit)
 
-    def export(self, name: str, output_path=None) -> str:
-        return self._mem.export(name, output_path=output_path)
+    def export(self, name: str) -> str:
+        return self._mem.export(name)
 
     def export_all(self, output_dir: str) -> str:
         return self._mem.export_all(output_dir)
 
-    def import_memories(self, source_dir: str) -> str:
-        return self._mem.import_memories(source_dir)
+    def import_memories(self, source_dir: str, *, provenance: Provenance | None = None) -> str:
+        return self._mem.import_memories(source_dir, provenance=provenance)
 
     # ── Memory metadata ────────────────────────────────────────────────────
 
@@ -300,8 +300,10 @@ class SQLiteStore(BaseStore):
     ) -> None:
         return self._mem.set_pending_status(write_id, status, note=note, reviewer=reviewer)
 
-    def protect(self, name: str, domains=None) -> str:
-        return self._mem.protect(name, domains=domains)
+    def protect(
+        self, name: str, domains=None, *, protected: bool = True, actor: str = "system"
+    ) -> str:
+        return self._mem.protect(name, domains=domains, protected=protected, actor=actor)
 
     # ── Freshness and eviction ─────────────────────────────────────────────
 

@@ -389,6 +389,91 @@ def set_dream_last_supersessions(counts: dict[str, int]) -> None:
         logger.debug("set_dream_last_supersessions failed", exc_info=True)
 
 
+# v2.3.12 (D7): writes refused at a chokepoint before any state change. Labelled by actor CLASS
+# (mcp/rest/dreamer/…), never by key name — /metrics is an open path.
+WRITE_REJECTION_REASONS = ("invalid_name",)
+_write_rejections = Counter(
+    "mori_write_rejections_total",
+    "Writes refused at the store chokepoint before any state change (v2.3.12)",
+    ["reason", "actor"],
+    registry=prom_registry,
+)
+
+
+def record_write_rejection(reason: str, actor: str) -> None:
+    """Count one refused write. Fail-open."""
+    try:
+        _write_rejections.labels(reason=reason, actor=actor).inc()
+    except Exception:
+        logger.debug("record_write_rejection failed", exc_info=True)
+
+
+# v2.3.12 (D7 caution): the dream's per-run write outcomes, persisted in dream_state and exported
+# at scrape so a cron run's rejected writes are visible (same pattern as the supersessions).
+DREAM_WRITE_RESULTS = ("accepted", "rejected", "downgraded", "skipped", "error")
+_dream_last_writes = Gauge(
+    "mori_dream_last_run_writes",
+    "Write outcomes of the most recent dream run (from dream_state; covers cron runs)",
+    ["result"],
+    registry=prom_registry,
+)
+for _res in DREAM_WRITE_RESULTS:
+    _dream_last_writes.labels(result=_res)
+
+
+def set_dream_last_writes(counts: dict[str, int]) -> None:
+    """Export the last dream run's persisted write outcomes. Fail-open."""
+    try:
+        for res in DREAM_WRITE_RESULTS:
+            _dream_last_writes.labels(result=res).set(int(counts.get(res, 0)))
+    except Exception:
+        logger.debug("set_dream_last_writes failed", exc_info=True)
+
+
+# v2.3.12 (D4): MCP sessions are bound to the key that opened them, carry a TTL, and every request
+# on one must present that key. Reasons are pre-initialised so a zero is a reading, not an absence.
+SESSION_REJECTION_REASONS = ("no_key", "wrong_key", "expired")
+_mcp_sessions = Gauge(
+    "mori_mcp_sessions",
+    "Live authenticated MCP sessions held by this process",
+    registry=prom_registry,
+)
+_session_rejections = Counter(
+    "mori_session_rejections_total",
+    "MCP requests refused on a known session id (no key, another key, or expired)",
+    ["reason"],
+    registry=prom_registry,
+)
+for _res in SESSION_REJECTION_REASONS:
+    _session_rejections.labels(reason=_res)
+_url_key_rejections = Counter(
+    "mori_url_key_rejections_total",
+    "Requests refused for carrying an API key in the query string (v2.3.12, D2)",
+    registry=prom_registry,
+)
+
+
+def set_mcp_sessions(n: int) -> None:
+    try:
+        _mcp_sessions.set(n)
+    except Exception:
+        logger.debug("set_mcp_sessions failed", exc_info=True)
+
+
+def record_session_rejection(reason: str) -> None:
+    try:
+        _session_rejections.labels(reason=reason).inc()
+    except Exception:
+        logger.debug("record_session_rejection failed", exc_info=True)
+
+
+def record_url_key_rejection() -> None:
+    try:
+        _url_key_rejections.inc()
+    except Exception:
+        logger.debug("record_url_key_rejection failed", exc_info=True)
+
+
 # The time of the most recent repair, from dream_state — process-independent, so a repair in ANY
 # process (server, ingestion, cron dream) and a second repair on a later boot are both visible.
 # 0 = never repaired. Alert: time() - this < 3600.
@@ -640,6 +725,9 @@ async def collect_metrics(store, nats_url: Optional[str] = None) -> bytes:
             sup = await _a(store.get_dream_state("last_run_supersessions"))
             if sup:
                 set_dream_last_supersessions(json.loads(sup))
+            writes = await _a(store.get_dream_state("last_run_writes"))
+            if writes:
+                set_dream_last_writes(json.loads(writes))
     except Exception:
         pass
 

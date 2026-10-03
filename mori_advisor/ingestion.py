@@ -29,6 +29,7 @@ from typing import Any
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.clustering import cluster_keys
 from mori_advisor.memory_store import MemoryStore
+from mori_advisor.names import normalise_name
 from mori_advisor.parsers import (
     CONTENT_SIZE_CEILING,
     Chunk,
@@ -833,7 +834,7 @@ class IngestionPipeline:
             if not isinstance(mem, dict):
                 continue
 
-            name = mem.get("name") or self._derive_name(mem)
+            name = normalise_name(mem["name"]) if mem.get("name") else self._derive_name(mem)
             confidence = mem.get("confidence", 1.0)
 
             if confidence < 0.5:
@@ -910,7 +911,8 @@ class IngestionPipeline:
             import time
 
             return f"ingested-memory-{int(time.time())}"
-        return title.lower().replace(" ", "-").replace("_", "-")
+        # v2.3.12 (D7): normalised to a valid memory name; an already-valid name is unchanged.
+        return normalise_name(title.lower().replace(" ", "-").replace("_", "-"))
 
     def _infer_type(self, name: str, mem: dict) -> str:
         tags = mem.get("tags", [])
