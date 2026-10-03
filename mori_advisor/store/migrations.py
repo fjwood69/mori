@@ -43,7 +43,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -603,7 +603,95 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ON memories USING GIN ((scope -> 'tags')) WHERE deleted_at IS NULL"
         ),
     ),
+    Migration(
+        id=16,
+        name="jsonb_array_columns",
+        # v2.3.10: repair the pre-v2.3.10 double-encoded JSONB values and add CHECK constraints so
+        # a non-array can never be stored again. Postgres only (the SQLite path stores TEXT as-is
+        # and never had the bug). Body in _jsonb_arrays_postgres — see its ordering comment.
+        postgres_fn=lambda conn: _jsonb_arrays_postgres(conn),
+    ),
 )
+
+
+# ── Migration 16 — JSONB array columns must hold arrays (v2.3.10) ─────────────────
+JSONB_ARRAY_COLUMNS = ("protected_domains", "tags", "origin_session_ids", "origin_clients")
+# Stored (compressed) size above which protected_domains is replaced WITHOUT being read. A list of
+# domain names is tens of bytes (prod max 13 B, 2026-10-03). The double-encoding bug's runaway shape
+# compresses ~700:1 (a ~1 GiB value stored as 1.5 MB), so this guard is deliberately small: every
+# value BELOW it is detoasted by steps (b) and (c). Applies to protected_domains ONLY — legitimate
+# origin_session_ids reach 7,204 B stored and must not be touched.
+PROTECTED_DOMAINS_OVERSIZE_BYTES = 4096
+
+_UNWRAP_JSONB_ARRAYS_SQL = """
+DO $$
+DECLARE c text; r record; v jsonb; n int; unwrapped int; blanked int;
+BEGIN
+  FOREACH c IN ARRAY ARRAY['protected_domains','tags','origin_session_ids','origin_clients'] LOOP
+    unwrapped := 0; blanked := 0;
+    FOR r IN EXECUTE format(
+        'SELECT id, %I AS val FROM memories WHERE jsonb_typeof(%I) <> ''array''', c, c) LOOP
+      v := r.val; n := 0;
+      BEGIN
+        WHILE jsonb_typeof(v) = 'string' AND n < 64 LOOP
+          v := (v #>> '{}')::jsonb; n := n + 1;
+        END LOOP;
+      EXCEPTION WHEN others THEN
+        v := NULL;
+      END;
+      IF v IS NULL OR jsonb_typeof(v) <> 'array' THEN
+        v := '[]'::jsonb; blanked := blanked + 1;
+      ELSE
+        unwrapped := unwrapped + 1;
+      END IF;
+      EXECUTE format('UPDATE memories SET %I = $1 WHERE id = $2', c) USING v, r.id;
+    END LOOP;
+    RAISE NOTICE 'migration 16: % - % unwrapped, % blanked', c, unwrapped, blanked;
+  END LOOP;
+END $$;
+"""
+
+
+async def _jsonb_arrays_postgres(conn: Any) -> None:
+    # ORDER IS LOAD-BEARING: (a) -> (b) -> (c). jsonb_typeof() in (b) and in (c)'s VALIDATE detoasts
+    # and decompresses every value it reads. A bloated protected_domains (2026-10-02: ~1 GiB
+    # decompressed) read by either step reproduces the incident inside the migration. (a) uses
+    # pg_column_size -- the stored size from the TOAST pointer -- and replaces the value unread.
+    # Do not reorder.
+    await conn.execute("SET LOCAL lock_timeout = '5s'")
+    # (a) Neutralise oversized protected_domains without reading it.
+    await conn.execute(
+        "UPDATE memories SET protected_domains = '[]'::jsonb "
+        f"WHERE pg_column_size(protected_domains) > {PROTECTED_DOMAINS_OVERSIZE_BYTES}"
+    )
+    # (b) Unwrap legacy JSON-string nesting in the four array columns; anything that does not end
+    #     as an array (object, scalar, unparseable inner text) becomes '[]'. Counts in NOTICEs.
+    await conn.execute(_UNWRAP_JSONB_ARRAYS_SQL)
+    # (c) The invariant: ONE ALTER adds every missing constraint NOT VALID, then each is VALIDATEd.
+    #     Idempotent: fresh installs already have them from _DDL. NOT VALID + VALIDATE gives NO lock
+    #     relief here: the runner wraps the whole migration in one transaction, so the ACCESS
+    #     EXCLUSIVE taken by ALTER TABLE is held until COMMIT, through all four VALIDATEs. It waits
+    #     on any open transaction on memories — lock_timeout (5s) makes that fail fast; deploy away
+    #     from the scheduled dream (whose contradiction scan holds a transaction across LLM calls).
+    #     NULL: CHECK passes NULL, which is moot — all four columns are NOT NULL DEFAULT '[]'.
+    existing = {
+        r["conname"]
+        for r in await conn.fetch(
+            "SELECT conname FROM pg_constraint WHERE conrelid = 'memories'::regclass"
+        )
+    }
+    names = [f"memories_{c}_is_array" for c in JSONB_ARRAY_COLUMNS]
+    missing = [(n, c) for n, c in zip(names, JSONB_ARRAY_COLUMNS) if n not in existing]
+    if missing:
+        await conn.execute(
+            "ALTER TABLE memories "
+            + ", ".join(
+                f"ADD CONSTRAINT {n} CHECK (jsonb_typeof({c}) = 'array') NOT VALID"
+                for n, c in missing
+            )
+        )
+    for n in names:
+        await conn.execute(f"ALTER TABLE memories VALIDATE CONSTRAINT {n}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

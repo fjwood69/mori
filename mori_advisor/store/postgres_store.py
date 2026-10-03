@@ -31,7 +31,7 @@ from mori_advisor.memory_store import (
     _freshness_cache_lock,
     _freshness_verdict,
 )
-from mori_advisor.metrics import record_classifier_verdict
+from mori_advisor.metrics import record_classifier_verdict, record_jsonb_unwrapped
 from mori_advisor.provenance import (
     LEGACY,
     Provenance,
@@ -66,6 +66,52 @@ def _ts(s: str | None) -> datetime | None:
         return dt
     except ValueError:
         return None
+
+
+# A JSONB array read back is a few hundred bytes at most (prod max 7,204 B stored, 2026-10-03).
+# Anything over this many decoded characters is the double-encoding bug's runaway shape, not data.
+_JSONB_DECODED_CAP = 1_000_000
+_JSONB_MAX_UNWRAP = 64
+
+
+def _jsonb_array(value: object, *, column: str, memory_name: str = "") -> list[Any]:
+    """Decode a JSONB array column value read back through asyncpg into a ``list``.
+
+    No asyncpg type codec is registered, so JSONB arrives as a ``str`` and ONE ``json.loads`` is
+    the normal decode. Before v2.3.10 the write path ``json.dumps``-ed that ``str`` again on every
+    UPDATE, nesting the array one JSON-string level deeper each time (2026-10-02: a ~1 GiB bind
+    parameter froze the host). Legacy nesting is unwrapped (up to ``_JSONB_MAX_UNWRAP`` levels),
+    logged and counted. After migration 16's CHECK constraints such a value cannot be stored, so
+    an unwrap event means the encoding bug is back.
+
+    Raises ``ValueError`` for anything that does not end as a list, or is larger than
+    ``_JSONB_DECODED_CAP`` characters — the caller turns that into ``Disposition.REJECTED``.
+    """
+    if value is None:
+        return []
+    depth = 0
+    while isinstance(value, str):
+        if len(value) > _JSONB_DECODED_CAP:
+            raise ValueError(f"{column} is {len(value):,} characters (cap {_JSONB_DECODED_CAP:,})")
+        if depth > _JSONB_MAX_UNWRAP:
+            raise ValueError(f"{column} is nested more than {_JSONB_MAX_UNWRAP} levels")
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError) as e:
+            raise ValueError(f"{column} is not valid JSON: {e}") from e
+        depth += 1
+    if not isinstance(value, list):
+        raise ValueError(f"{column} decoded to {type(value).__name__}, not a list")
+    if depth > 1:
+        logger.warning(
+            "JSONB-UNWRAP column=%s memory=%s depth=%d — legacy double-encoded value unwrapped; "
+            "after migration 16 this means the write-path encoding bug is back",
+            column,
+            memory_name,
+            depth - 1,
+        )
+        record_jsonb_unwrapped(column)
+    return value
 
 
 def _tags_json(tags) -> str:
@@ -143,7 +189,12 @@ CREATE TABLE IF NOT EXISTS memories (
     freshness_status    TEXT,
     freshness_checked_at TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- v2.3.10: JSONB array columns must hold arrays (migration 16 adds these to existing DBs).
+    CONSTRAINT memories_protected_domains_is_array CHECK (jsonb_typeof(protected_domains) = 'array'),
+    CONSTRAINT memories_tags_is_array CHECK (jsonb_typeof(tags) = 'array'),
+    CONSTRAINT memories_origin_session_ids_is_array CHECK (jsonb_typeof(origin_session_ids) = 'array'),
+    CONSTRAINT memories_origin_clients_is_array CHECK (jsonb_typeof(origin_clients) = 'array')
 );
 CREATE INDEX IF NOT EXISTS idx_memories_tier   ON memories (tier);
 CREATE INDEX IF NOT EXISTS idx_memories_type   ON memories (type);
@@ -496,27 +547,40 @@ class PostgresStore(BaseStore):
 
             # Compute merged origin arrays for upsert (mirrors SQLite's memory_store.py)
             if existing:
-                merged_ids = json.dumps(
-                    sorted(
-                        set(
-                            json.loads(sess_ids)
-                            + (json.loads(existing["origin_session_ids"] or "[]"))
-                        )
+                # Every JSONB value read back goes through ONE decoder (v2.3.10): asyncpg returns
+                # JSONB as str, and json.dumps(str) re-nests it on every UPDATE.
+                try:
+                    existing_ids = _jsonb_array(
+                        existing["origin_session_ids"],
+                        column="origin_session_ids",
+                        memory_name=name,
                     )
-                )
-                merged_clients = json.dumps(
-                    sorted(
-                        set(json.loads(clients) + (json.loads(existing["origin_clients"] or "[]")))
+                    existing_clients = _jsonb_array(
+                        existing["origin_clients"], column="origin_clients", memory_name=name
                     )
-                )
+                    existing_domains = _jsonb_array(
+                        existing.get("protected_domains"),
+                        column="protected_domains",
+                        memory_name=name,
+                    )
+                except ValueError as e:
+                    return WriteResult(
+                        memory_name=name,
+                        intended_tier=tier,
+                        stored_tier="",
+                        disposition=Disposition.REJECTED,
+                        reason=f"Memory '{name}' has a malformed stored value — {e}",
+                    )
+                merged_ids = json.dumps(sorted(set(json.loads(sess_ids) + existing_ids)))
+                merged_clients = json.dumps(sorted(set(json.loads(clients) + existing_clients)))
                 # Don't downgrade canonical tier
                 if existing.get("tier") == "canonical":
                     result_tier = "canonical"
                 else:
                     result_tier = tier
-                # Preserve existing protection flags and domains (JSONB → Python objects from asyncpg)
+                # Preserve existing protection flags and domains — decoded above, re-encoded ONCE.
                 protect = existing.get("protected", False)
-                protect_domains_raw = json.dumps(existing.get("protected_domains", []))
+                protect_domains_raw = json.dumps(existing_domains)
             else:
                 merged_ids = sess_ids
                 merged_clients = clients
@@ -1673,7 +1737,7 @@ class PostgresStore(BaseStore):
                         "bridge finalizer (GOV-002 re-check, then canon write with lineage)."
                     )
 
-                await self.write(
+                r = await self._write(
                     name=row["memory_name"],
                     title=row["title"],
                     description=row["description"],
@@ -1687,6 +1751,14 @@ class PostgresStore(BaseStore):
                     _skip_protection=True,
                     _conn=conn,
                 )
+                # Mark approved ONLY when canon actually took the write (v2.3.10). A REJECTED or
+                # downgraded write leaves the pending row pending, so queue state cannot diverge
+                # from canon. (_write returns REJECTED, e.g., for a malformed stored value.)
+                if r.disposition is not Disposition.ACCEPTED:
+                    return (
+                        f"Pending write {write_id} NOT approved — the canon write was "
+                        f"{r.disposition.value}: {r.reason}"
+                    )
                 await conn.execute(
                     "UPDATE pending_writes SET status='approved', review_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
                     write_id,
@@ -1878,23 +1950,51 @@ class PostgresStore(BaseStore):
         return results
 
     async def scan_orphans(self, days: int = 30, dry_run: bool = True) -> str:
+        """Find non-canonical memories retrieved before, but not in ``days`` days.
+
+        Strict parity with the SQLite twin (v2.3.10): the predicate is ``tier IS NULL OR tier !=
+        'canonical'`` (working AND ephemeral), ``last_retrieved_at IS NOT NULL`` (a never-retrieved
+        memory is NOT an orphan), unprotected, active. In non-dry-run mode each match is QUEUED in
+        ``eviction_queue`` (reason ``orphan``) for human review — never deleted. Before v2.3.10 this
+        method hard-deleted every unprotected working row not retrieved in ``days`` days, including
+        never-retrieved ones (3,321 of ~4.8k prod rows matched on 2026-10-03).
+        """
         self._ensure_pool()
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT name, title, last_retrieved_at FROM memories "
-                "WHERE tier = 'working' AND protected = FALSE AND deleted_at IS NULL "
-                "AND (last_retrieved_at IS NULL OR last_retrieved_at < $1)",
+                """
+                SELECT name, title, type, last_retrieved_at, retrieval_count
+                FROM memories
+                WHERE (tier IS NULL OR tier != 'canonical')
+                  AND last_retrieved_at IS NOT NULL
+                  AND last_retrieved_at < $1
+                  AND protected = FALSE
+                  AND deleted_at IS NULL
+                ORDER BY last_retrieved_at ASC
+                """,
                 cutoff,
             )
-        if not rows:
-            return f"No orphan memories older than {days} days."
-        names = [r["name"] for r in rows]
-        if not dry_run:
-            async with self.pool.acquire() as conn:
-                await conn.execute("DELETE FROM memories WHERE name = ANY($1)", names)
-            return f"Deleted {len(names)} orphan memories"
-        return f"Would delete {len(names)} orphan memories:\n" + "\n".join(f"- {n}" for n in names)
+            if not rows:
+                return f"# Orphan Scan ({days}d window)\n\nNo orphans found."
+
+            parts = [f"# Orphan Scan ({days}d window)\n\n## Flagged for review\n"]
+            for r in rows:
+                parts.append(
+                    f"- **{r['name']}**: {r['title']} ({r['type']}) — "
+                    f"last retrieved {r['last_retrieved_at']}, {r['retrieval_count']} retrievals"
+                )
+            if not dry_run:
+                async with conn.transaction():
+                    for r in rows:
+                        await conn.execute(
+                            "INSERT INTO eviction_queue (memory_name, reason, detail) "
+                            "VALUES ($1, 'orphan', $2)",
+                            r["name"],
+                            f"Not retrieved in {days} days. Last: {r['last_retrieved_at']}",
+                        )
+        parts.append(f"\nTotal: {len(rows)} orphan{'s' if len(rows) != 1 else ''} flagged")
+        return "\n".join(parts)
 
     # ── Internal helpers (transitional) ────────────────────────────────────
 
