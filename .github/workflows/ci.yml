@@ -81,6 +81,30 @@ jobs:
       - name: Ruff format check
         run: ruff format --check mori_advisor/
 
+  typecheck:
+    # Ratchet (issue #78): strict mypy errors may only go down from the committed baseline.
+    # Two real v2.3.11 bugs sat unread in this output. mypy is pinned: a new mypy release can
+    # change the count; requirements.txt is not yet pinned (DEP-001), which can too — if the
+    # count moves on a PR that touched no Python, that is the cause, not the PR.
+    name: Type ratchet (mypy --strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install mypy==2.4.0
+          pip install -r requirements.txt
+
+      - name: Strict mypy must not exceed the baseline
+        run: python scripts/mypy-ratchet.py
+
   plugin-validate:
     name: Plugin manifest validate
     runs-on: ubuntu-latest
