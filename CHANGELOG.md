@@ -1,5 +1,93 @@
 # Changelog
 
+## v2.3.11 — Restore the recovery path; supersession is report-only by default
+
+> **SQLite users: the dream has written no memories since v2.3.0 (22 June 2026).** On the default
+> SQLite backend every dream write failed on an argument the SQLite store did not accept, and each
+> failure was logged and skipped, so dreams ran but produced nothing. This release fixes it; your
+> next dream run writes again.
+
+Version history, rollback and undo were dead on the Postgres backend, and rollback was broken on
+both backends. A database whose rows were imported from SQLite could also be left with sequences
+behind the imported ids, which made every supersession write fail silently. This release restores
+the recovery path, repairs that class of sequence automatically, and makes supersession
+*propose* rather than *apply* by default until a reviewer has the tools to judge it.
+
+**Why report-only:** in one long-running deployment, three of the five supersession verdicts the
+scanner produced after its last working period named a "new" memory that had never been written —
+a candidate still waiting for human review. The scanner was mostly acting on memories that did not
+exist. This release fixes that (below) and makes supersession a reviewed decision by default.
+
+**Behaviour changes**
+
+- **Supersession is report-only by default.** A `SUPERSEDES` verdict from the contradiction scan
+  now queues an `eviction_queue` row (reason `supersession_proposed`) for review and does **not**
+  hide the older memory. Set `MORI_SUPERSESSION_MODE=write` to apply supersessions automatically;
+  any other value (including `true`, `yes`, `1`) means report-only. The effective mode is logged at
+  start-up and by each scheduled dream run.
+- **Rollback goes through the write path.** It now records a version snapshot of the state it
+  replaces, writes an audit row (`op = rollback`), and obeys protection, tier and anatomy rules.
+  Rollback restores content only: it never changes a memory's tier.
+  - Rolling back a **canonical** memory requires the `dreamer` role.
+  - Rolling back a **protected** memory differs by backend: Postgres rejects it with the steps to
+    follow (unprotect, roll back, re-protect — each audited); SQLite queues it as a pending write.
+  - With `MORI_ANATOMY_ENFORCE=enforce`, a rollback whose content fails the anatomy check is queued
+    for review, except when a `dreamer` restores an exact stored version of the active memory; that
+    bypass is audited (`reason_code = anatomy_bypass_rollback`).
+  - A version from an earlier incarnation of a reused name is refused where the version records
+    which incarnation it belongs to (`memory_id`, set for every version written from v2.3.11).
+    Older versions with no `memory_id` — those of a name that was deleted and re-created before
+    this release — are not checked and can still be rolled onto the live memory.
+- **A Postgres write is one transaction.** Version snapshot, upsert and audit row commit together;
+  if the audit row cannot be written, the write fails instead of succeeding unaudited.
+- **Deletes and restores are audited in the same transaction** as the change, on both backends.
+  The `memory_delete` MCP tool was previously unaudited.
+- **Canon export excludes superseded memories.**
+
+**Fixes**
+
+- Postgres now writes `memory_versions` on every update (it wrote none before), pruned to the
+  newest 20 per memory. `memory_history`, `memory_diff` and `memory_rollback` work again.
+- Rollback no longer crashes: a `KeyError` on Postgres and a `TypeError` on SQLite.
+- The contradiction scan only considers memories that were actually written. A candidate that was
+  skipped, downgraded, or routed to human review (ingestion of canonical candidates) can no longer
+  supersede existing memories.
+- On the SQLite backend the dream wrote no memories since v2.3.0 (a `provenance` argument the
+  SQLite store did not accept); it writes again.
+- `approve` under `MORI_ANATOMY_ENFORCE=enforce` could hang indefinitely on Postgres; it no longer
+  does.
+- A restore that renames the row (name already taken) now carries the row's version history with
+  it, and tells you if the restored memory is still superseded.
+- A failed supersession write is no longer counted as a classifier error.
+
+**New**
+
+- **Boot-time sequence repair (Postgres).** On every start, after migrations and under the
+  migration lock, any column-owned sequence whose next value is not above its column's maximum is
+  raised to it (never lowered), logged at WARNING and counted in `mori_sequence_repairs_total`.
+- **Review tools** (role `dreamer`, MCP and REST):
+  - `memory_unsupersede(name, note)` / `POST /api/memories/{name}/unsupersede` — clears the flag,
+    resolves the queue row, audits it. An undone pair can be proposed again but never applied
+    automatically.
+  - `memory_supersession_decide(queue_id, decision, note)` /
+    `POST /api/eviction/{queue_id}/decide` — apply or dismiss a proposal. A dismissed pair is
+    never re-classified.
+  - `memory_review` lists open proposals with their queue ids and counts pairs by state.
+- **Migration 17** (both backends): `memory_versions.memory_id` (versions keyed to the row; filled
+  for existing versions only where the name has a single incarnation — others stay name-keyed),
+  and `eviction_queue.counterpart` / `resolution` with a unique index on open supersession pairs.
+- **Metrics:** `mori_supersessions_total{mode,result}`,
+  `mori_dream_last_run_supersessions{result}` (persisted per run, so scheduled dreams in a
+  separate process are visible), `mori_sequence_repairs_total{table}`.
+
+**Upgrade notes**
+
+- Supersessions stop being applied automatically after upgrading. Review proposals with
+  `memory_review` and `memory_supersession_decide`, or set `MORI_SUPERSESSION_MODE=write`.
+- If you imported a SQLite database into Postgres, the first start may log `SEQUENCE-REPAIR`
+  warnings; that is the repair working. A repair on any later start means another out-of-band
+  import or restore has happened.
+
 ## v2.3.10 — Postgres write path: stop re-encoding JSONB; orphan scan never deletes
 
 A memory UPDATE on the Postgres backend JSON-encoded `protected_domains` as it came back from

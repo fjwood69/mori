@@ -13,6 +13,7 @@ import logging
 import os
 import sqlite3
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -133,39 +134,96 @@ RELATED = they discuss related topics but don't contradict each other.
 UNRELATED = they cover completely different topics."""
 
 
+# ── Supersession mode, pair keys and outcomes (v2.3.11) ─────────────────────
+
+SUPERSESSION_MODE_ENV = "MORI_SUPERSESSION_MODE"
+SUPERSEDED_DETAIL = "Superseded by '{}'"
+PROPOSED_DETAIL = "Proposed: superseded by '{}'"
+PAIR_REASONS = ("superseded", "supersession_proposed")
+
+
+def supersession_mode() -> str:
+    """``write`` iff ``$MORI_SUPERSESSION_MODE`` is exactly ``write`` (strip + lower); anything
+    else — unset, ``report_only``, ``yes``, ``1``, ``true`` — is ``report_only`` (board S1/S4:
+    fail closed on ambiguous config). Read per scan run."""
+    raw = os.environ.get(SUPERSESSION_MODE_ENV, "")
+    return "write" if raw.strip().lower() == "write" else "report_only"
+
+
+@dataclass
+class ScanOutcome:
+    """What one contradiction scan did. ``applied`` = superseded_by written; ``proposed`` = a
+    ``supersession_proposed`` queue row for review; ``failed`` = the write/insert failed;
+    ``already_decided`` = the pair was skipped (no classifier call) under the decided-pair rule."""
+
+    applied: int = 0
+    proposed: int = 0
+    failed: int = 0
+    already_decided: int = 0
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "applied": self.applied,
+            "proposed": self.proposed,
+            "failed": self.failed,
+            "already_decided": self.already_decided,
+        }
+
+
+def pair_state(rows: list[tuple[bool, str | None]]) -> str:
+    """Decided-pair rule (board R3/R4) over the pair's queue rows ``(resolved, resolution)``:
+    ``open`` (never decided) | ``decided`` (an open row, or one applied/dismissed — skip, no
+    classifier call) | ``propose_only`` (only undone pairs — a human undo means the pair may be
+    re-classified but can only ever yield a proposal, in either mode)."""
+    if not rows:
+        return "open"
+    if any((not resolved) or resolution != "unsuperseded" for resolved, resolution in rows):
+        return "decided"
+    return "propose_only"
+
+
+def _record(mode: str, outcome: ScanOutcome, result: str) -> None:
+    setattr(outcome, result, getattr(outcome, result) + 1)
+    _metrics.record_supersession(mode, result)
+
+
 async def run_contradiction_scan(
     new_memories: list[dict],
     db_path: str | Path | None = None,
     consult_fn=None,
     store=None,
-) -> int:
+) -> ScanOutcome:
     """Check new memories against existing canonical ones for contradictions.
 
-    For each new memory, searches for existing canonical memories with
-    overlapping name prefixes and runs a lightweight LLM check for
-    SUPERSEDES/RELATED/UNRELATED.
+    For each new memory, searches for existing canonical memories with overlapping name prefixes
+    and runs a lightweight LLM check for SUPERSEDES/RELATED/UNRELATED.
 
-    Fail-closed: only an exact ``SUPERSEDES`` (see :func:`parse_one_word_verdict`) writes; an
+    ``new_memories`` MUST be the memories actually WRITTEN (ACCEPTED) by the caller — never the
+    parsed candidate list (v2.3.11, B-C2: a candidate routed to TD review, or skipped, must not be
+    able to supersede canon).
+
+    v2.3.11 — mode and pairs:
+    * ``supersession_mode()`` decides what a ``SUPERSEDES`` verdict does. ``report_only`` (default)
+      inserts a ``supersession_proposed`` queue row and writes NO ``superseded_by``; ``write``
+      applies the supersession (UPDATE by id + a ``superseded`` queue row).
+    * Pairs are keyed by ``(memory_name, counterpart)`` (migration 17). A decided pair is skipped
+      BEFORE the classifier call; an undone (``unsuperseded``) pair can only produce a proposal.
+    * Outcomes are counted in ``mori_supersessions_total{mode,result}``. A failed write is NOT a
+      classifier error (the classifier answered) — M8.
+
+    Fail-closed: only an exact ``SUPERSEDES`` (see :func:`parse_one_word_verdict`) acts; an
     unparseable reply or an exception writes nothing and is logged at WARNING and counted.
     A memory is never compared with itself: its own active row(s) are excluded by primary key
     (``memories.name`` is unique only among non-deleted rows), and the supersession UPDATE is
     keyed by id so a soft-deleted namesake is never touched.
-
-    Args:
-        new_memories: List of memory dicts (must have 'name', 'title', 'body').
-        db_path: Path to the SQLite database (legacy; use store= instead).
-        consult_fn: Callable with signature
-                    (system, user, vk, max_tokens, temperature, reasoning_effort)
-                    that returns the model's text response.
-        store: BaseStore instance (SQLiteStore or PostgresStore).
-
-    Returns:
-        Count of supersessions detected.
     """
     from mori_advisor.store.postgres_store import PostgresStore
 
+    mode = supersession_mode()
+    outcome = ScanOutcome()
+    pair_reasons_sql = "('superseded', 'supersession_proposed')"
+
     if isinstance(store, PostgresStore):
-        superseded_count = 0
         async with store.begin_transaction() as conn:
             for mem in new_memories:
                 raw_name = mem.get("name") or mem.get("path", "")
@@ -208,30 +266,68 @@ async def run_contradiction_scan(
                     cand_name = cand["name"]
                     if cand_id in own_ids or not cand["body"]:
                         continue
+                    try:
+                        async with conn.transaction():
+                            pair_rows = await conn.fetch(
+                                "SELECT resolved, resolution FROM eviction_queue "
+                                "WHERE memory_name = $1 AND counterpart = $2 "
+                                f"AND reason IN {pair_reasons_sql}",
+                                cand_name,
+                                name,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "Contradiction scan: pair lookup failed %s vs %s: %s",
+                            name,
+                            cand_name,
+                            e,
+                        )
+                        _record(mode, outcome, "failed")
+                        continue
+                    state = pair_state([(r["resolved"], r["resolution"]) for r in pair_rows])
+                    if state == "decided":
+                        _record(mode, outcome, "already_decided")
+                        continue
                     verdict = await _classify_pair(
                         consult_fn, mem, name, cand_name, cand["title"], cand["body"]
                     )
                     if verdict != "SUPERSEDES":
                         continue
+                    apply = mode == "write" and state == "open"
+                    inserted = True
                     try:
-                        # Savepoint per supersession: the UPDATE and its eviction-queue row land
-                        # together or not at all, and a failure here does not abort the outer
-                        # transaction (which would silently roll back supersessions already
-                        # counted when it COMMITs).
+                        # Savepoint per pair: UPDATE + queue row land together or not at all, and a
+                        # failure here does not abort the outer transaction.
                         async with conn.transaction():
-                            await conn.execute(
-                                "UPDATE memories SET superseded_by = $1, updated_at = NOW() WHERE id = $2",
-                                name,
-                                cand_id,
-                            )
-                            await conn.execute(
-                                "INSERT INTO eviction_queue (memory_name, reason, detail) "
-                                "VALUES ($1, 'superseded', $2)",
-                                cand_name,
-                                f"Superseded by '{name}'",
-                            )
-                        superseded_count += 1
-                        logger.info("Superseded %s with %s (Postgres)", cand_name, name)
+                            if apply:
+                                await conn.execute(
+                                    "UPDATE memories SET superseded_by = $1, updated_at = NOW() WHERE id = $2",
+                                    name,
+                                    cand_id,
+                                )
+                                await conn.execute(
+                                    "INSERT INTO eviction_queue "
+                                    "(memory_name, reason, detail, counterpart) "
+                                    "VALUES ($1, 'superseded', $2, $3)",
+                                    cand_name,
+                                    SUPERSEDED_DETAIL.format(name),
+                                    name,
+                                )
+                            else:
+                                inserted = (
+                                    await conn.fetchval(
+                                        "INSERT INTO eviction_queue "
+                                        "(memory_name, reason, detail, counterpart) "
+                                        "VALUES ($1, 'supersession_proposed', $2, $3) "
+                                        "ON CONFLICT (memory_name, counterpart) "
+                                        f"WHERE reason IN {pair_reasons_sql} AND resolved = FALSE "
+                                        "DO NOTHING RETURNING id",
+                                        cand_name,
+                                        PROPOSED_DETAIL.format(name),
+                                        name,
+                                    )
+                                    is not None
+                                )
                     except Exception as e:
                         logger.warning(
                             "Contradiction scan: supersession write failed %s vs %s: %s",
@@ -239,8 +335,10 @@ async def run_contradiction_scan(
                             cand_name,
                             e,
                         )
-                        _metrics.record_classifier_verdict("contradiction", "error")
-        return superseded_count
+                        _record(mode, outcome, "failed")
+                    else:
+                        _after_verdict(mode, outcome, apply, inserted, name, cand_name)
+        return outcome
 
     # Fallback/SQLite path
     if store is not None:
@@ -252,7 +350,6 @@ async def run_contradiction_scan(
         write_conn = None
 
     own_conn = write_conn is None
-    superseded_count = 0
 
     try:
         if own_conn:
@@ -306,24 +403,51 @@ async def run_contradiction_scan(
             for cand_id, cand_name, cand_title, cand_body in candidates:
                 if cand_id in own_ids or not cand_body:
                     continue
+                try:
+                    pair_rows = write_conn.execute(
+                        "SELECT resolved, resolution FROM eviction_queue "
+                        "WHERE memory_name = ? AND counterpart = ? "
+                        f"AND reason IN {pair_reasons_sql}",
+                        (cand_name, name),
+                    ).fetchall()
+                except sqlite3.Error as e:
+                    logger.warning(
+                        "Contradiction scan: pair lookup failed %s vs %s: %s", name, cand_name, e
+                    )
+                    _record(mode, outcome, "failed")
+                    continue
+                state = pair_state([(bool(r[0]), r[1]) for r in pair_rows])
+                if state == "decided":
+                    _record(mode, outcome, "already_decided")
+                    continue
                 verdict = await _classify_pair(
                     consult_fn, mem, name, cand_name, cand_title, cand_body
                 )
                 if verdict != "SUPERSEDES":
                     continue
+                apply = mode == "write" and state == "open"
+                inserted = True
                 try:
-                    write_conn.execute(
-                        "UPDATE memories SET superseded_by = ?, updated_at = datetime('now') WHERE id = ?",
-                        (name, cand_id),
-                    )
-                    write_conn.execute(
-                        "INSERT INTO eviction_queue (memory_name, reason, detail) "
-                        "VALUES (?, 'superseded', ?)",
-                        (cand_name, f"Superseded by '{name}'"),
-                    )
+                    if apply:
+                        write_conn.execute(
+                            "UPDATE memories SET superseded_by = ?, updated_at = datetime('now') WHERE id = ?",
+                            (name, cand_id),
+                        )
+                        write_conn.execute(
+                            "INSERT INTO eviction_queue (memory_name, reason, detail, counterpart) "
+                            "VALUES (?, 'superseded', ?, ?)",
+                            (cand_name, SUPERSEDED_DETAIL.format(name), name),
+                        )
+                    else:
+                        # The partial unique index on open pairs makes a concurrent duplicate a no-op.
+                        cur = write_conn.execute(
+                            "INSERT OR IGNORE INTO eviction_queue "
+                            "(memory_name, reason, detail, counterpart) "
+                            "VALUES (?, 'supersession_proposed', ?, ?)",
+                            (cand_name, PROPOSED_DETAIL.format(name), name),
+                        )
+                        inserted = cur.rowcount == 1
                     write_conn.commit()
-                    superseded_count += 1
-                    logger.info("Superseded %s with %s", cand_name, name)
                 except Exception as e:
                     # Undo a half-applied pair (UPDATE done, INSERT failed); otherwise the next
                     # supersession's commit would land this UPDATE without its eviction-queue row.
@@ -337,12 +461,27 @@ async def run_contradiction_scan(
                         cand_name,
                         e,
                     )
-                    _metrics.record_classifier_verdict("contradiction", "error")
+                    _record(mode, outcome, "failed")
+                else:
+                    _after_verdict(mode, outcome, apply, inserted, name, cand_name)
     finally:
         if own_conn and write_conn:
             write_conn.close()
 
-    return superseded_count
+    return outcome
+
+
+def _after_verdict(
+    mode: str, outcome: ScanOutcome, apply: bool, inserted: bool, name: str, cand_name: str
+) -> None:
+    if apply:
+        _record(mode, outcome, "applied")
+        logger.info("Superseded %s with %s", cand_name, name)
+    elif inserted:
+        _record(mode, outcome, "proposed")
+        logger.info("SUPERSESSION-PROPOSED %s by %s (mode=%s)", cand_name, name, mode)
+    else:  # a concurrent run proposed this pair first
+        _record(mode, outcome, "already_decided")
 
 
 _SCAN_VERDICTS = ("SUPERSEDES", "RELATED", "UNRELATED")

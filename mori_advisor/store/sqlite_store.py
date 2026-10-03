@@ -15,6 +15,12 @@ import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
+
+from mori_advisor.memory_store import _audit_sqlite
+from mori_advisor.provenance import LEGACY, Provenance
+from mori_advisor.utils import SUPERSEDED_DETAIL
+from mori_advisor.write_result import WriteResult
 
 from .base import BaseStore
 
@@ -104,9 +110,13 @@ class SQLiteStore(BaseStore):
         origin_session_ids=None,
         origin_clients=None,
         client=None,
+        provenance: Provenance = LEGACY,
         _skip_protection=False,
         _conn=None,
     ) -> str:
+        # v2.3.11: `provenance` is passed through. Without it, the dream's
+        # write(provenance=DREAMER) raised TypeError on SQLite, per memory, since v2.3.0 —
+        # caught per entry, so the SQLite dream silently wrote nothing.
         return self._mem.write(
             name=name,
             title=title,
@@ -119,9 +129,15 @@ class SQLiteStore(BaseStore):
             origin_session_ids=origin_session_ids,
             origin_clients=origin_clients,
             client=client,
+            provenance=provenance,
             _skip_protection=_skip_protection,
             _conn=_conn,
         )
+
+    def _write(self, **kwargs: Any) -> WriteResult:
+        """The chokepoint itself, for callers that must reckon with the disposition (the dream
+        scans only ACCEPTED writes — v2.3.11, B-C2)."""
+        return self._mem._write(**kwargs)
 
     def read(self, name: str) -> str:
         return self._mem.read(name)
@@ -141,14 +157,14 @@ class SQLiteStore(BaseStore):
     def delete(self, name: str) -> str:
         return self._mem.delete(name)
 
-    def soft_delete(self, name: str) -> str:
-        return self._mem.soft_delete(name)
+    def soft_delete(self, name: str, *, actor: str = "system") -> str:
+        return self._mem.soft_delete(name, actor=actor)
 
-    def hard_delete(self, name: str) -> str:
-        return self._mem.hard_delete(name)
+    def hard_delete(self, name: str, *, actor: str = "system") -> str:
+        return self._mem.hard_delete(name, actor=actor)
 
-    def restore_memory(self, name: str) -> tuple:
-        return self._mem.restore_memory(name)
+    def restore_memory(self, name: str, *, actor: str = "system") -> tuple:
+        return self._mem.restore_memory(name, actor=actor)
 
     def insert_audit(
         self,
@@ -209,8 +225,17 @@ class SQLiteStore(BaseStore):
     def diff(self, name: str, from_version: int, to_version: int) -> str:
         return self._mem.diff(name, from_version, to_version)
 
-    def rollback(self, name: str, version_id: int) -> str:
-        return self._mem.rollback(name, version_id)
+    def rollback(
+        self,
+        name: str,
+        version_id: int,
+        *,
+        provenance: Provenance | None = None,
+        caller_is_dreamer: bool = False,
+    ) -> str:
+        return self._mem.rollback(
+            name, version_id, provenance=provenance, caller_is_dreamer=caller_is_dreamer
+        )
 
     # ── Counts / observability ─────────────────────────────────────────────
 
@@ -240,6 +265,7 @@ class SQLiteStore(BaseStore):
         confidence: float | None = None,
         focus_mode: str = "",
         tier: str = "",
+        _conn: object = None,  # Postgres-only (A-F-A2); SQLite reuses its connection already
     ) -> str:
         return self._mem.queue_pending_write(
             name=name,
@@ -640,6 +666,144 @@ class SQLiteStore(BaseStore):
                 {"name": r[0], "title": r[1], "superseded_by": r[2], "updated_at": r[3]}
                 for r in rows
             ]
+        finally:
+            conn.close()
+
+    # ── Supersession review (v2.3.11, D5) — SQLite twins of the Postgres methods ──────────
+    # BEGIN IMMEDIATE takes the write lock up front, so read-check-write is atomic (the SQLite
+    # equivalent of FOR UPDATE). Each writes its own audit row in the same transaction.
+
+    def unsupersede(self, name: str, *, note: str = "", actor: str = "system") -> str:
+        conn = self._mem._get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT id, superseded_by FROM memories WHERE name = ? AND deleted_at IS NULL",
+                (name,),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return f"Memory '{name}' not found."
+            row_id, prev = row
+            if not prev:
+                conn.rollback()
+                return f"Memory '{name}' is not superseded — nothing to do."
+            conn.execute(
+                "UPDATE memories SET superseded_by = NULL, updated_at = datetime('now') "
+                "WHERE id = ?",
+                (row_id,),
+            )
+            cur = conn.execute(
+                "UPDATE eviction_queue SET resolved = 1, resolved_at = datetime('now'), "
+                "resolution = 'unsuperseded', note = ? "
+                "WHERE memory_name = ? AND counterpart = ? AND reason = 'superseded' "
+                "AND resolved = 0",
+                (f"unsuperseded: {note}", name, prev),
+            )
+            if cur.rowcount == 0:
+                conn.execute(
+                    "INSERT INTO eviction_queue (memory_name, reason, detail, counterpart, "
+                    "resolved, resolved_at, resolution, note) "
+                    "VALUES (?, 'superseded', ?, ?, 1, datetime('now'), 'unsuperseded', ?)",
+                    (
+                        name,
+                        SUPERSEDED_DETAIL.format(prev),
+                        prev,
+                        f"unsuperseded (no open queue row): {note}",
+                    ),
+                )
+            _audit_sqlite(
+                conn, "unsupersede", actor, name, detail=f"was superseded by '{prev}'; {note}"
+            )
+            conn.commit()
+            return f"Memory '{name}' unsuperseded (was superseded by '{prev}')."
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def decide_supersession(
+        self, queue_id: int, decision: str, *, note: str = "", actor: str = "system"
+    ) -> str:
+        if decision not in ("apply", "dismiss"):
+            return f"Unknown decision '{decision}' — use 'apply' or 'dismiss'."
+        conn = self._mem._get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            q = conn.execute(
+                "SELECT memory_name, counterpart, reason, resolved FROM eviction_queue "
+                "WHERE id = ?",
+                (queue_id,),
+            ).fetchone()
+            if not q:
+                conn.rollback()
+                return f"Queue row {queue_id} not found."
+            cand_name, new_name, reason, resolved = q
+            if reason != "supersession_proposed":
+                conn.rollback()
+                return f"Queue row {queue_id} is a '{reason}' row, not a proposal."
+            if resolved:
+                conn.rollback()
+                return f"Queue row {queue_id} was already decided."
+            if decision == "apply":
+                cand = conn.execute(
+                    "SELECT id, superseded_by FROM memories WHERE name = ? AND deleted_at IS NULL",
+                    (cand_name,),
+                ).fetchone()
+                new = conn.execute(
+                    "SELECT superseded_by FROM memories WHERE name = ? AND deleted_at IS NULL",
+                    (new_name,),
+                ).fetchone()
+                if not cand or cand[1]:
+                    conn.rollback()
+                    return f"Not applied: '{cand_name}' is gone or already superseded."
+                if not new or new[0]:
+                    conn.rollback()
+                    return f"Not applied: '{new_name}' is gone or is itself superseded."
+                conn.execute(
+                    "UPDATE memories SET superseded_by = ?, updated_at = datetime('now') "
+                    "WHERE id = ?",
+                    (new_name, cand[0]),
+                )
+            conn.execute(
+                "UPDATE eviction_queue SET resolved = 1, resolved_at = datetime('now'), "
+                "resolution = ?, note = ? WHERE id = ? AND resolved = 0",
+                (
+                    "applied" if decision == "apply" else "dismissed",
+                    f"{decision}: {note}",
+                    queue_id,
+                ),
+            )
+            if decision == "apply":
+                conn.execute(
+                    "INSERT INTO eviction_queue (memory_name, reason, detail, counterpart) "
+                    "VALUES (?, 'superseded', ?, ?)",
+                    (cand_name, SUPERSEDED_DETAIL.format(new_name), new_name),
+                )
+            op = "supersede" if decision == "apply" else "supersession_dismiss"
+            _audit_sqlite(
+                conn, op, actor, cand_name, detail=f"by '{new_name}' (queue {queue_id}); {note}"
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        if decision == "apply":
+            return f"Applied: '{cand_name}' is now superseded by '{new_name}'."
+        return f"Dismissed: '{cand_name}' is not superseded by '{new_name}'."
+
+    def get_supersession_pair_summary(self) -> dict[str, int]:
+        conn = self._mem._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT COALESCE(resolution, CASE WHEN resolved THEN 'resolved' ELSE 'open' END), "
+                "reason, COUNT(*) FROM eviction_queue "
+                "WHERE reason IN ('superseded', 'supersession_proposed') GROUP BY 1, 2"
+            ).fetchall()
+            return {f"{r[1]}:{r[0]}": r[2] for r in rows}
         finally:
             conn.close()
 

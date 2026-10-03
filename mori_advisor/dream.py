@@ -19,11 +19,13 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from mori_advisor.bifrost_client import BifrostClient
 from mori_advisor.prompt_loader import OUTPUT_REMINDER, load_prompt
 from mori_advisor.provenance import DREAMER
-from mori_advisor.utils import parse_model_json_response, run_contradiction_scan
+from mori_advisor.utils import ScanOutcome, parse_model_json_response, run_contradiction_scan
+from mori_advisor.write_result import Disposition, WriteResult
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +218,9 @@ class DreamPipeline:
                 ("last_run_outcome", outcome),
                 ("last_run_written", str(written)),
                 ("last_run_finished_at", f"{time.time():.0f}"),
+                # v2.3.11 (B-C4): the per-run supersession outcome, so a cron run (a one-off
+                # process whose counters die on exit) still reaches /metrics.
+                ("last_run_supersessions", json.dumps(stats.get("supersessions", {}))),
             ):
                 await _a(self.store.set_dream_state(key, value))
         except Exception:
@@ -305,6 +310,7 @@ class DreamPipeline:
         async with _begin_txn(self.store) as txn_conn:
             written = 0
             errors = 0
+            written_mems: list[dict[str, Any]] = []  # ACCEPTED only — the scan's input (B-C2)
             for mem in memories:
                 if not isinstance(mem, dict) or "path" not in mem:
                     logger.warning("Skipping invalid memory entry: %s", mem)
@@ -324,7 +330,7 @@ class DreamPipeline:
                     if hasattr(txn_conn, "transaction"):
                         # asyncpg Connection (Postgres) supports nested transaction (savepoint)
                         async with txn_conn.transaction():
-                            await self._write_memory(
+                            result = await self._write_memory(
                                 mem,
                                 name,
                                 action,
@@ -334,7 +340,7 @@ class DreamPipeline:
                                 _conn=txn_conn,
                             )
                     else:
-                        await self._write_memory(
+                        result = await self._write_memory(
                             mem,
                             name,
                             action,
@@ -343,11 +349,22 @@ class DreamPipeline:
                             project=batch_project,
                             _conn=txn_conn,
                         )
-                    logger.info("  ✓ %s %s", action, name)
-                    written += 1
                 except Exception as e:
                     logger.error("  ✗ %s %s — %s", action, name, e)
                     errors += 1
+                    continue
+                if result.disposition is Disposition.ACCEPTED:
+                    logger.info("  ✓ %s %s", action, name)
+                    written += 1
+                    written_mems.append({**mem, "name": name})
+                else:
+                    logger.warning(
+                        "  ↷ %s %s not written — %s: %s",
+                        action,
+                        name,
+                        result.disposition.value,
+                        result.reason,
+                    )
 
             await self._set_watermark(
                 max_id, _conn=txn_conn
@@ -364,19 +381,26 @@ class DreamPipeline:
         # It calls the LLM (potentially slow) and must not hold the DB lock.
         # If it fails, memories exist without contradiction markers until
         # the next dream run — acceptable vs rolling back the entire batch.
-        superseded = 0
-        if written > 0:
+        outcome = ScanOutcome()
+        if written_mems:
             try:
-                superseded = await self._contradiction_scan(memories)
-                if superseded > 0:
-                    logger.info("Contradiction scan: %s existing memories superseded", superseded)
+                # Only the ACCEPTED writes (B-C2): a skipped or downgraded candidate must not be
+                # able to supersede canon.
+                outcome = await self._contradiction_scan(written_mems)
+                if outcome.applied or outcome.proposed:
+                    logger.info(
+                        "Contradiction scan: %s superseded, %s proposed for review",
+                        outcome.applied,
+                        outcome.proposed,
+                    )
             except Exception as e:
                 logger.warning("Contradiction scan failed: %s", e)
+        self._note(supersessions=outcome.as_dict())
 
         # NATS publish happens outside the transaction — fire-and-forget
-        if superseded > 0 and self.nats_url:
+        if (outcome.applied or outcome.proposed) and self.nats_url:
             try:
-                self._publish_eviction_notice(superseded)
+                self._publish_eviction_notice(outcome)
             except Exception as e:
                 logger.warning("NATS eviction notice failed: %s", e)
 
@@ -620,15 +644,17 @@ class DreamPipeline:
         batch_clients: list[str],
         project: str | None = None,
         _conn: sqlite3.Connection | None = None,
-    ) -> str:
+    ) -> WriteResult:
+        """Write one distilled memory through the chokepoint and return its WriteResult — the
+        caller counts (and scans) only ACCEPTED writes (v2.3.11, B-C2)."""
         path = mem.get("path", name)
         body = mem.get("body", "")
         tags = ["dream-phase", action.lower()]
         if project:
             tags.append(f"project:{project}")
 
-        await _a(
-            self.store.write(
+        result: WriteResult = await _a(
+            self.store._write(
                 name=name,
                 title=path.replace(".md", "").replace("/", " — "),
                 description=mem.get("reason", ""),
@@ -643,11 +669,11 @@ class DreamPipeline:
                 _conn=_conn,
             )
         )
-        return f"{action} {name}"
+        return result
 
     # ── NATS eviction notice ──────────────────────────────────────────
 
-    def _publish_eviction_notice(self, superseded_count: int) -> None:
+    def _publish_eviction_notice(self, outcome: ScanOutcome) -> None:
         """Publish a short NATS message about eviction events from this dream run.
 
         Fire-and-forget — errors are logged, never propagated.
@@ -657,9 +683,13 @@ class DreamPipeline:
         import nats
 
         hostname = socket.gethostname().split(".")[0]
+        parts = []
+        if outcome.applied:
+            parts.append(f"superseded {outcome.applied} memory(ies)")
+        if outcome.proposed:
+            parts.append(f"proposed {outcome.proposed} supersession(s) for review (report-only)")
         message = (
-            f"Dream pipeline superseded {superseded_count} memory(ies) on {hostname}. "
-            f"Run `/pensieve --eviction-queue` or `memory_review` to review."
+            f"Dream pipeline {' and '.join(parts)} on {hostname}. Run `memory_review` to review."
         )
         payload = json.dumps(
             {
@@ -685,7 +715,7 @@ class DreamPipeline:
 
     # ── Contradiction scan ────────────────────────────────────────────
 
-    async def _contradiction_scan(self, new_memories: list[dict]) -> int:
+    async def _contradiction_scan(self, new_memories: list[dict[str, Any]]) -> ScanOutcome:
         """Check new memories against existing canonical ones for contradictions.
 
         Delegates to the shared run_contradiction_scan utility.

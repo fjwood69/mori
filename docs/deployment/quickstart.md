@@ -164,6 +164,28 @@ To copy memories from an existing instance:
 
 No downtime — both instances serve during the cutover.
 
+### Moving from SQLite to Postgres: what each path carries
+
+**Supported: export and import (above).** Every memory is written through mori's write path, so
+it gets fresh ids, a provenance-tagged audit row and correct encoding. It carries memory
+**content and tier only**. Version history, the eviction/review queue, the audit log, session
+events and dream state stay behind and start empty on the new database.
+
+**Not supported: copying tables row by row with their ids** (for example a script or `pgloader`
+run against `memories.db`). If you do it anyway:
+
+1. **Sequences.** Copied ids do not advance Postgres sequences, so the next insert into that table
+   reuses an id and fails. From v2.3.11 mori raises every column-owned sequence above its column's
+   maximum on each start (logged as `SEQUENCE-REPAIR`, counted in `mori_sequence_repairs_total`) —
+   start mori once against the new database before using it. Before v2.3.11 this failed silently:
+   supersession writes rolled back on every attempt.
+2. **Version history.** Copied `memory_versions` rows have no `memory_id`; migration 17 fills it
+   only where the memory's name has a single incarnation. Others stay keyed by name.
+3. **JSON columns.** SQLite stores tags and origin arrays as text; they must arrive as JSON arrays
+   (`jsonb_typeof = 'array'`). Since v2.3.10 a CHECK constraint rejects anything else.
+4. **Run migrations by starting mori** against the target database; do not create the schema by
+   hand.
+
 ## Observability endpoints
 
 | Endpoint | Purpose | Response |

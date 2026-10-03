@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastmcp import FastMCP
 from pydantic import BaseModel
@@ -588,6 +589,14 @@ async def _lifespan(server):
     warning = throttle_safety_warning()
     if warning:
         logger.warning(warning)
+    from mori_advisor.utils import SUPERSESSION_MODE_ENV, supersession_mode
+
+    logger.info(
+        "Supersession mode: %s (%s=%r)",
+        supersession_mode(),
+        SUPERSESSION_MODE_ENV,
+        os.environ.get(SUPERSESSION_MODE_ENV),
+    )
     # Warn operators if MORI_CONSULT_FILE_ROOTS is unset — the cwd default is
     # permissive and should be narrowed to a dedicated read-only directory in
     # production.  See _build_consult_roots() for details.
@@ -622,7 +631,7 @@ memory_store = _backend._mem if hasattr(_backend, "_mem") else _backend
 idempotency_store = make_idempotency_store()
 
 
-async def _a(val):
+async def _a(val: Any) -> Any:
     """Await val if it's a coroutine, else return as-is."""
     import inspect
 
@@ -2474,7 +2483,9 @@ async def memory_delete(name: str) -> str:
         require_role("write")
     except PermissionDenied as exc:
         return str(exc)
-    return await _a(store.soft_delete(name))
+    actor = current_actor.get()
+    # v2.3.11: the store audits the delete in the same transaction (previously unaudited here).
+    return await _a(store.soft_delete(name, actor=actor.key_name if actor else "mcp"))
 
 
 @mcp.tool()
@@ -2562,10 +2573,71 @@ async def memory_rollback(name: str, version_id: int) -> str:
         require_role("write")
     except PermissionDenied as exc:
         return str(exc)
-    return await _a(memory_store.rollback(name, version_id))
+    # v2.3.11: rollback goes through the write chokepoint with the caller's provenance; whether
+    # the caller holds `dreamer` is passed down so the store can gate a CANONICAL row (board R6)
+    # on the tier it reads inside the rollback's own transaction.
+    from mori_advisor.policy import can_approve
+
+    actor = current_actor.get()
+    actor_name = actor.key_name if actor else "mcp"
+    return await _a(
+        memory_store.rollback(
+            name,
+            version_id,
+            provenance=request_provenance(
+                "mcp", actor_name, "main.py:memory_rollback", op="rollback"
+            ),
+            caller_is_dreamer=can_approve(actor),
+        )
+    )
 
 
 # ── Eviction tools ────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def memory_unsupersede(name: str, note: str = "") -> str:
+    """Undo a supersession: clear superseded_by on the active memory, resolve its queue row as
+    'unsuperseded' (that pair can only ever be PROPOSED again, never auto-applied), and audit it.
+    Requires the dreamer role.
+
+    Args:
+        name: The kebab-case name of the superseded memory.
+        note: Why (recorded in the queue row and the audit log).
+    """
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return str(exc)
+    actor = current_actor.get()
+    msg: str = await _a(
+        store.unsupersede(name, note=note, actor=actor.key_name if actor else "mcp")
+    )
+    return msg
+
+
+@mcp.tool()
+async def memory_supersession_decide(queue_id: int, decision: str, note: str = "") -> str:
+    """Apply or dismiss a supersession PROPOSAL (report-only mode queues them for review).
+    'apply' writes superseded_by (after re-checking both memories are active and not superseded);
+    'dismiss' closes the pair for good. Requires the dreamer role. Ids: memory_review.
+
+    Args:
+        queue_id: The proposal's eviction-queue id.
+        decision: 'apply' or 'dismiss'.
+        note: Why (recorded in the queue row and the audit log).
+    """
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return str(exc)
+    actor = current_actor.get()
+    msg: str = await _a(
+        store.decide_supersession(
+            queue_id, decision, note=note, actor=actor.key_name if actor else "mcp"
+        )
+    )
+    return msg
 
 
 @mcp.tool()
@@ -2620,6 +2692,33 @@ async def memory_review(
                 )
         else:
             parts.append("No superseded memories.")
+    except Exception as e:
+        parts.append(f"Error: {e}")
+
+    # 3b. Supersession proposals awaiting review + pair states (v2.3.11; R4: suppression visible)
+    parts.append("\n## Supersession Proposals (open)")
+    try:
+        proposals = [
+            r
+            for r in await _a(store.get_eviction_summary())
+            if r["reason"] == "supersession_proposed"
+        ]
+        if proposals:
+            for r in proposals:
+                parts.append(
+                    f"- [{r['id']}] **{r['memory_name']}**: {r['detail']} ({r['detected_at']}) — "
+                    "memory_supersession_decide(queue_id, 'apply'|'dismiss')"
+                )
+        else:
+            parts.append("No open proposals.")
+        pairs = await _a(store.get_supersession_pair_summary())
+        suppressed = pairs.get("supersession_proposed:dismissed", 0)
+        propose_only = pairs.get("superseded:unsuperseded", 0)
+        parts.append(
+            f"Pairs: {suppressed} dismissed (suppressed — never re-classified), "
+            f"{propose_only} undone (propose-only), "
+            f"{pairs.get('superseded:open', 0)} applied and open."
+        )
     except Exception as e:
         parts.append(f"Error: {e}")
 
@@ -4129,21 +4228,79 @@ async def delete_memory_rest(request: Request) -> JSONResponse:
     hard = request.query_params.get("hard", "").lower() in ("true", "1", "yes")
 
     try:
+        # v2.3.11: the store writes the audit row in the delete's own transaction.
         if hard:
-            result = await _a(store.hard_delete(mem_name))
-            op = "hard_delete"
+            result = await _a(store.hard_delete(mem_name, actor=actor_name))
         else:
-            result = await _a(store.soft_delete(mem_name))
-            op = "soft_delete"
+            result = await _a(store.soft_delete(mem_name, actor=actor_name))
 
         if "not found" in result.lower():
             return JSONResponse({"error": "not found", "name": mem_name}, status_code=404)
-        await _write_audit(op, actor_name, mem_name, "")
         status_word = "hard_deleted" if hard else "soft_deleted"
         return JSONResponse({"status": status_word, "name": mem_name, "detail": result})
     except Exception as e:
         logger.error("DELETE /api/memories/%s failed: %s", mem_name, e)
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/memories/{name}/unsupersede", methods=["POST"])
+async def unsupersede_memory_rest(request: Request) -> JSONResponse:
+    """Undo a supersession (v2.3.11). Body (optional): {"note": str}. Requires dreamer role."""
+    from mori_advisor.policy import PermissionDenied, current_actor, require_role
+
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+    actor = current_actor.get()
+    mem_name: str = request.path_params["name"]
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    note = (payload.get("note", "") if isinstance(payload, dict) else "") or ""
+    msg = await _a(
+        store.unsupersede(mem_name, note=note, actor=actor.key_name if actor else "rest")
+    )
+    if "not found" in msg:
+        return JSONResponse({"error": msg, "name": mem_name}, status_code=404)
+    status = "noop" if "nothing to do" in msg else "unsuperseded"
+    return JSONResponse({"status": status, "name": mem_name, "detail": msg})
+
+
+@mcp.custom_route("/api/eviction/{queue_id}/decide", methods=["POST"])
+async def decide_supersession_rest(request: Request) -> JSONResponse:
+    """Apply or dismiss a supersession proposal (v2.3.11).
+    Body: {"decision": "apply"|"dismiss", "note": str}. Requires dreamer role."""
+    from mori_advisor.policy import PermissionDenied, current_actor, require_role
+
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+    actor = current_actor.get()
+    try:
+        queue_id = int(request.path_params["queue_id"])
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "queue_id must be an integer"}, status_code=400)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict) or payload.get("decision") not in ("apply", "dismiss"):
+        return JSONResponse({"error": "decision must be 'apply' or 'dismiss'"}, status_code=400)
+    msg = await _a(
+        store.decide_supersession(
+            queue_id,
+            payload["decision"],
+            note=payload.get("note", "") or "",
+            actor=actor.key_name if actor else "rest",
+        )
+    )
+    if msg.startswith(("Applied", "Dismissed")):
+        return JSONResponse({"status": "decided", "queue_id": queue_id, "detail": msg})
+    code = 404 if "not found" in msg else 409
+    return JSONResponse({"error": msg, "queue_id": queue_id}, status_code=code)
 
 
 @mcp.custom_route("/api/memories/{name}/restore", methods=["POST"])
@@ -4165,13 +4322,12 @@ async def restore_memory_rest(request: Request) -> JSONResponse:
     mem_name: str = request.path_params["name"]
 
     try:
-        final_name, msg = await _a(store.restore_memory(mem_name))
+        # v2.3.11: the store audits the restore in the same transaction.
+        final_name, msg = await _a(store.restore_memory(mem_name, actor=actor_name))
         if "not found" in msg.lower() or "not deleted" in msg.lower():
             return JSONResponse({"error": msg, "name": mem_name}, status_code=404)
         if "failed" in msg.lower():
             return JSONResponse({"error": msg, "name": mem_name}, status_code=409)
-        op = "restore_renamed" if final_name != mem_name else "restore"
-        await _write_audit(op, actor_name, final_name, "", detail=f"original={mem_name}")
         return JSONResponse({"status": "restored", "name": final_name, "detail": msg})
     except Exception as e:
         logger.error("POST /api/memories/%s/restore failed: %s", mem_name, e)
