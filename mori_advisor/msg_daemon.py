@@ -13,6 +13,7 @@ Run:  python -m mori_advisor.msg_daemon
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -20,15 +21,15 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import nats
 from nats.errors import TimeoutError as JsTimeout
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 from nats.js.errors import NotFoundError
 
-from mori_advisor.provenance import Provenance
+from mori_advisor.names import normalise_name
 
-from .memory_store import MemoryStore
 from .msg import (
     STREAM_NAME,
     MoriMessage,
@@ -38,6 +39,8 @@ from .msg import (
     publish_message,
 )
 from .msg_store import MsgStore
+from .store import get_store
+from .store.base import BaseStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +58,7 @@ HEADLESS_TRUSTED = {
 
 HOSTNAME = socket.gethostname().split(".")[0]
 CONSUMER_NAME = f"mori-msg-{HOSTNAME}"
+MAX_PENDING_PER_SENDER = 20  # B1: review-queue flood guard
 
 # Subjects this daemon cares about
 FILTER_SUBJECTS = [
@@ -72,11 +76,78 @@ def _is_reply_subject(raw_subject: str) -> bool:
     return raw_subject.startswith("mori.reply.")
 
 
+async def _maybe_await(x: Any) -> Any:
+    return await x if inspect.isawaitable(x) else x
+
+
+async def _queue_decision_for_review(
+    m: MoriMessage, msg_store: MsgStore, memory_store: BaseStore
+) -> None:
+    """B1 (2026-11-01): a ``decision`` message is an agent's assertion, so it goes to HUMAN REVIEW
+    (pending_writes), never straight into memories.
+
+    * Named from the MESSAGE ID (``decision-msg-<id>``), never a slug of the title: a slug could collide with an
+      existing memory and, on approval, overwrite it (board requirement 1). An existing memory of that name refuses.
+    * ``proposed_by="msg:<host>"``, ``source="msg_daemon"``; the raw provenance (msg id, sender, recipient, ts) is
+      stored on the row for the reviewer (requirement 3). Approval keeps actor ``msg`` + host (requirement 2, in
+      the store's approve()).
+    * At most MAX_PENDING_PER_SENDER pending decisions per sender; beyond that the message is recorded
+      ``rejected-queue-full`` (review-queue flood guard).
+    * Tags ``decision-msg`` + ``from:<host>`` make it findable; with no project tag it is unrouted, so no brief
+      serves it until a reviewer adds a scope after approval.
+    """
+    sender = m.from_agent or "unknown"
+    proposer = f"msg:{sender}"
+    name = normalise_name(f"decision-msg-{m.id}")
+    if (
+        int(await _maybe_await(memory_store.pending_count_by_proposer(proposer)) or 0)
+        >= MAX_PENDING_PER_SENDER
+    ):
+        msg_store.upsert(m, status="rejected-queue-full")
+        logger.warning(
+            "Decision %s from %s refused: %d already pending",
+            m.id[:8],
+            sender,
+            MAX_PENDING_PER_SENDER,
+        )
+        return
+    if await _maybe_await(memory_store.get_scope_rows([name])):
+        msg_store.upsert(m, status="rejected-name-exists")
+        logger.warning(
+            "Decision %s from %s refused: a memory named %s already exists", m.id[:8], sender, name
+        )
+        return
+    provenance = {
+        "actor": "msg",
+        "actor_detail": sender,
+        "source": "msg_daemon",
+        "msg_id": m.id,
+        "to": m.to,
+        "ts": str(m.ts),
+    }
+    await _maybe_await(
+        memory_store.queue_pending_write(
+            name=name,
+            title=m.body[:80],
+            body=m.body,
+            type="project",
+            tier="working",
+            tags=["decision-msg", f"from:{sender}"],
+            origin_clients=[sender],
+            proposed_by=proposer,
+            source="msg_daemon",
+            provenance=json.dumps(provenance, sort_keys=True),
+        )
+    )
+    msg_store.upsert(m, status="queued-for-review")
+    logger.info("Decision %s from %s queued for review as %s", m.id[:8], sender, name)
+
+
 async def _dispatch(
     msg_data: dict,
     raw_subject: str,
     msg_store: MsgStore,
-    memory_store: MemoryStore,
+    memory_store: BaseStore,
 ) -> None:
     try:
         m = MoriMessage.model_validate({**msg_data, "from": msg_data.get("from", "")})
@@ -98,19 +169,7 @@ async def _dispatch(
         return
 
     if msg_type == "decision":
-        msg_store.upsert(m, status="ignored")
-        memory_store.write(
-            title=m.body[:80],
-            body=m.body,
-            type="project",
-            tier="working",
-            client=m.from_agent,
-            origin_clients=[m.from_agent],
-            provenance=Provenance(
-                actor="msg", actor_detail=m.from_agent, source="msg_daemon", op="write"
-            ),
-        )
-        logger.info("Decision from %s written to memory_store", m.from_agent)
+        await _queue_decision_for_review(m, msg_store, memory_store)
 
     elif msg_type == "task":
         msg_store.upsert(m, status="pending")
@@ -158,7 +217,7 @@ def _spawn_headless(task_body: str) -> None:
         logger.warning("Headless CC requested but 'claude' not found in PATH")
 
 
-async def _run_once(msg_store: MsgStore, memory_store: MemoryStore) -> None:
+async def _run_once(msg_store: MsgStore, memory_store: BaseStore) -> None:
     """Connect, consume, loop until disconnect."""
     nc = await nats.connect(NATS_URL)
     logger.info("Connected to NATS at %s", NATS_URL.split("@")[-1])
@@ -222,7 +281,10 @@ async def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     msg_store = MsgStore(db_path=DATA_DIR / "msg.db")
-    memory_store = MemoryStore(db_path=DATA_DIR / "memories.db")
+    # B1: the CONFIGURED backend (Postgres in production via MORI_DATABASE_URL), exactly as the server, so queued
+    # decisions land in the review queue reviewers actually read, not a stray SQLite file.
+    memory_store = get_store(DATA_DIR / "memories.db")
+    await _maybe_await(memory_store.bootstrap())
 
     backoff = 1.0
     while True:

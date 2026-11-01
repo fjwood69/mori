@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections.abc import Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -205,16 +206,16 @@ class SQLiteStore(BaseStore):
             project, include_global=include_global, strict_global=strict_global
         )
 
-    def get_memories_changed_since(
-        self,
-        since: str,
-        project: str | None = None,
-        include_global: bool = True,
-        limit: int = 30,
-    ) -> list[dict]:
-        return self._mem.get_memories_changed_since(
-            since, project=project, include_global=include_global, limit=limit
-        )
+    def get_memories_changed_window(
+        self, since: str, max_rows: int = 5000
+    ) -> Sequence[dict[str, Any]]:
+        return self._mem.get_memories_changed_window(since, max_rows=max_rows)
+
+    def get_scope_rows(self, names: Sequence[str]) -> dict[str, dict[str, Any]]:
+        return self._mem.get_scope_rows(names)
+
+    def pending_count_by_proposer(self, proposed_by: str, prefix: bool = False) -> int:
+        return self._mem.pending_count_by_proposer(proposed_by, prefix=prefix)
 
     def session_summary(self, session_id: str) -> str:
         return self._mem.session_summary(session_id)

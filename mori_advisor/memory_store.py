@@ -18,6 +18,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -234,6 +235,41 @@ def _coerce_tags(tags: object) -> list[Any]:
             return [tags]
         return parsed if isinstance(parsed, list) else [tags]
     return []
+
+
+def _msg_review_line(source: object, provenance: object) -> str:
+    """Extra review line for a decision queued by the msg daemon (B1 requirement 3): the message id and the RAW
+    provenance, so a reviewer can cross-check the sender-asserted origin. '' for every other row."""
+    if str(source or "").strip() != "msg_daemon":
+        return ""
+    raw = (
+        provenance if isinstance(provenance, str) else json.dumps(provenance or {}, sort_keys=True)
+    )
+    try:
+        msg_id = json.loads(raw or "{}").get("msg_id", "?")
+    except (ValueError, TypeError, AttributeError):
+        msg_id = "?"
+    return f"\n      msg id: {msg_id} | source: msg_daemon | provenance: {raw}"
+
+
+def _approval_provenance(rowd: dict[str, Any], reviewer: str) -> Provenance:
+    """Provenance for an approved pending write (B1, 2026-11-01; board requirement 2).
+
+    A decision message queued by the msg daemon keeps its ORIGIN on approval: actor ``msg`` and the sending host
+    (``proposed_by = "msg:<host>"``), so the audit ledger attributes the memory to the agent that asserted it. The
+    reviewer is recorded in the audit detail (and in pending_writes.reviewed_by). Every other approved write keeps
+    the governed-promotion provenance it always had.
+    """
+    who = reviewer or "trusted-dreamer"
+    proposed_by = str(rowd.get("proposed_by") or "")
+    if (rowd.get("source") or "").strip() == "msg_daemon" and proposed_by.startswith("msg:"):
+        return Provenance(
+            actor="msg",
+            actor_detail=proposed_by[len("msg:") :] or "msg",
+            source=f"msg_daemon | approved by {who}",
+            op="approve",
+        )
+    return Provenance(actor="governed-promotion", source="store:approve", op="approve")
 
 
 class MemoryStore:
@@ -2113,75 +2149,88 @@ class MemoryStore:
             "other_projects": other_projects,
         }
 
-    def get_memories_changed_since(
-        self,
-        since: str,
-        project: str | None = None,
-        include_global: bool = True,
-        limit: int = 30,
-    ) -> list[dict]:
-        """Return memories updated after `since`, scoped for the post-compact delta.
+    def get_memories_changed_window(
+        self, since: str, max_rows: int = 5000
+    ) -> Sequence[dict[str, Any]]:
+        """Every live memory updated after `since`, most-recent-first (B1, 2026-11-01).
 
-        Used by `brief(post_compact=True)`. `since` accepts relative shorthand
-        ("6h"/"7d") or ISO-8601 and is normalised to the stored UTC format via
-        `normalise_since`; the comparison is an exclusive bound
-        (`updated_at > since`). See that helper for why normalisation matters.
-
-        Scope mirrors `get_memories_by_project`:
-          - project given: project-tagged memories + (when include_global) global
-            memories (scope:global / scope:cross-project / profile / pattern)
-          - project None: all non-superseded memories changed in the window
-
-        Returns memory dicts ordered most-recent-first, capped at `limit`.
-        Best-effort: returns [] on parse/DB error rather than raising.
+        WINDOW ONLY: no membership clause and no small LIMIT. Scope membership is decided by the caller with
+        ``resolver.brief_membership`` (the normal brief's rule) and the cap is applied after it, so out-of-scope
+        rows can neither leak nor consume the cap. ``max_rows`` is a safety bound, not the brief's cap.
+        `since` accepts relative shorthand ("6h"/"7d") or ISO-8601 (``normalise_since``); exclusive bound.
+        Returns [] on a parse/DB error.
         """
         try:
             since_norm = normalise_since(since)
         except (ValueError, TypeError):
             return []
-
-        params: list = [since_norm]
-        if project:
-            tag_value = f"project:{project}"
-            scope = "tags LIKE ?"
-            params.append(f'%"{tag_value}"%')
-            if include_global:
-                scope = (
-                    "(tags LIKE ? "
-                    "OR tags LIKE '%\"scope:global\"%' "
-                    "OR tags LIKE '%\"scope:cross-project\"%' "
-                    "OR type IN ('profile', 'pattern'))"
-                )
-            sql = f"""
-                SELECT * FROM memories
-                WHERE updated_at > ?
-                  AND (superseded_by IS NULL OR superseded_by = '')
-                  AND deleted_at IS NULL
-                  AND {scope}
-                ORDER BY updated_at DESC
-                LIMIT ?
-            """
-        else:
-            sql = """
-                SELECT * FROM memories
-                WHERE updated_at > ?
-                  AND (superseded_by IS NULL OR superseded_by = '')
-                  AND deleted_at IS NULL
-                ORDER BY updated_at DESC
-                LIMIT ?
-            """
-        params.append(limit)
-
         conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
         try:
-            rows = conn.execute(sql, params).fetchall()
+            rows = conn.execute(
+                """
+                SELECT * FROM memories
+                WHERE updated_at > ?
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                  AND deleted_at IS NULL
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (since_norm, max_rows),
+            ).fetchall()
         except sqlite3.Error as e:
-            logger.warning("get_memories_changed_since failed: %s", e)
+            logger.warning("get_memories_changed_window failed: %s", e)
             return []
         finally:
             conn.close()
-
         return [self._row_to_dict(r) for r in rows]
+
+    def get_scope_rows(self, names: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """{name: {tags, type, scope, tier}} for membership checks, INCLUDING superseded and soft-deleted rows
+        (the superseded/evicted feeds name memories the live queries exclude). Latest row per name wins.
+        Unknown names are absent (the caller treats them as out of scope: fail closed)."""
+        if not names:
+            return {}
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        try:
+            marks = ",".join("?" for _ in names)
+            rows = conn.execute(
+                f"SELECT name, tags, type, scope, tier FROM memories WHERE name IN ({marks}) ORDER BY id ASC",
+                [*names],
+            ).fetchall()
+        except sqlite3.Error as e:
+            logger.warning("get_scope_rows failed: %s", e)
+            return {}
+        finally:
+            conn.close()
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            d = dict(r)
+            d["tags"] = self._parse_tags(str(d.get("tags") or "[]"))
+            out[d["name"]] = d
+        return out
+
+    def pending_count_by_proposer(self, proposed_by: str, prefix: bool = False) -> int:
+        """Pending (status='pending') rows proposed by `proposed_by` (or starting with it when `prefix`)."""
+        conn = self._get_conn()
+        try:
+            if prefix:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending' AND proposed_by LIKE ?",
+                    (proposed_by.replace("%", "") + "%",),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending' AND proposed_by = ?",
+                    (proposed_by,),
+                ).fetchone()
+            return int(row[0]) if row else 0
+        except sqlite3.Error as e:
+            logger.warning("pending_count_by_proposer failed: %s", e)
+            return 0
+        finally:
+            conn.close()
 
     def session_summary(self, session_id: str) -> str:
         """Show all memories attributed to a given session."""
@@ -2549,7 +2598,7 @@ class MemoryStore:
         try:
             cur = conn.execute(
                 """
-                SELECT id, memory_name, title, type, proposed_at, proposed_by, status
+                SELECT id, memory_name, title, type, proposed_at, proposed_by, status, source, provenance
                 FROM pending_writes
                 WHERE status = ?
                 ORDER BY proposed_at ASC
@@ -2567,10 +2616,10 @@ class MemoryStore:
 
         lines = [f"# Pending Writes ({status})"]
         for row in rows:
-            wid, mname, title, mtype, proposed_at, proposed_by, _status = row
+            wid, mname, title, mtype, proposed_at, proposed_by, _status, source, provenance = row
             lines.append(
                 f"  {wid}. **{mname}**: {title} ({mtype}) — "
-                f"proposed by {proposed_by} at {proposed_at}"
+                f"proposed by {proposed_by} at {proposed_at}" + _msg_review_line(source, provenance)
             )
         lines.append(f"\nTotal: {len(rows)} pending")
         return "\n".join(lines)
@@ -2662,9 +2711,7 @@ class MemoryStore:
                 origin_session_ids=pw["origin_session_ids"],
                 origin_clients=pw["origin_clients"],
                 client=reviewer or "trusted-dreamer",
-                provenance=Provenance(
-                    actor="governed-promotion", source="store:approve", op="approve"
-                ),
+                provenance=_approval_provenance(rowd, reviewer),
                 _skip_protection=True,
                 _conn=conn,
             )

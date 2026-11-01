@@ -1,5 +1,40 @@
 # Changelog
 
+## v2.3.13 — decision messages go to review; the post-compact brief obeys the brief's scope (B1)
+
+> **Deliberate behaviour change: the brief you get after a compaction no longer shows other projects' memories.**
+> It used to list every memory changed in the window, whatever its project, author or review state. It now uses
+> the same scope rule as a normal brief: the current project plus explicitly global memories. Anything else that
+> changed is counted ("N changes … withheld"), never named. Use `/brief --project <name>` to look at another
+> project. `MORI_BRIEF_SCOPE=all` restores the old behaviour (opt-in, logged).
+
+Found 2026-11-01 (board-ruled the same day): an agent's `decision` message, written by the msg daemon straight into
+memory without review, was withheld by every scoped brief but surfaced by the post-compact brief, which the
+SessionStart hook fires after every compaction on every device.
+
+**Changes**
+
+- **The post-compact brief uses the brief's scope.** `brief()` computed the scope only after the post-compact
+  branch had already returned. Now every post-compact feed (changed, superseded, evicted) is decided by the brief's
+  own membership rule (`resolver.brief_membership`), fail-closed (anything but `scope="all"` is safe), with the cap
+  applied after filtering. The two backends' separate membership SQL is gone: the stores return the time window
+  only (`get_memories_changed_window`).
+- **Decision messages go to human review.** The msg daemon queues a `decision` in `pending_writes`, named from the
+  message id (`decision-msg-<id>`, so it can never overwrite an existing memory), tagged `decision-msg` and
+  `from:<host>`, `proposed_by="msg:<host>"`, with the raw provenance kept for the reviewer. At most 20 pending per
+  sender. Approval keeps the origin: the memory's audit actor is the sending host (actor `msg`), and the reviewer is
+  recorded. An approved decision has no project tag, so it's findable by search; a reviewer who wants it in a
+  project's brief adds the project tag.
+- **The msg daemon uses the configured backend.** It wrote to a hard-coded SQLite file, which in a Postgres
+  deployment no brief and no reviewer ever reads (and on Postgres its write was never awaited).
+- **Reviewers can see the queue.** A normal brief shows "N decision message(s) awaiting review" (count only);
+  `memory_pending_list` shows the message id and raw provenance for each.
+- **No direct memory writes from the daemon:** a standing test fails if it calls `.write()`.
+
+**Existing data:** no decision rows in the production store (checked three ways on 2026-11-01). No migration.
+Three untagged canonical `pattern` memories were only ever reached through the legacy type-based global rule; safe
+briefs no longer show them (see the release notes for the decision on tagging them).
+
 ## plugin v0.4.0 — event hooks: rejected keys are seen; Cursor's hooks carry a key (#88)
 
 > **Every client should update the Claude Code mori plugin to 0.4.0.** The plugin stayed at

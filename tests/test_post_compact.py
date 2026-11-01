@@ -78,48 +78,53 @@ def _seed(s):
     )
 
 
-def test_changed_since_past_returns_project_plus_global(store):
+def _member(rows, project, strict=True):
+    from mori_advisor.resolver import brief_membership
+
+    return {m["name"] for m in rows if brief_membership(m, project, strict_global=strict)}
+
+
+# B1 (2026-11-01): the store returns the WINDOW only; membership is the brief's rule (resolver.brief_membership),
+# applied by the caller. These replace the get_memories_changed_since tests, whose unscoped case
+# ("returns_all") encoded the post-compact leak as the specification.
+
+
+def test_changed_window_returns_every_live_change(store):
     _seed(store)
-    names = {m["name"] for m in store.get_memories_changed_since("1h", project="demo")}
-    assert names == {"demo-a", "demo-b", "glob"}  # excludes other-project
+    names = {m["name"] for m in store.get_memories_changed_window("1h")}
+    assert names == {"demo-a", "demo-b", "glob", "other"}  # window only: membership is the caller's
 
 
-def test_changed_since_future_returns_nothing(store):
+def test_changed_window_future_returns_nothing(store):
     _seed(store)
-    assert store.get_memories_changed_since("2099-01-01T00:00:00Z", project="demo") == []
+    assert store.get_memories_changed_window("2099-01-01T00:00:00Z") == []
 
 
-def test_changed_since_excludes_global_when_disabled(store):
+def test_changed_window_unparseable_returns_empty(store):
     _seed(store)
-    names = {
-        m["name"]
-        for m in store.get_memories_changed_since("1h", project="demo", include_global=False)
-    }
-    assert names == {"demo-a", "demo-b"}
+    assert store.get_memories_changed_window("not-a-date") == []
 
 
-def test_changed_since_unscoped_returns_all(store):
+def test_membership_project_safe_is_project_plus_explicit_global(store):
     _seed(store)
-    names = {m["name"] for m in store.get_memories_changed_since("1h")}
-    assert names == {"demo-a", "demo-b", "glob", "other"}
+    assert _member(store.get_memories_changed_window("1h"), "demo") == {"demo-a", "demo-b", "glob"}
 
 
-def test_changed_since_respects_limit(store):
-    for i in range(5):
-        store.write(
-            name=f"m{i}",
-            title=f"M{i}",
-            body="b",
-            type="project",
-            tier="working",
-            tags=["project:demo"],
-        )
-    assert len(store.get_memories_changed_since("1h", project="demo", limit=3)) == 3
-
-
-def test_changed_since_unparseable_returns_empty(store):
+def test_membership_unscoped_safe_is_the_global_lane_only(store):
     _seed(store)
-    assert store.get_memories_changed_since("not-a-date", project="demo") == []
+    assert _member(store.get_memories_changed_window("1h"), None) == {
+        "glob"
+    }  # was "returns all": the leak
+
+
+def test_changed_window_excludes_superseded_but_scope_rows_include_them(store):
+    _seed(store)
+    conn = store._get_conn()
+    conn.execute("UPDATE memories SET superseded_by = 'x' WHERE name = 'demo-a'")
+    conn.commit()
+    conn.close()
+    assert "demo-a" not in {m["name"] for m in store.get_memories_changed_window("1h")}
+    assert store.get_scope_rows(["demo-a"])["demo-a"]["tags"] == ["project:demo"]
 
 
 # ── brief(post_compact=True) ───────────────────────────────────────────────

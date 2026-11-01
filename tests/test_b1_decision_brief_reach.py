@@ -53,15 +53,15 @@ def test_reach_of_an_unreviewed_decision_in_every_brief_mode(backend, tmp_path, 
             "post_compact": MARKER in await brief(project=None, post_compact=True, since="1h"),
         }
         print("B1 REACH", reach)
-        # Baseline as found on v2.3.12 (2026-11-01): every scoped brief withholds it, but the POST-COMPACT DELTA
-        # surfaces it, and the SessionStart hook fires that delta after every compaction on every device. B1 routes
-        # decision messages through pending_writes; the fix must flip `post_compact` to False (this test then changes).
+        # Baseline as found on v2.3.12 (2026-11-01, commit 1445ffd): every scoped brief withheld it, but the
+        # POST-COMPACT DELTA surfaced it (`post_compact: True`). B1 v2 flips that line: the delta now obeys the
+        # brief's scope, so an untagged, unreviewed row reaches no brief mode.
         assert reach == {
             "unscoped_safe": False,
             "project_safe": False,
             "unscoped_all": False,
             "project_all": False,
-            "post_compact": True,
+            "post_compact": False,
         }
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)

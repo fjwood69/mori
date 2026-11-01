@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,9 +29,11 @@ from mori_advisor.memory_store import (
     FRESHNESS_CHECK_PROMPT,
     MAX_VERSIONS_PER_MEMORY,
     VALID_TIERS,
+    _approval_provenance,
     _freshness_cache,
     _freshness_cache_lock,
     _freshness_verdict,
+    _msg_review_line,
 )
 from mori_advisor.metrics import (
     record_classifier_verdict,
@@ -1565,76 +1568,80 @@ class PostgresStore(BaseStore):
             "other_projects": other_projects,
         }
 
-    async def get_memories_changed_since(
-        self,
-        since: str,
-        project: str | None = None,
-        include_global: bool = True,
-        limit: int = 30,
-    ) -> list[dict]:
-        """Postgres parity for the post-compact delta brief.
-
-        `since` accepts relative shorthand ("6h"/"7d") or ISO-8601; it is routed
-        through `normalise_since` (handles shorthand) then `_ts` to a tz-aware UTC
-        datetime, so the TIMESTAMPTZ comparison is correct regardless of the
-        client's clock representation. Exclusive bound (`updated_at > since`).
-        `updated_at` is stringified in the result to match the SQLite contract.
-        """
+    async def get_memories_changed_window(
+        self, since: str, max_rows: int = 5000
+    ) -> Sequence[dict[str, Any]]:
+        """Postgres parity of the window-only changed query (B1, 2026-11-01). No membership clause, no small LIMIT:
+        the caller applies ``resolver.brief_membership`` then the cap. `since` via ``normalise_since`` + ``_ts`` to a
+        tz-aware UTC datetime; exclusive bound. ``updated_at`` stringified to match the SQLite contract."""
         from mori_advisor.memory_store import normalise_since
 
         self._ensure_pool()
+        assert self.pool is not None
         try:
             since_dt = _ts(normalise_since(since))
         except (ValueError, TypeError):
             return []
         if since_dt is None:
             return []
-
-        def _row_to_dict(row) -> dict:
-            r = dict(row)
-            raw = r.get("tags")
-            r["tags"] = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
-            if r.get("updated_at") is not None:
-                r["updated_at"] = str(r["updated_at"])
-            return r
-
-        params: list[Any] = [since_dt]
-        if project:
-            tag_value = f"project:{project}"
-            params.append(json.dumps([tag_value]))
-            if include_global:
-                scope = (
-                    "(tags @> $2::jsonb "
-                    "OR tags @> '[\"scope:global\"]'::jsonb "
-                    "OR tags @> '[\"scope:cross-project\"]'::jsonb "
-                    "OR type IN ('profile', 'pattern'))"
-                )
-            else:
-                scope = "tags @> $2::jsonb"
-            params.append(limit)
-            sql = f"""
-                SELECT * FROM memories
-                WHERE updated_at > $1
-                  AND (superseded_by IS NULL OR superseded_by = '')
-                  AND deleted_at IS NULL
-                  AND {scope}
-                ORDER BY updated_at DESC
-                LIMIT $3
-            """
-        else:
-            params.append(limit)
-            sql = """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
                 SELECT * FROM memories
                 WHERE updated_at > $1
                   AND (superseded_by IS NULL OR superseded_by = '')
                   AND deleted_at IS NULL
                 ORDER BY updated_at DESC
                 LIMIT $2
-            """
+                """,
+                since_dt,
+                max_rows,
+            )
+        out = []
+        for row in rows:
+            r = dict(row)
+            raw = r.get("tags")
+            r["tags"] = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
+            for k in ("updated_at", "created_at"):
+                if r.get(k) is not None:
+                    r[k] = str(r[k])
+            out.append(r)
+        return out
 
+    async def get_scope_rows(self, names: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """{name: {tags, type, scope, tier}} including superseded / soft-deleted rows; latest row per name."""
+        if not names:
+            return {}
+        self._ensure_pool()
+        assert self.pool is not None
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(sql, *params)
-        return [_row_to_dict(r) for r in rows]
+            rows = await conn.fetch(
+                "SELECT name, tags, type, scope, tier FROM memories WHERE name = ANY($1::text[]) ORDER BY id ASC",
+                [*names],
+            )
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            r = dict(row)
+            raw = r.get("tags")
+            r["tags"] = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
+            out[r["name"]] = r
+        return out
+
+    async def pending_count_by_proposer(self, proposed_by: str, prefix: bool = False) -> int:
+        self._ensure_pool()
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            if prefix:
+                n = await conn.fetchval(
+                    "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending' AND proposed_by LIKE $1",
+                    proposed_by.replace("%", "") + "%",
+                )
+            else:
+                n = await conn.fetchval(
+                    "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending' AND proposed_by = $1",
+                    proposed_by,
+                )
+        return int(n or 0)
 
     async def session_summary(self, session_id: str) -> str:
         self._ensure_pool()
@@ -1941,7 +1948,7 @@ class PostgresStore(BaseStore):
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, memory_name, title, proposed_by, proposed_at, status "
+                "SELECT id, memory_name, title, proposed_by, proposed_at, status, source, provenance "
                 "FROM pending_writes WHERE status = $1 ORDER BY proposed_at DESC",
                 status,
             )
@@ -1949,6 +1956,7 @@ class PostgresStore(BaseStore):
             return f"No {status} writes."
         lines = [
             f"[{r['id']}] {r['memory_name'] or '(new)'} — {r['title']} (by {r['proposed_by']})"
+            + _msg_review_line(r["source"], r["provenance"])
             for r in rows
         ]
         return "\n".join(lines)
@@ -2078,9 +2086,7 @@ class PostgresStore(BaseStore):
                     tier=row.get("tier", "working"),
                     body=row["body"],
                     tags=json.loads(row["tags"] or "[]"),
-                    provenance=Provenance(
-                        actor="governed-promotion", source="store:approve", op="approve"
-                    ),
+                    provenance=_approval_provenance(dict(row), reviewer),
                     _skip_protection=True,
                     _conn=conn,
                 )
