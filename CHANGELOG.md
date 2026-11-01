@@ -1,5 +1,56 @@
 # Changelog
 
+## v2.3.14 — CD deploys only a tag whose own commit passed CI (#73)
+
+> **Release-process change.** Release tags must now be **annotated**, strictly `vX.Y.Z` (no pre-release tags), on
+> `main`, and match `pyproject.toml`. CD refuses to build unless CI passed on that exact commit. See
+> `docs/RELEASING.md`. Nothing changes in the server itself.
+
+Found 2026-10-03 (v2.3.10): GitHub never delivered the push event for a merge commit, so CI never ran on it, and CD
+deployed it anyway: `cd.yml` built and deployed any pushed `v*` tag without looking at CI. Until now the guard was
+an operator checking the merge commit's CI by hand before tagging.
+
+**Changes**
+
+- **The CD gate** (`scripts/cd_gate.py`, the first job of `cd.yml`; every other job needs it). It reads every fact
+  from the GitHub API and fails closed:
+  - the tag name is strict `vX.Y.Z`;
+  - the tag is annotated and points at the triggering commit;
+  - the commit is on `main`;
+  - the version matches `pyproject.toml`;
+  - the newest `ci.yml` run on that exact commit (push to `main`, or a manual dispatch) succeeded, including
+    `ci-ok` and every job.
+
+  It waits up to 5 min for a run to appear and 30 min for one in progress. The run summary and the release notes
+  record the CI run it relied on. There is no override.
+- **`ci-ok`** in `ci.yml` is the one list of required jobs. It needs every other job (new jobs are required by
+  default, enforced by a test), runs with `if: always()`, and fails unless every result is `success`.
+- **`workflow_dispatch` on `ci.yml`**, so a missing run can be requested for an exact ref. On a dispatch, the
+  artifact version guard compares against the first parent: an empty base would have skipped its bump rule.
+- **`cd-gate-check.yml`**: runs only the gate against a tag. It has no build, deploy or release job.
+- **Security fixes in `cd.yml`, which predate this release:**
+  - The tag name reached the production host's shell, and was pasted into scripts on the release runner. It is now
+    validated first and passed only through environment variables, and only the validated version crosses to the
+    host.
+  - Every checkout is pinned to the commit the gate approved, and the release job re-checks that the tag has not
+    moved.
+  - SSH host-key checking is on, from the new `GCE_HOST_KEY` environment secret.
+  - Deploys run one at a time (`concurrency`) and are never cancelled.
+  - The host pulls the image **by the digest this run built**, never by a registry tag that could move in between.
+  - The host-key secret is format-checked before anything runs on the host. The deploy job's token has no
+    permissions and it times out after 30 minutes. No checkout persists credentials.
+  - `ci.yml` jobs get a read-only token, and lint covers `scripts/`.
+- **The registry's `latest` moves only when the release is the highest version.** Before, every release pushed
+  `latest`, so re-running CD for an older tag moved it backwards. The production host still retags its *local*
+  `latest` to whatever it just pulled, including on a rollback, because the running units follow that local tag.
+- `tests/test_cd_gate.py` runs against real recorded API responses (v2.3.13, v2.3.10, a PR head and the tag list);
+  `tests/test_cd_workflows.py` pins the workflow safeguards.
+
+**Disclosed:** the claim that production secrets never reach a job before the tag is validated is true of the
+Tailscale key, but not of the deploy key, which any branch's workflow can still read. Only the host being reachable
+solely over the tailnet keeps that from blocking the tag. Moving the deploy key into the `production` environment
+(with a key rotation) is the next item.
+
 ## v2.3.13 — decision messages go to review; the post-compact brief obeys the brief's scope (B1)
 
 > **Deliberate behaviour change: the brief you get after a compaction no longer shows other projects' memories.**

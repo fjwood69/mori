@@ -1,0 +1,76 @@
+{
+ "tag": null,
+ "sha": "dd8c021e076bb95bda76ec50a9427c6e4c332247",
+ "compare": {
+  "status": "ahead"
+ },
+ "pyproject_toml": "[project]\nname = \"mori-advisor\"\nversion = \"2.3.13\"",
+ "ci_yml_markers": {
+  "workflow_dispatch": false,
+  "ci_ok_job": false
+ },
+ "runs": [
+  {
+   "id": 41323652526,
+   "event": "pull_request",
+   "head_sha": "dd8c021e076bb95bda76ec50a9427c6e4c332247",
+   "head_branch": "feat/b1-approve-tags",
+   "status": "completed",
+   "conclusion": "success",
+   "created_at": "2026-11-01T15:55:28Z",
+   "run_attempt": 1,
+   "path": ".github/workflows/ci.yml",
+   "html_url": "https://github.com/fjwood69/mori/actions/runs/41323652526"
+  }
+ ],
+ "jobs": {
+  "41323652526": [
+   {
+    "name": "Unit tests (Postgres)",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Plugin manifest validate",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Content sterility",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Artifact version guard",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Repo hygiene",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Type ratchet (mypy --strict)",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Docker build check",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Lint & format check",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Unit tests",
+    "status": "completed",
+    "conclusion": "success"
+   }
+  ]
+ },
+ "recorded": "2026-11-01 via gh api (PR #93 head; trimmed)"
+}

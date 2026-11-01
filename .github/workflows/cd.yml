@@ -10,26 +10,77 @@ env:
   # Keep the force flag until login-action ships a Node-24 native version.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# #73: one deploy at a time, queued, never cancelled (a deploy cancelled halfway through retagging is worse than a
+# queued one). GitHub keeps one running and one pending run per group: a THIRD tag pushed while one is pending
+# replaces the pending one, so never tag while a deploy is pending (docs/RELEASING.md).
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
 # Pre-tag UAT gate (manual on deploy host before pushing the tag):
 #   Run your local mori UAT start script, verify db_read / dream_watermark / auth
 #   on ports 8970 (SQLite) and 8972 (Postgres), then stop UAT.
 #   Extended: curl -X POST http://localhost:8972/api/dream/run — no coroutine errors
 
 jobs:
+  # #73: CD deploys only a tag whose own commit passed CI. Every other job needs this one. It validates the tag
+  # name first (strict vX.Y.Z), then: annotated tag -> this exact commit, on main, version == pyproject, and the
+  # newest ci.yml run on this commit (push to main or workflow_dispatch) succeeded with ci-ok and every job green.
+  # No environment here, so the environment's secrets (the Tailscale key) never reach a job before the tag is
+  # validated. The deploy SSH key is still a REPOSITORY secret that any branch's workflow can read; only the host
+  # being reachable solely over the tailnet keeps that from mattering (moving it is the next item). No override exists;
+  # the emergency path is the manual one in docs/RELEASING.md.
+  gate:
+    name: CI gate (this commit passed CI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      sha: ${{ steps.gate.outputs.sha }}
+      ci_run_id: ${{ steps.gate.outputs.ci_run_id }}
+      ci_run_url: ${{ steps.gate.outputs.ci_run_url }}
+      is_highest: ${{ steps.gate.outputs.is_highest }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: python3 scripts/cd_gate.py check --repo "$REPO" --tag "$TAG" --sha "$SHA"
+
   build-and-push:
     name: Build & push Docker image
+    needs: gate
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    outputs:
+      # #73: the deploy pulls THIS build by digest, never by a registry tag that could be moved in between.
+      digest: ${{ steps.build.outputs.digest }}
 
     steps:
+      # #73: build exactly the commit the gate approved, never whatever the tag points at by now.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
 
       # Gate: the release docs must reflect this version before anything builds.
       # Prevents CHANGELOG/ROADMAP silently lapsing behind releases.
       - name: Release docs gate
-        run: python3 scripts/check-release-docs.py "${GITHUB_REF_NAME}"
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 scripts/check-release-docs.py "$TAG"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -49,9 +100,10 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ needs.gate.outputs.is_highest == 'true' }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -64,9 +116,11 @@ jobs:
 
   deploy:
     name: Deploy to GCE
-    needs: build-and-push
+    needs: [gate, build-and-push]
     runs-on: ubuntu-latest
     environment: production
+    timeout-minutes: 30
+    permissions: {}
 
     steps:
       - name: Connect to Tailscale
@@ -75,9 +129,11 @@ jobs:
           authkey: ${{ secrets.TS_AUTH_KEY }}
 
       - name: Wait for Tailscale route
+        env:
+          GCE_HOST: ${{ secrets.GCE_HOST }}
         run: |
           for i in $(seq 1 10); do
-            nc -z -w 3 ${{ secrets.GCE_HOST }} 22 && echo "SSH port reachable" && exit 0
+            nc -z -w 3 "$GCE_HOST" 22 && echo "SSH port reachable" && exit 0
             echo "Attempt $i: waiting..."
             sleep 3
           done
@@ -88,23 +144,44 @@ jobs:
           GCE_SSH_KEY: ${{ secrets.GCE_SSH_KEY }}
           GCE_USER: ${{ secrets.GCE_USER }}
           GCE_HOST: ${{ secrets.GCE_HOST }}
+          # #73: the production host's public key ("ssh-ed25519 AAAA..."), provisioned from a key verified out of
+          # band. Host-key checking is ON: a changed host key fails the deploy instead of being trusted blindly.
+          GCE_HOST_KEY: ${{ secrets.GCE_HOST_KEY }}
           REF_NAME: ${{ github.ref_name }}
+          DIGEST: ${{ needs.build-and-push.outputs.digest }}
         run: |
+          set -euo pipefail
+          # #73: the tag name reaches the remote shell below, so it is validated again here (the gate already did)
+          # and only the validated version, which can contain nothing but digits and dots, crosses as data.
+          [[ "$REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "bad tag name"; exit 1; }
+          VERSION="${REF_NAME#v}"
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "FATAL: no image digest from the build"; exit 1; }
+          # The secret is "<type> <base64>" (the known_hosts entry without the host). Checked before anything runs
+          # on the host, so a malformed secret fails here, not halfway through a deploy.
+          GCE_HOST_KEY="$(printf '%s' "$GCE_HOST_KEY" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+          [[ "$GCE_HOST_KEY" =~ ^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa)\ [A-Za-z0-9+/]+={0,3}$ ]] \
+            || { echo "FATAL: GCE_HOST_KEY missing or not '<type> <base64>' — refusing to deploy without host-key checking"; exit 1; }
+
           KEYFILE=$(mktemp)
+          KNOWN=$(mktemp)
           chmod 600 "$KEYFILE"
           printf '%s\n' "$GCE_SSH_KEY" > "$KEYFILE"
-          trap "rm -f '$KEYFILE'" EXIT
+          printf '%s %s\n' "$GCE_HOST" "$GCE_HOST_KEY" > "$KNOWN"
+          trap "rm -f '$KEYFILE' '$KNOWN'" EXIT
+          ssh-keygen -F "$GCE_HOST" -f "$KNOWN" >/dev/null || { echo "FATAL: known_hosts entry for the host is unusable"; exit 1; }
 
           ssh -i "$KEYFILE" \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$KNOWN" \
             -o ConnectTimeout=30 \
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=3 \
             "${GCE_USER}@${GCE_HOST}" \
-            "GITHUB_REF_NAME='${REF_NAME}' bash -s" << 'REMOTESCRIPT'
+            "MORI_VERSION='${VERSION}' MORI_DIGEST='${DIGEST}' bash -s" << 'REMOTESCRIPT'
           set -e
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${MORI_VERSION}"
+          # #73: the exact image this run built, by digest; the version tag is applied locally from it.
+          IMAGE_PINNED="ghcr.io/fjwood69/mori@${MORI_DIGEST}"
           IMAGE_VERSION="ghcr.io/fjwood69/mori:${VERSION}"
           IMAGE_LATEST="ghcr.io/fjwood69/mori:latest"
           IMAGE_ROLLBACK="ghcr.io/fjwood69/mori:previous-rollback"
@@ -134,11 +211,12 @@ jobs:
           sudo su - mori -c "$RT podman image exists '$IMAGE_LATEST'" \
             && sudo su - mori -c "$RT podman tag '$IMAGE_LATEST' '$IMAGE_ROLLBACK'" || true
 
-          # Pull the new build and move :latest onto it. The Quadlet units reference
+          # Pull the new build BY DIGEST and move :latest onto it. The Quadlet units reference
           # :latest and do NOT re-pull on restart, so retagging locally is what makes
           # the restart pick up exactly this build (deterministic — not registry latest).
-          sudo su - mori -c "$RT podman pull '$IMAGE_VERSION'"
-          sudo su - mori -c "$RT podman tag '$IMAGE_VERSION' '$IMAGE_LATEST'"
+          sudo su - mori -c "$RT podman pull '$IMAGE_PINNED'"
+          sudo su - mori -c "$RT podman tag '$IMAGE_PINNED' '$IMAGE_VERSION'"
+          sudo su - mori -c "$RT podman tag '$IMAGE_PINNED' '$IMAGE_LATEST'"
 
           # Restart the units — Quadlet recreates each container from the refreshed
           # :latest. Atomic stop-old/start-new per unit (no port clash under --network=host).
@@ -164,46 +242,71 @@ jobs:
             echo "DEPLOYMENT CONTRACT FAILED — the deployed container is not serving the expected route surface"
             exit 1
           }
-          echo "Deploy OK: $IMAGE_VERSION (rootless, --env-file, contract verified)"
+          echo "Deploy OK: $IMAGE_VERSION = $IMAGE_PINNED (rootless, --env-file, contract verified)"
           REMOTESCRIPT
 
   create-release:
     name: Create GitHub Release
-    needs: deploy
+    needs: [gate, deploy]
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
 
       - name: Extract release notes from CHANGELOG
         id: notes
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          CI_RUN_ID: ${{ needs.gate.outputs.ci_run_id }}
+          CI_RUN_URL: ${{ needs.gate.outputs.ci_run_url }}
         run: |
-          VERSION="${{ github.ref_name }}"
           python3 - <<'EOF'
-          import re, sys
-          tag = "${{ github.ref_name }}"
+          import os, re
+          tag = os.environ["TAG"]
           content = open("CHANGELOG.md").read()
           pattern = rf"(## {re.escape(tag)}.*?)(?=\n## v|\Z)"
           match = re.search(pattern, content, re.DOTALL)
           notes = match.group(1).strip() if match else f"Release {tag}"
+          notes += (
+              f"\n\n---\nDeployed by CD after the #73 gate: commit {os.environ['SHA']} passed CI in run "
+              f"{os.environ['CI_RUN_ID']} ({os.environ['CI_RUN_URL']})."
+          )
           with open("release_notes.md", "w") as f:
               f.write(notes)
           EOF
 
+      # #73: the tag must still point at the commit the gate approved and that was deployed: checked
+      # immediately before the release is created, and again after (the tag ruleset forbids moving it).
+      - name: Tag unmoved since the gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: python3 scripts/cd_gate.py verify-tag --repo "$REPO" --tag "$TAG" --sha "$SHA"
+
       - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
         run: |
-          if gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" &>/dev/null; then
-            gh release edit "${{ github.ref_name }}" \
-              --repo "${{ github.repository }}" \
-              --title "${{ github.ref_name }}" \
-              --notes-file release_notes.md
+          if gh release view "$TAG" --repo "$REPO" &>/dev/null; then
+            gh release edit "$TAG" --repo "$REPO" --title "$TAG" --notes-file release_notes.md
           else
-            gh release create "${{ github.ref_name }}" \
-              --repo "${{ github.repository }}" \
-              --title "${{ github.ref_name }}" \
-              --notes-file release_notes.md
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" --notes-file release_notes.md --verify-tag
           fi
+
+      - name: Tag still unmoved after the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: python3 scripts/cd_gate.py verify-tag --repo "$REPO" --tag "$TAG" --sha "$SHA"

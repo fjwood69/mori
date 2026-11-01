@@ -1,0 +1,89 @@
+{
+ "tag": "v2.3.13",
+ "ref": {
+  "object": {
+   "type": "tag",
+   "sha": "2bf35f2a35189c8dfb3f3001662e8ee66fbd9ff2"
+  }
+ },
+ "tag_object": {
+  "tag": "v2.3.13",
+  "object": {
+   "type": "commit",
+   "sha": "82658062a5ee2412811324a11c5d4d79d2738a20"
+  }
+ },
+ "sha": "82658062a5ee2412811324a11c5d4d79d2738a20",
+ "compare": {
+  "status": "identical"
+ },
+ "pyproject_toml": "[project]\nname = \"mori-advisor\"\nversion = \"2.3.13\"",
+ "ci_yml_markers": {
+  "workflow_dispatch": false,
+  "ci_ok_job": false
+ },
+ "runs": [
+  {
+   "id": 41325373639,
+   "event": "push",
+   "head_sha": "82658062a5ee2412811324a11c5d4d79d2738a20",
+   "head_branch": "main",
+   "status": "completed",
+   "conclusion": "success",
+   "created_at": "2026-11-01T16:15:19Z",
+   "run_attempt": 1,
+   "path": ".github/workflows/ci.yml",
+   "html_url": "https://github.com/fjwood69/mori/actions/runs/41325373639"
+  }
+ ],
+ "jobs": {
+  "41325373639": [
+   {
+    "name": "Plugin manifest validate",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Lint & format check",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Unit tests",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Artifact version guard",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Type ratchet (mypy --strict)",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Repo hygiene",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Unit tests (Postgres)",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Docker build check",
+    "status": "completed",
+    "conclusion": "success"
+   },
+   {
+    "name": "Content sterility",
+    "status": "completed",
+    "conclusion": "success"
+   }
+  ]
+ },
+ "recorded": "2026-11-01 via gh api (trimmed to the fields cd_gate reads)"
+}
