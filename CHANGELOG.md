@@ -23,8 +23,9 @@ SessionStart hook fires after every compaction on every device.
   message id (`decision-msg-<id>`, so it can never overwrite an existing memory), tagged `decision-msg` and
   `from:<host>`, `proposed_by="msg:<host>"`, with the raw provenance kept for the reviewer. At most 20 pending per
   sender. Approval keeps the origin: the memory's audit actor is the sending host (actor `msg`), and the reviewer is
-  recorded. An approved decision has no project tag, so it's findable by search; a reviewer who wants it in a
-  project's brief adds the project tag.
+  recorded. `memory_approve` (and `POST /api/memories/{name}/approve`) take an optional `tags` list that is ADDED
+  at approval: pass `["project:<p>"]` to put an approved decision in that project's brief in the same step.
+  Without it, an approved decision stays unrouted (findable by search, in no brief).
 - **The msg daemon uses the configured backend.** It wrote to a hard-coded SQLite file, which in a Postgres
   deployment no brief and no reviewer ever reads (and on Postgres its write was never awaited).
 - **Reviewers can see the queue.** A normal brief shows "N decision message(s) awaiting review" (count only);

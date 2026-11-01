@@ -3,7 +3,8 @@
 Subscribes to mori.msg.<hostname> + mori.msg.broadcast + mori.reply.*
 on the MORI_MSG JetStream stream. Dispatches by message type:
 
-  decision  → persist + write to memory_store immediately
+  decision  → persist + queue for HUMAN REVIEW (pending_writes, named from the
+              message id); nothing reaches memories until a reviewer approves
   task      → persist (pending) + auto-ack back to sender
   done      → update status (dream runs on its own schedule)
   question / broadcast → persist (pending) for /brief pickup

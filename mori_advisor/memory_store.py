@@ -252,6 +252,31 @@ def _msg_review_line(source: object, provenance: object) -> str:
     return f"\n      msg id: {msg_id} | source: msg_daemon | provenance: {raw}"
 
 
+APPROVAL_TAG_MAX = 10
+APPROVAL_TAG_LEN = 128
+
+
+def merge_approval_tags(queued: Sequence[str], extra: Sequence[str] | None) -> list[str]:
+    """Tags for an approved pending write (B1 follow-up, board ruling 2026-11-01): the queued tags stay, and tags the
+    reviewer passes at approval are ADDED (e.g. ``project:<p>`` puts an approved decision in that project's brief
+    with no second write). Raises ValueError on a malformed argument, before anything is written."""
+    out = [str(t) for t in queued]
+    if extra is None:
+        return out
+    if isinstance(extra, (str, bytes)) or not isinstance(extra, (list, tuple)):
+        raise ValueError("tags must be a list of strings")
+    if len(extra) > APPROVAL_TAG_MAX:
+        raise ValueError(f"at most {APPROVAL_TAG_MAX} tags may be added at approval")
+    for t in extra:
+        if not isinstance(t, str) or not t.strip() or len(t) > APPROVAL_TAG_LEN or t != t.strip():
+            raise ValueError(
+                f"invalid tag {t!r}: non-empty string, no surrounding spaces, <= {APPROVAL_TAG_LEN} chars"
+            )
+        if t not in out:
+            out.append(t)
+    return out
+
+
 def _approval_provenance(rowd: dict[str, Any], reviewer: str) -> Provenance:
     """Provenance for an approved pending write (B1, 2026-11-01; board requirement 2).
 
@@ -2624,7 +2649,13 @@ class MemoryStore:
         lines.append(f"\nTotal: {len(rows)} pending")
         return "\n".join(lines)
 
-    def approve(self, write_id: int, note: str = "", reviewer: str = "") -> str:
+    def approve(
+        self,
+        write_id: int,
+        note: str = "",
+        reviewer: str = "",
+        tags: Sequence[str] | None = None,
+    ) -> str:
         """Approve a pending write. Applies the change and records reviewer.
 
         Race-safe: uses BEGIN IMMEDIATE so concurrent approvals cannot both
@@ -2640,6 +2671,10 @@ class MemoryStore:
         intake DB — re-runs the GOV-002 gate against the trusted ticket before
         writing canon.  All other sources keep the direct apply-on-approve path.
         """
+        try:
+            merge_approval_tags([], tags)  # validate up front: a bad argument writes nothing
+        except ValueError as e:
+            return f"Pending write #{write_id} NOT approved — {e}."
         import sqlite3
 
         conn = self._get_conn()
@@ -2685,7 +2720,7 @@ class MemoryStore:
                 "description": rowd["description"],
                 "type": rowd["type"],
                 "body": rowd["body"],
-                "tags": self._parse_tags(rowd["tags"]),
+                "tags": merge_approval_tags(self._parse_tags(rowd["tags"]), tags),
                 "origin_session_ids": (
                     self._parse_tags(rowd["origin_session_ids"])
                     if rowd.get("origin_session_ids")

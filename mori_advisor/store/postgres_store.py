@@ -34,6 +34,7 @@ from mori_advisor.memory_store import (
     _freshness_cache_lock,
     _freshness_verdict,
     _msg_review_line,
+    merge_approval_tags,
 )
 from mori_advisor.metrics import (
     record_classifier_verdict,
@@ -2043,7 +2044,13 @@ class PostgresStore(BaseStore):
             )
         return result
 
-    async def approve(self, write_id: int, note: str = "", reviewer: str = "") -> str:
+    async def approve(
+        self,
+        write_id: int,
+        note: str = "",
+        reviewer: str = "",
+        tags: Sequence[str] | None = None,
+    ) -> str:
         """Approve a pending write. Race-safe: uses SELECT … FOR UPDATE inside a transaction
         so concurrent approvals cannot both apply the same pending write.
 
@@ -2052,6 +2059,10 @@ class PostgresStore(BaseStore):
         to canon here — the bridge finalizer re-runs GOV-002 against the trusted
         intake ticket before promoting.  All other sources apply on approve.
         """
+        try:
+            merge_approval_tags([], tags)  # validate up front: a bad argument writes nothing
+        except ValueError as e:
+            return f"Pending write #{write_id} NOT approved — {e}."
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -2085,7 +2096,7 @@ class PostgresStore(BaseStore):
                     type=row["type"],
                     tier=row.get("tier", "working"),
                     body=row["body"],
-                    tags=json.loads(row["tags"] or "[]"),
+                    tags=merge_approval_tags(json.loads(row["tags"] or "[]"), tags),
                     provenance=_approval_provenance(dict(row), reviewer),
                     _skip_protection=True,
                     _conn=conn,

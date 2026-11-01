@@ -417,3 +417,120 @@ def test_a_memory_already_holding_the_message_id_name_refuses_the_decision(
         assert "PRE-EXISTING" in str(await _a(store.read(f"decision-msg-{mid}")))
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+# ── follow-up (board ruling 2026-11-01): tags at approval; explicit parity test ───────────────────────────────────
+
+
+async def _queue_one(store, tmp_path, monkeypatch, body="adopt rule T"):
+    await _dispatch(store, _decision(body), tmp_path, monkeypatch)
+    return [r for r in await _pending_rows(store) if r["status"] == "pending"][0]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_approval_with_a_project_tag_puts_the_decision_in_that_projects_brief(
+    backend, tmp_path, monkeypatch
+):
+    import mori_advisor.main as m
+
+    async def run(store):
+        r = await _queue_one(store, tmp_path, monkeypatch, body="B1-approved-marker adopt rule T")
+        res = await m.memory_approve(r["id"], reviewer="human", tags=["project:mori"])
+        assert "approved" in res.lower(), res
+        rows = await _a(store.get_scope_rows([r["memory_name"]]))
+        assert set(rows[r["memory_name"]]["tags"]) == {
+            "decision-msg",
+            "from:peer-device",
+            "project:mori",
+        }
+        _stub_brief_env(m, monkeypatch, store, tmp_path)
+        assert r["memory_name"] in await m.brief(project="mori", scope="safe")
+        assert r["memory_name"] in await m.brief(project="mori", post_compact=True, since="1h")
+        assert r["memory_name"] not in await m.brief(project="other", post_compact=True, since="1h")
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_approval_without_tags_leaves_the_decision_unrouted(backend, tmp_path, monkeypatch):
+    import mori_advisor.main as m
+
+    async def run(store):
+        r = await _queue_one(store, tmp_path, monkeypatch)
+        await m.memory_approve(r["id"], reviewer="human")
+        _stub_brief_env(m, monkeypatch, store, tmp_path)
+        assert r["memory_name"] not in await m.brief(project="mori", scope="safe")
+        rows = await _a(store.get_scope_rows([r["memory_name"]]))
+        assert set(rows[r["memory_name"]]["tags"]) == {"decision-msg", "from:peer-device"}
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_malformed_tags_argument_approves_nothing(backend, tmp_path, monkeypatch):
+    async def run(store):
+        r = await _queue_one(store, tmp_path, monkeypatch)
+        for bad in ("project:mori", [""], [" project:mori"], ["x" * 129], [1], ["t"] * 11):
+            res = await _a(store.approve(r["id"], reviewer="human", tags=bad))
+            assert "not approved" in res.lower(), (bad, res)
+        assert [x for x in await _pending_rows(store) if x["id"] == r["id"]][0][
+            "status"
+        ] == "pending"
+        assert not await _a(store.get_scope_rows([r["memory_name"]]))
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_rest_approve_passes_tags_through(backend, tmp_path, monkeypatch):
+    from mori_advisor.main import approve_memory
+    from mori_advisor.policy import Actor
+    from tests.test_write_api import _actor_context, _fake_request, _patch_policy
+
+    async def run(store):
+        r = await _queue_one(store, tmp_path, monkeypatch)
+        _patch_policy(monkeypatch, "api")
+        with _actor_context(Actor("reviewer-key", "dreamer")):
+            req = _fake_request(
+                {"write_id": r["id"], "tags": ["project:mori"]},
+                path_params={"name": r["memory_name"]},
+            )
+            req._state.actor = Actor("reviewer-key", "dreamer")  # type: ignore[attr-defined]
+            resp = await approve_memory(req)
+        assert resp.status_code == 200, resp.body
+        rows = await _a(store.get_scope_rows([r["memory_name"]]))
+        assert "project:mori" in rows[r["memory_name"]]["tags"]
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+PARITY_MIX = (
+    "this-proj",
+    "other-proj",
+    "untagged-row",
+    "untagged-pattern",
+    "explicit-global",
+    "proj-ephemeral",
+)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("project", [None, "mori"])
+def test_parity_safe_post_compact_delta_is_a_subset_of_the_safe_brief(
+    backend, project, tmp_path, monkeypatch
+):
+    """The design's promised parity property (board item 4): for the same project (none, or one), every memory a
+    SAFE post-compact delta lists is one the SAFE normal brief would surface. Both backends."""
+    import mori_advisor.main as m
+
+    async def run(store):
+        await _seed_mix(store)
+        await _seed_memory(store, name="proj-ephemeral", tier="ephemeral", tags=["project:mori"])
+        _stub_brief_env(m, monkeypatch, store, tmp_path)
+        delta = await m.brief(project=project, post_compact=True, since="1h")
+        normal = await m.brief(project=project, scope="safe")
+        listed = _names_listed(delta, PARITY_MIX)
+        assert listed, "the delta must list something, or the subset check is vacuous"
+        assert listed <= {n for n in PARITY_MIX if f"**{n}**" in normal}, (listed, normal)
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)

@@ -290,8 +290,14 @@ class SQLiteStore(BaseStore):
     def pending_list_json(self, status: str = "pending", proposed_by: str = "") -> list[dict]:
         return self._mem.pending_list_json(status=status, proposed_by=proposed_by)
 
-    def approve(self, write_id: int, note: str = "", reviewer: str = "") -> str:
-        return self._mem.approve(write_id, note=note, reviewer=reviewer)
+    def approve(
+        self,
+        write_id: int,
+        note: str = "",
+        reviewer: str = "",
+        tags: Sequence[str] | None = None,
+    ) -> str:
+        return self._mem.approve(write_id, note=note, reviewer=reviewer, tags=tags)
 
     def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str:
         return self._mem.reject(write_id, note=note, reviewer=reviewer)

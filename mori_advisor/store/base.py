@@ -211,7 +211,13 @@ class BaseStore(ABC):
     def pending_list_json(self, status: str = "pending", proposed_by: str = "") -> list[dict]: ...
 
     @abstractmethod
-    def approve(self, write_id: int, note: str = "", reviewer: str = "") -> str: ...
+    def approve(
+        self,
+        write_id: int,
+        note: str = "",
+        reviewer: str = "",
+        tags: Sequence[str] | None = None,
+    ) -> str: ...
 
     @abstractmethod
     def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str: ...

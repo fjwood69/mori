@@ -2917,7 +2917,11 @@ async def memory_pending_list(status: str = "pending") -> str:
 
 @mcp.tool()
 async def memory_approve(
-    write_id: int, note: str = "", reviewer: str = "", reason: str = ""
+    write_id: int,
+    note: str = "",
+    reviewer: str = "",
+    reason: str = "",
+    tags: list[str] | None = None,
 ) -> str:
     """Approve a pending write. Applies the change and records reviewer.
 
@@ -2927,12 +2931,15 @@ async def memory_approve(
         reviewer: Hostname of the reviewer (auto-detected if empty).
         reason: Optional TD decision code (too-granular|duplicate|stale|low-value|other)
                 for the measurement layer; omitted → not counted toward coverage.
+        tags: Optional tags ADDED to the approved memory (the queued tags stay). Pass
+              ``["project:<p>"]`` to put an approved decision message in that project's
+              brief in the same step — no follow-up write.
     """
     try:
         require_role("dreamer")
     except PermissionDenied as exc:
         return str(exc)
-    result = await _a(memory_store.approve(write_id, note=note, reviewer=reviewer))
+    result = await _a(memory_store.approve(write_id, note=note, reviewer=reviewer, tags=tags))
     await _write_audit(
         "approve",
         reviewer or "unknown",
@@ -4290,6 +4297,7 @@ async def approve_memory(request: Request) -> JSONResponse:
                 write_id=write_id,
                 note=note,
                 reviewer=reviewer,
+                tags=payload.get("tags"),
             )
         )
         if "not found" in result.lower() or "already processed" in result.lower():
