@@ -878,25 +878,37 @@ def _build_prompt(
 # ── Brief tool (session bootstrap) ────────────────────────────────────────
 
 
-async def _post_compact_brief(project: str | None = None, since: str | None = None) -> str:
+async def _post_compact_brief(
+    project: str | None = None, since: str | None = None, scope: str = "safe"
+) -> str:
     """Lightweight delta re-grounding after context compaction.
 
-    Surfaces only what changed in shared state since `since` — new/updated
-    memories, decisions superseded under you, and fresh evictions — and skips the
-    static bulk: the full memory base, the standards dump, and crucially the
-    per-memory LLM `check_freshness` scan. Driven by the `--post-compact` brief
-    skill flag (fired by the PostCompact hook).
+    Surfaces only what changed in shared state since `since` — new/updated memories, memories superseded under
+    you, and fresh evictions — and skips the static bulk (full memory base, standards dump, per-memory LLM
+    `check_freshness`). Driven by the `--post-compact` brief skill flag (fired by the SessionStart hook after every
+    compaction, normally with no project).
 
-    `since` is the client-supplied boundary (marker file → session start →
-    default window); absent, it falls back to `MORI_POST_COMPACT_WINDOW`
-    (default "6h"). Best-effort, not exactly-once consumption — two memories at
-    the same second straddling the boundary may be missed or repeated; for
-    re-grounding that is acceptable. See `normalise_since` for boundary
-    semantics.
+    B1 (2026-11-01): the delta obeys the NORMAL brief's scope. Membership of every feed is decided by
+    ``resolver.brief_membership`` (the rule ``filter_by_scope`` applies), fail-closed: anything but ``scope="all"``
+    is safe. The cap is applied AFTER membership, so out-of-scope rows neither leak nor consume it. Out-of-scope
+    changes are COUNTED, never named (zero-knowledge, as the unscoped safe brief's "withheld" line). The
+    superseded / evicted feeds are scoped by name (rows looked up including superseded / deleted ones); a row that
+    cannot be resolved is counted, not listed. ``scope="all"`` keeps the legacy delta (opt-in; logged loudly).
+
+    `since` is the client-supplied boundary (marker file -> session start -> default window); absent, it falls back
+    to `MORI_POST_COMPACT_WINDOW` (default "6h"). Best-effort, not exactly-once.
     """
     from mori_advisor.memory_store import normalise_since
+    from mori_advisor.resolver import brief_membership
 
     cap = 30
+    legacy_all = (scope or "safe").strip().lower() == "all"
+    strict = not legacy_all
+    if legacy_all:
+        logger.warning(
+            "post-compact brief running with scope='all' (legacy, cross-project) project=%s",
+            project,
+        )
     raw_since = since or os.environ.get("MORI_POST_COMPACT_WINDOW", "6h")
     try:
         since_norm = normalise_since(raw_since)
@@ -904,17 +916,25 @@ async def _post_compact_brief(project: str | None = None, since: str | None = No
         raw_since = "6h"
         since_norm = normalise_since(raw_since)
 
+    def member(row: dict[str, Any] | None) -> bool:
+        if row is None:
+            return False  # unresolvable -> out of scope (fail closed)
+        if legacy_all and not project:
+            return True  # legacy unscoped "all": everything (opt-in only)
+        return brief_membership(row, project, strict_global=strict)
+
     header = f"**Mori Brief (post-compact delta since {since_norm} UTC)**"
     if project:
         header += f" — project: {project}"
     parts: list[str] = [header]
     changed_any = False
+    withheld = 0
 
-    # Changed memories (new / updated) — store does the time + scope filtering
+    # Changed memories (new / updated): window from the store, membership + cap here.
     try:
-        changed = await _a(
-            memory_store.get_memories_changed_since(raw_since, project=project, limit=cap + 1)
-        )
+        window = await _a(store.get_memories_changed_window(raw_since))
+        changed = [m for m in (window or []) if member(m)]
+        withheld += len(window or []) - len(changed)
         if changed:
             changed_any = True
             lines = ["\n**Changed memories:**"]
@@ -930,39 +950,53 @@ async def _post_compact_brief(project: str | None = None, since: str | None = No
                 )
             parts.append("\n".join(lines))
     except Exception as e:
-        parts.append(f"**Changed memories:** error ({e})")
+        logger.warning("post-compact changed-memories feed failed: %s", e)
+        parts.append("**Changed memories:** unavailable (see server log).")
 
-    # Superseded since — highest-value signal: a decision may have been overturned
-    # under you mid-task. Time-filtered client-side on the exclusive [:19] bound.
+    # Superseded since — highest-value signal: a decision may have been overturned under you mid-task.
     try:
         sup = await _a(store.get_superseded_memories())
         recent = [s for s in (sup or []) if str(s.get("updated_at", ""))[:19] > since_norm]
-        if recent:
+        rows = await _a(store.get_scope_rows([s["name"] for s in recent])) if recent else {}
+        shown = [s for s in recent if member((rows or {}).get(s["name"]))]
+        withheld += len(recent) - len(shown)
+        if shown:
             changed_any = True
             lines = ["\n**⚠ Superseded since:**"]
-            for s in recent[:cap]:
+            for s in shown[:cap]:
                 lines.append(f"- **{s['name']}** → {s['superseded_by']} ({s['title']})")
-            if len(recent) > cap:
-                lines.append(f"  …{len(recent) - cap} more.")
+            if len(shown) > cap:
+                lines.append(f"  …{len(shown) - cap} more.")
             parts.append("\n".join(lines))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("post-compact superseded feed failed: %s", e)
 
     # Evicted since
     try:
         evicts = await _a(store.get_eviction_summary())
         recent_e = [e for e in (evicts or []) if str(e.get("detected_at", ""))[:19] > since_norm]
-        if recent_e:
+        rows = (
+            await _a(store.get_scope_rows([e["memory_name"] for e in recent_e])) if recent_e else {}
+        )
+        shown_e = [e for e in recent_e if member((rows or {}).get(e["memory_name"]))]
+        withheld += len(recent_e) - len(shown_e)
+        if shown_e:
             changed_any = True
             lines = ["\n**Evicted since:**"]
-            for e in recent_e[:cap]:
+            for e in shown_e[:cap]:
                 lines.append(f"- **{e['memory_name']}**: {e['reason']}")
-            if len(recent_e) > cap:
-                lines.append(f"  …{len(recent_e) - cap} more.")
+            if len(shown_e) > cap:
+                lines.append(f"  …{len(shown_e) - cap} more.")
             parts.append("\n".join(lines))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("post-compact evicted feed failed: %s", e)
 
+    if withheld:
+        scope_hint = f"project {project}" if project else "the global lane"
+        parts.append(
+            f"\n{withheld} change(s) outside {scope_hint} withheld (zero-knowledge); "
+            "run /brief --project <name> for another project."
+        )
     if not changed_any:
         parts.append("\nNothing changed in shared state since last brief.")
 
@@ -1025,19 +1059,20 @@ async def brief(
     """
     from datetime import datetime, timezone
 
+    # Provenance scope resolution (default "safe"). safe_scope routes cross-project body
+    # exposure: strict global lane + zero-knowledge out-of-scope. "all" = legacy.
+    # B1 (2026-11-01): computed BEFORE the post-compact branch, which used to return without it.
+    _scope = (scope or os.environ.get("MORI_BRIEF_SCOPE", "safe")).strip().lower()
+    safe_scope = _scope != "all"
+
     if post_compact:
-        result = await _post_compact_brief(project=project, since=since)
+        result = await _post_compact_brief(project=project, since=since, scope=_scope)
         # MCP-tool channel: the return value is delivered into the agent's transcript by the MCP transport,
         # so delivery is CONFIRMED whenever we return substantive content.
         record_brief_injection(
             channel="mcp_tool", scope="post_compact", confirmed=bool(result and result.strip())
         )
         return result
-
-    # Provenance scope resolution (default "safe"). safe_scope routes cross-project body
-    # exposure: strict global lane + zero-knowledge out-of-scope. "all" = legacy.
-    _scope = (scope or os.environ.get("MORI_BRIEF_SCOPE", "safe")).strip().lower()
-    safe_scope = _scope != "all"
 
     parts: list[str] = []
 
@@ -1235,6 +1270,16 @@ async def brief(
         dp = DreamPipeline(db_path=DATA_DIR / "memories.db", bifrost_client=bifrost, store=_backend)
         status = await dp.get_status()
         parts.append(f"**Dream state:** {status}")
+    except Exception:
+        pass
+
+    # B1: decision messages wait in pending_writes for a human. Count only, never titles (zero-knowledge).
+    try:
+        n_dec = int(await _a(store.pending_count_by_proposer("msg:", prefix=True)) or 0)
+        if n_dec:
+            parts.append(
+                f"**Review queue:** {n_dec} decision message(s) awaiting review (memory_pending_list)."
+            )
     except Exception:
         pass
 

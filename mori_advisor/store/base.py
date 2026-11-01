@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from contextlib import contextmanager
 from typing import Any, Awaitable, Generator
 
@@ -132,13 +133,23 @@ class BaseStore(ABC):
         ...
 
     @abstractmethod
-    def get_memories_changed_since(
-        self,
-        since: str,
-        project: str | None = None,
-        include_global: bool = True,
-        limit: int = 30,
-    ) -> list[dict]: ...
+    def get_memories_changed_window(
+        self, since: str, max_rows: int = 5000
+    ) -> Sequence[dict[str, Any]] | Awaitable[Sequence[dict[str, Any]]]:
+        """Live memories updated after `since` (window only; membership is the caller's, via
+        ``resolver.brief_membership``). B1, 2026-11-01."""
+
+    @abstractmethod
+    def get_scope_rows(
+        self, names: Sequence[str]
+    ) -> dict[str, dict[str, Any]] | Awaitable[dict[str, dict[str, Any]]]:
+        """{name: {tags, type, scope, tier}} including superseded / soft-deleted rows (membership checks)."""
+
+    @abstractmethod
+    def pending_count_by_proposer(
+        self, proposed_by: str, prefix: bool = False
+    ) -> int | Awaitable[int]:
+        """Pending rows proposed by `proposed_by` (or starting with it when `prefix`)."""
 
     @abstractmethod
     def session_summary(self, session_id: str) -> str: ...

@@ -43,6 +43,8 @@ asymmetry live in the store method that consumes these, not here.
 
 from __future__ import annotations
 
+from typing import Any
+
 from mori_advisor.scope import ScopeMap
 
 # Explicit cross-project tags — a row carrying either is global regardless of type
@@ -128,3 +130,30 @@ def compile_context_tags(project: str | None, strict_global: bool) -> frozenset[
     if not strict_global:
         ctx.add(LEGACY_TYPE_GLOBAL_TAG)
     return frozenset(ctx)
+
+
+BRIEF_PROJECT_LANE_TIERS = frozenset({"canonical", "working"})
+
+
+def brief_membership(row: dict[str, Any], project: str | None, strict_global: bool) -> bool:
+    """The normal brief's membership rule for ONE row, as ``filter_by_scope`` applies it (B1, 2026-11-01).
+
+    Shared by every path that surfaces memories into a brief (the post-compact delta included), so the paths
+    cannot drift apart again:
+
+      * the row must be ``in_scope`` of the context compiled from ``(project, strict_global)``;
+      * project lane = the row carries the raw ``project:<P>`` tag -> tier-gated to canonical/working
+        (``filter_by_scope``'s project-lane query);
+      * global lane = in scope without that tag -> any tier (the legacy global lane has no tier filter).
+
+    With ``project`` empty and ``strict_global`` True (the unscoped safe brief) only genuinely global rows match.
+    An untagged row compiles to the UNROUTED sentinel and never matches.
+    """
+    from mori_advisor.scope import in_scope
+
+    if not in_scope(compile_memory_scope(row), compile_context_tags(project, strict_global)):
+        return False
+    tags = row.get("tags") or []
+    if project and f"project:{project}" in {str(t) for t in tags}:
+        return str(row.get("tier", "")) in BRIEF_PROJECT_LANE_TIERS
+    return True

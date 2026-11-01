@@ -368,8 +368,8 @@ agent obeys them mid-task. Surfaced standards inform; they don't bind.)
 Delegate tasks, ask questions, and share decisions across your Claude Code
 instances — without a shared session. Messages are typed, reply-threaded, and
 picked up at the next `/brief`. The `mori-msg` daemon receives messages
-server-side: `decision` messages are written directly to the memory store
-without any human session on the receiving end.
+server-side: `decision` messages are queued for human review (`memory_pending_list` /
+`memory_approve`); nothing an agent decides reaches memory until a human approves it.
 
 ```bash
 # From your laptop, delegate a task to a workstation:
