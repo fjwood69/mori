@@ -36,8 +36,16 @@ an operator checking the merge commit's CI by hand before tagging.
     moved.
   - SSH host-key checking is on, from the new `GCE_HOST_KEY` environment secret.
   - Deploys run one at a time (`concurrency`) and are never cancelled.
-- `tests/test_cd_gate.py` runs against real recorded API responses (v2.3.13, v2.3.10 and a PR head);
+- **The registry's `latest` moves only when the release is the highest version.** Before, every release pushed
+  `latest`, so re-running CD for an older tag moved it backwards. The production host still retags its *local*
+  `latest` to whatever it just pulled, including on a rollback, because the running units follow that local tag.
+- `tests/test_cd_gate.py` runs against real recorded API responses (v2.3.13, v2.3.10, a PR head and the tag list);
   `tests/test_cd_workflows.py` pins the workflow safeguards.
+
+**Disclosed:** the claim that production secrets never reach a job before the tag is validated is true of the
+Tailscale key, but not of the deploy key, which any branch's workflow can still read. Only the host being reachable
+solely over the tailnet keeps that from blocking the tag. Moving the deploy key into the `production` environment
+(with a key rotation) is the next item.
 
 ## v2.3.13 — decision messages go to review; the post-compact brief obeys the brief's scope (B1)
 

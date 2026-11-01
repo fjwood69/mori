@@ -260,6 +260,15 @@ class GitHub:
             raise GateError("GitHub API workflow runs: unexpected shape")
         return list(body["workflow_runs"])
 
+    def tag_names(self) -> list[str]:
+        """Every release tag name (strict vX.Y.Z only), lightweight or annotated. One request: measured 2026-11-01,
+        matching-refs ignores per_page/page and returns every ref on each call, so a page loop would never end."""
+        body = self.get("git/matching-refs/tags/v")
+        if not isinstance(body, list):
+            raise GateError("GitHub API matching-refs: unexpected shape")
+        names = {str((ref or {}).get("ref", "")).removeprefix("refs/tags/") for ref in body}
+        return sorted(n for n in names if TAG_RE.fullmatch(n))
+
     def jobs(self, run_id: int) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         page = 1
@@ -346,6 +355,30 @@ def run_gate(
         return Verdict(outcome="fail", reasons=[str(e)], record={"tag": tag})
 
 
+def version_tuple(tag: str) -> tuple[int, int, int]:
+    m = TAG_RE.fullmatch(tag)
+    if not m:
+        raise ValueError(f"not a strict vX.Y.Z tag: {tag!r}")
+    return int(m[1]), int(m[2]), int(m[3])
+
+
+def latest_decision(gh: GitHub, tag: str) -> tuple[bool, str]:
+    """Should the registry's ``latest`` move to this release? Only when it is the highest version (board ruling,
+    2026-11-01), so re-running CD for an older tag, or deploying an older line, never moves ``latest`` backwards.
+    If the tag list can't be read, ``latest`` stays where it is: that must not block a deploy that passed the gate.
+    (The host still retags its LOCAL ``latest`` to whatever it just pulled, including on a rollback: the running
+    units follow that local tag. Only the registry push depends on this.)"""
+    try:
+        names = gh.tag_names()
+    except GateError as e:
+        return False, f"latest not moved: could not list tags ({e})"
+    top = max((version_tuple(n) for n in names), default=None)
+    mine = version_tuple(tag)
+    if top is not None and mine < top:
+        return False, f"latest not moved: {tag} is older than the highest release tag"
+    return True, f"latest moves to {tag} (the highest release tag)"
+
+
 def verify_tag(gh: GitHub, tag: str, sha: str) -> list[str]:
     """For the release job: the tag still points at the commit the gate approved."""
     if not TAG_RE.fullmatch(tag):
@@ -413,9 +446,13 @@ def main(argv: list[str] | None = None) -> int:
     _append("GITHUB_STEP_SUMMARY", text)
     if v.outcome == "pass":
         rec = v.record
+        highest, why = latest_decision(gh, a.tag)
+        print(why)
+        _append("GITHUB_STEP_SUMMARY", f"- {why}\n")
         _append(
             "GITHUB_OUTPUT",
-            f"sha={rec['sha']}\nci_run_id={rec['ci_run_id']}\nci_run_url={rec['ci_run_url']}\n",
+            f"sha={rec['sha']}\nci_run_id={rec['ci_run_id']}\nci_run_url={rec['ci_run_url']}\n"
+            f"is_highest={'true' if highest else 'false'}\n",
         )
         return 0
     return 1

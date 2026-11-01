@@ -26,7 +26,9 @@ jobs:
   # #73: CD deploys only a tag whose own commit passed CI. Every other job needs this one. It validates the tag
   # name first (strict vX.Y.Z), then: annotated tag -> this exact commit, on main, version == pyproject, and the
   # newest ci.yml run on this commit (push to main or workflow_dispatch) succeeded with ci-ok and every job green.
-  # No environment here: production secrets never reach a job before the tag is validated. No override exists;
+  # No environment here, so the environment's secrets (the Tailscale key) never reach a job before the tag is
+  # validated. The deploy SSH key is still a REPOSITORY secret that any branch's workflow can read; only the host
+  # being reachable solely over the tailnet keeps that from mattering (moving it is the next item). No override exists;
   # the emergency path is the manual one in docs/RELEASING.md.
   gate:
     name: CI gate (this commit passed CI)
@@ -39,6 +41,7 @@ jobs:
       sha: ${{ steps.gate.outputs.sha }}
       ci_run_id: ${{ steps.gate.outputs.ci_run_id }}
       ci_run_url: ${{ steps.gate.outputs.ci_run_url }}
+      is_highest: ${{ steps.gate.outputs.is_highest }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -93,7 +96,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ needs.gate.outputs.is_highest == 'true' }}
 
       - name: Build and push
         uses: docker/build-push-action@v7

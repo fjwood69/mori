@@ -196,6 +196,14 @@ def test_the_deploy_step_validates_the_tag_with_the_gates_pattern():
     )
 
 
+def test_registry_latest_moves_only_for_the_highest_version():
+    jobs = _load("cd.yml")["jobs"]
+    assert jobs["gate"]["outputs"]["is_highest"] == "${{ steps.gate.outputs.is_highest }}"
+    tags = next(s for s in _steps(jobs["build-and-push"]) if s.get("id") == "meta")["with"]["tags"]
+    latest = [line.strip() for line in tags.splitlines() if "value=latest" in line]
+    assert latest == ["type=raw,value=latest,enable=${{ needs.gate.outputs.is_highest == 'true' }}"]
+
+
 def test_release_rechecks_the_tag_before_publishing():
     steps = _load("cd.yml")["jobs"]["create-release"]["steps"]
     names = [s.get("name") for s in steps]

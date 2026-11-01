@@ -484,3 +484,113 @@ def test_dry_run_without_an_expected_sha_resolves_it_from_the_tag():
         sleep=lambda s: None,
     )
     assert v.outcome == "pass" and v.record["sha"] == V13_SHA and v.record["mode"] == "dry-run"
+
+
+# ── latest: the registry's `latest` moves only for the highest version (board ruling, 2026-11-01) ────────────────
+
+
+def _refs_api(refs=None, fail=False):
+    refs = refs if refs is not None else _load("matching_refs_tags.json")
+
+    def opener(req, timeout=None):
+        if fail:
+            raise urllib.error.URLError("down")
+        assert req.full_url.endswith("/git/matching-refs/tags/v"), req.full_url
+        return io.BytesIO(json.dumps(refs).encode())
+
+    return g.GitHub("fjwood69/mori", "t", opener=opener)
+
+
+@pytest.mark.parametrize(
+    "tag,moves",
+    [
+        ("v2.3.14", True),
+        ("v2.3.13", True),
+        ("v2.3.12", False),
+        ("v2.2.24", False),
+        ("v3.0.0", True),
+    ],
+)
+def test_latest_moves_only_for_the_highest_version(tag, moves):
+    """Recorded tag list (91 refs on 2026-11-01; the highest is v2.3.13)."""
+    highest, why = g.latest_decision(_refs_api(), tag)
+    assert highest is moves, why
+
+
+def test_latest_ignores_tags_that_are_not_strict_releases():
+    refs = [
+        {"ref": "refs/tags/v2.3.13"},
+        {"ref": "refs/tags/v9.0.0-rc1"},
+        {"ref": "refs/tags/v10.0"},
+    ]
+    assert g.latest_decision(_refs_api(refs), "v2.3.14")[0] is True
+
+
+def test_latest_stays_put_if_the_tags_cannot_be_listed():
+    highest, why = g.latest_decision(_refs_api(fail=True), "v2.3.14")
+    assert highest is False and "could not list tags" in why
+
+
+def test_latest_stays_put_on_an_unexpected_shape():
+    def opener(req, timeout=None):
+        return io.BytesIO(json.dumps({"message": "odd"}).encode())
+
+    assert g.latest_decision(g.GitHub("o/r", "t", opener=opener), "v2.3.14")[0] is False
+
+
+@pytest.mark.parametrize(
+    "refs,expected", [(["v2.3.12", "v2.3.13"], "true"), (["v2.3.13", "v2.3.20"], "false")]
+)
+def test_main_writes_the_latest_decision(monkeypatch, tmp_path, refs, expected):
+    fx = _green_fixture()
+    api = FakeAPI(fx)
+    body = [{"ref": f"refs/tags/{t}"} for t in refs]
+
+    def opener(req, timeout=None):
+        if req.full_url.endswith("/git/matching-refs/tags/v"):
+            return io.BytesIO(json.dumps(body).encode())
+        return api(req, timeout)
+
+    monkeypatch.setattr(g.urllib.request, "urlopen", opener)
+    out = tmp_path / "out"
+    monkeypatch.setenv("GH_TOKEN", "t")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert g.main(["check", "--repo", "fjwood69/mori", "--tag", "v2.3.13", "--sha", V13_SHA]) == 0
+    assert f"is_highest={expected}" in out.read_text().splitlines()
+
+
+def test_main_writes_the_gated_commit_run_and_latest_decision(monkeypatch, tmp_path):
+    fx = _green_fixture()
+    api = FakeAPI(fx)
+    refs = [{"ref": "refs/tags/v2.3.12"}, {"ref": "refs/tags/v2.3.13"}]
+
+    def opener(req, timeout=None):
+        if req.full_url.endswith("/git/matching-refs/tags/v"):
+            return io.BytesIO(json.dumps(refs).encode())
+        return api(req, timeout)
+
+    monkeypatch.setattr(g.urllib.request, "urlopen", opener)
+    out, summary = tmp_path / "out", tmp_path / "summary"
+    monkeypatch.setenv("GH_TOKEN", "t")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    assert g.main(["check", "--repo", "fjwood69/mori", "--tag", "v2.3.13", "--sha", V13_SHA]) == 0
+    lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    assert lines == {
+        "sha": V13_SHA,
+        "ci_run_id": str(V13_RUN),
+        "ci_run_url": fx["runs"][0]["html_url"],
+        "is_highest": "true",
+    }
+    assert "CD gate: PASS" in summary.read_text()
+
+
+def test_main_fails_and_writes_no_outputs_when_the_gate_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(g.urllib.request, "urlopen", FakeAPI(_load("v2_3_13.json")))
+    out = tmp_path / "out"
+    monkeypatch.setenv("GH_TOKEN", "t")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert g.main(["check", "--repo", "fjwood69/mori", "--tag", "v2.3.13", "--sha", V13_SHA]) == 1
+    assert not out.exists()

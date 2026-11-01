@@ -64,6 +64,15 @@ release job; read-only token).
   endpoint, and UAT runs no ingestion service).
 - CD rebuilds the image from the gated commit; the deployed image is not the one CI built. The gate attests the
   source, not the artifact.
+- The deploy SSH key is a repository secret, so any branch's workflow can read it; only the `production`
+  environment's secrets (the Tailscale key) are limited to release tags. Only the host being reachable solely over
+  the tailnet keeps that from mattering. Moving the key into the environment is the next item.
+
+## The registry's `latest`
+
+The registry's `latest` moves only when the release is the highest version (the gate's `is_highest` output), so
+re-running CD for an older tag never moves it backwards. On the host, the deploy still retags the local `latest` to
+the image it just pulled, including on a rollback, because the running units follow that local tag.
 
 ## Repository settings (out of band; required before tagging)
 
