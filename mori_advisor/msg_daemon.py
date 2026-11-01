@@ -4,7 +4,9 @@ Subscribes to mori.msg.<hostname> + mori.msg.broadcast + mori.reply.*
 on the MORI_MSG JetStream stream. Dispatches by message type:
 
   decision  → persist + queue for HUMAN REVIEW (pending_writes, named from the
-              message id); nothing reaches memories until a reviewer approves
+              message id; idempotent per id; capped; fails closed on a store
+              error); nothing reaches memories until a reviewer approves. The
+              sender is self-asserted: NATS uses shared credentials.
   task      → persist (pending) + auto-ack back to sender
   done      → update status (dream runs on its own schedule)
   question / broadcast → persist (pending) for /brief pickup
@@ -29,6 +31,7 @@ from nats.errors import TimeoutError as JsTimeout
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 from nats.js.errors import NotFoundError
 
+from mori_advisor.memory_store import _clean
 from mori_advisor.names import normalise_name
 
 from .msg import (
@@ -60,6 +63,9 @@ HEADLESS_TRUSTED = {
 HOSTNAME = socket.gethostname().split(".")[0]
 CONSUMER_NAME = f"mori-msg-{HOSTNAME}"
 MAX_PENDING_PER_SENDER = 20  # B1: review-queue flood guard
+# B1 (code consult 3c61eeb7/fdec15f7): the sender name is self-asserted (NATS uses shared credentials), so a
+# per-sender cap alone is bypassed by rotating names. A total cap bounds the review queue whatever the names.
+MAX_PENDING_DECISIONS_TOTAL = 100
 
 # Subjects this daemon cares about
 FILTER_SUBJECTS = [
@@ -81,6 +87,12 @@ async def _maybe_await(x: Any) -> Any:
     return await x if inspect.isawaitable(x) else x
 
 
+def _record(msg_store: MsgStore, m: MoriMessage, status: str) -> None:
+    """Log the message with `status`, overwriting an earlier ``queue-error`` (upsert alone is INSERT OR IGNORE)."""
+    msg_store.upsert(m, status=status)
+    msg_store.set_status(m.id, status)
+
+
 async def _queue_decision_for_review(
     m: MoriMessage, msg_store: MsgStore, memory_store: BaseStore
 ) -> None:
@@ -89,58 +101,80 @@ async def _queue_decision_for_review(
 
     * Named from the MESSAGE ID (``decision-msg-<id>``), never a slug of the title: a slug could collide with an
       existing memory and, on approval, overwrite it (board requirement 1). An existing memory of that name refuses.
-    * ``proposed_by="msg:<host>"``, ``source="msg_daemon"``; the raw provenance (msg id, sender, recipient, ts) is
-      stored on the row for the reviewer (requirement 3). Approval keeps actor ``msg`` + host (requirement 2, in
-      the store's approve()).
-    * At most MAX_PENDING_PER_SENDER pending decisions per sender; beyond that the message is recorded
-      ``rejected-queue-full`` (review-queue flood guard).
+    * Idempotent per message id: a re-delivered id that is already logged is skipped, so it can never REPLACE a
+      pending row a reviewer is looking at. Only an earlier ``queue-error`` is retried.
+    * ``proposed_by="msg:<host>"``, ``source="msg_daemon"``; the raw provenance (msg id, sender, recipient, ts,
+      ``sender_verified: false``) is stored on the row for the reviewer (requirement 3). Approval keeps actor
+      ``msg`` + host (requirement 2, in the store's approve()). The sender is NOT authenticated: NATS uses shared
+      credentials, so ``from`` is whatever the publisher claims.
+    * At most MAX_PENDING_PER_SENDER pending decisions per sender and MAX_PENDING_DECISIONS_TOTAL in all; beyond
+      either the message is recorded ``rejected-queue-full`` (review-queue flood guard).
+    * FAIL CLOSED: if a store call fails (including the cap counts), nothing is queued and the message is
+      recorded ``queue-error``.
     * Tags ``decision-msg`` + ``from:<host>`` make it findable; with no project tag it is unrouted, so no brief
-      serves it until a reviewer adds a scope after approval.
+      serves it until a reviewer passes ``tags=["project:<p>"]`` to memory_approve.
     """
-    sender = m.from_agent or "unknown"
+    seen = msg_store.get_status(m.id)
+    if seen is not None and seen != "queue-error":
+        logger.info("Decision %s already handled (%s); re-delivery skipped", m.id[:8], seen)
+        return
+    sender = _clean(m.from_agent, 64) or "unknown"
     proposer = f"msg:{sender}"
     name = normalise_name(f"decision-msg-{m.id}")
-    if (
-        int(await _maybe_await(memory_store.pending_count_by_proposer(proposer)) or 0)
-        >= MAX_PENDING_PER_SENDER
-    ):
-        msg_store.upsert(m, status="rejected-queue-full")
-        logger.warning(
-            "Decision %s from %s refused: %d already pending",
-            m.id[:8],
-            sender,
-            MAX_PENDING_PER_SENDER,
+    try:
+        per_sender = int(await _maybe_await(memory_store.pending_count_by_proposer(proposer)))
+        total = int(await _maybe_await(memory_store.pending_count_by_proposer("msg:", prefix=True)))
+        if per_sender >= MAX_PENDING_PER_SENDER or total >= MAX_PENDING_DECISIONS_TOTAL:
+            _record(msg_store, m, "rejected-queue-full")
+            logger.warning(
+                "Decision %s from %s refused: queue full (%d from this sender, %d in all; caps %d/%d)",
+                m.id[:8],
+                sender,
+                per_sender,
+                total,
+                MAX_PENDING_PER_SENDER,
+                MAX_PENDING_DECISIONS_TOTAL,
+            )
+            return
+        if await _maybe_await(memory_store.get_scope_rows([name])):
+            _record(msg_store, m, "rejected-name-exists")
+            logger.warning(
+                "Decision %s from %s refused: a memory named %s already exists",
+                m.id[:8],
+                sender,
+                name,
+            )
+            return
+        provenance = {
+            "actor": "msg",
+            "actor_detail": sender,
+            "source": "msg_daemon",
+            "msg_id": m.id,
+            "to": m.to,
+            "ts": str(m.ts),
+            "sender_verified": False,
+        }
+        await _maybe_await(
+            memory_store.queue_pending_write(
+                name=name,
+                title=m.body[:80],
+                body=m.body,
+                type="project",
+                tier="working",
+                tags=["decision-msg", f"from:{sender}"],
+                origin_clients=[sender],
+                proposed_by=proposer,
+                source="msg_daemon",
+                provenance=json.dumps(provenance, sort_keys=True),
+            )
         )
+    except Exception:
+        logger.exception(
+            "Decision %s from %s NOT queued (store error); recorded queue-error", m.id[:8], sender
+        )
+        _record(msg_store, m, "queue-error")
         return
-    if await _maybe_await(memory_store.get_scope_rows([name])):
-        msg_store.upsert(m, status="rejected-name-exists")
-        logger.warning(
-            "Decision %s from %s refused: a memory named %s already exists", m.id[:8], sender, name
-        )
-        return
-    provenance = {
-        "actor": "msg",
-        "actor_detail": sender,
-        "source": "msg_daemon",
-        "msg_id": m.id,
-        "to": m.to,
-        "ts": str(m.ts),
-    }
-    await _maybe_await(
-        memory_store.queue_pending_write(
-            name=name,
-            title=m.body[:80],
-            body=m.body,
-            type="project",
-            tier="working",
-            tags=["decision-msg", f"from:{sender}"],
-            origin_clients=[sender],
-            proposed_by=proposer,
-            source="msg_daemon",
-            provenance=json.dumps(provenance, sort_keys=True),
-        )
-    )
-    msg_store.upsert(m, status="queued-for-review")
+    _record(msg_store, m, "queued-for-review")
     logger.info("Decision %s from %s queued for review as %s", m.id[:8], sender, name)
 
 

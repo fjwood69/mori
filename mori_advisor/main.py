@@ -902,6 +902,7 @@ async def _post_compact_brief(
     from mori_advisor.resolver import brief_membership
 
     cap = 30
+    window_max = 5000
     legacy_all = (scope or "safe").strip().lower() == "all"
     strict = not legacy_all
     if legacy_all:
@@ -921,20 +922,28 @@ async def _post_compact_brief(
             return False  # unresolvable -> out of scope (fail closed)
         if legacy_all and not project:
             return True  # legacy unscoped "all": everything (opt-in only)
-        return brief_membership(row, project, strict_global=strict)
+        try:
+            return brief_membership(row, project, strict_global=strict)
+        except Exception:  # one malformed row degrades to withheld, never fails the feed
+            return False
 
     header = f"**Mori Brief (post-compact delta since {since_norm} UTC)**"
     if project:
         header += f" — project: {project}"
     parts: list[str] = [header]
     changed_any = False
-    withheld = 0
+    withheld: set[str] = set()  # distinct out-of-scope memory names across all feeds
+    feed_errors = False
 
     # Changed memories (new / updated): window from the store, membership + cap here.
     try:
-        window = await _a(store.get_memories_changed_window(raw_since))
-        changed = [m for m in (window or []) if member(m)]
-        withheld += len(window or []) - len(changed)
+        window = list(
+            await _a(store.get_memories_changed_window(raw_since, max_rows=window_max + 1)) or []
+        )
+        truncated = len(window) > window_max
+        window = window[:window_max]
+        changed = [m for m in window if member(m)]
+        withheld |= {str(m.get("name")) for m in window if not member(m)}
         if changed:
             changed_any = True
             lines = ["\n**Changed memories:**"]
@@ -949,37 +958,56 @@ async def _post_compact_brief(
                     f"  …{len(changed) - cap} more — run a full /brief if you need the rest."
                 )
             parts.append("\n".join(lines))
+        if truncated:
+            parts.append(f"  (window truncated at {window_max} changes — run a full /brief.)")
     except Exception as e:
+        feed_errors = True
         logger.warning("post-compact changed-memories feed failed: %s", e)
         parts.append("**Changed memories:** unavailable (see server log).")
 
     # Superseded since — highest-value signal: a decision may have been overturned under you mid-task.
     try:
         sup = await _a(store.get_superseded_memories())
-        recent = [s for s in (sup or []) if str(s.get("updated_at", ""))[:19] > since_norm]
-        rows = await _a(store.get_scope_rows([s["name"] for s in recent])) if recent else {}
+        recent = [
+            s
+            for s in (sup or [])
+            if s.get("name") and str(s.get("updated_at", ""))[:19] > since_norm
+        ]
+        names = {s["name"] for s in recent} | {
+            s["superseded_by"] for s in recent if s.get("superseded_by")
+        }
+        rows = await _a(store.get_scope_rows(sorted(names))) if recent else {}
         shown = [s for s in recent if member((rows or {}).get(s["name"]))]
-        withheld += len(recent) - len(shown)
+        withheld |= {s["name"] for s in recent if s not in shown}
         if shown:
             changed_any = True
             lines = ["\n**⚠ Superseded since:**"]
             for s in shown[:cap]:
-                lines.append(f"- **{s['name']}** → {s['superseded_by']} ({s['title']})")
+                # The SUPERSEDING memory is named only if it is in scope too (zero-knowledge).
+                target = s.get("superseded_by") or ""
+                target_txt = target if member((rows or {}).get(target)) else "[withheld]"
+                lines.append(f"- **{s['name']}** → {target_txt} ({s.get('title', '')})")
             if len(shown) > cap:
                 lines.append(f"  …{len(shown) - cap} more.")
             parts.append("\n".join(lines))
     except Exception as e:
+        feed_errors = True
         logger.warning("post-compact superseded feed failed: %s", e)
+        parts.append("**Superseded since:** unavailable (see server log).")
 
     # Evicted since
     try:
         evicts = await _a(store.get_eviction_summary())
-        recent_e = [e for e in (evicts or []) if str(e.get("detected_at", ""))[:19] > since_norm]
+        recent_e = [
+            e
+            for e in (evicts or [])
+            if e.get("memory_name") and str(e.get("detected_at", ""))[:19] > since_norm
+        ]
         rows = (
             await _a(store.get_scope_rows([e["memory_name"] for e in recent_e])) if recent_e else {}
         )
         shown_e = [e for e in recent_e if member((rows or {}).get(e["memory_name"]))]
-        withheld += len(recent_e) - len(shown_e)
+        withheld |= {e["memory_name"] for e in recent_e if e not in shown_e}
         if shown_e:
             changed_any = True
             lines = ["\n**Evicted since:**"]
@@ -989,16 +1017,22 @@ async def _post_compact_brief(
                 lines.append(f"  …{len(shown_e) - cap} more.")
             parts.append("\n".join(lines))
     except Exception as e:
+        feed_errors = True
         logger.warning("post-compact evicted feed failed: %s", e)
+        parts.append("**Evicted since:** unavailable (see server log).")
 
     if withheld:
         scope_hint = f"project {project}" if project else "the global lane"
         parts.append(
-            f"\n{withheld} change(s) outside {scope_hint} withheld (zero-knowledge); "
+            f"\n{len(withheld)} change(s) outside {scope_hint} withheld (zero-knowledge); "
             "run /brief --project <name> for another project."
         )
-    if not changed_any:
-        parts.append("\nNothing changed in shared state since last brief.")
+    if not changed_any and not feed_errors:
+        parts.append(
+            "\nNothing changed in your scope since last brief."
+            if withheld
+            else "\nNothing changed in shared state since last brief."
+        )
 
     # Dream state one-liner (cheap) — no freshness check on this path
     try:

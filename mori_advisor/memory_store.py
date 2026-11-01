@@ -249,7 +249,35 @@ def _msg_review_line(source: object, provenance: object) -> str:
         msg_id = json.loads(raw or "{}").get("msg_id", "?")
     except (ValueError, TypeError, AttributeError):
         msg_id = "?"
-    return f"\n      msg id: {msg_id} | source: msg_daemon | provenance: {raw}"
+    return (
+        f"\n      msg id: {_clean(msg_id, 64)} | source: msg_daemon"
+        f" | sender unverified (NATS shared credentials) | provenance: {_clean(raw, 500)}"
+    )
+
+
+_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _clean(text: object, limit: int) -> str:
+    """One physical line, no control characters, bounded: for sender-asserted text shown to reviewers / ledgers."""
+    return _CTRL.sub(" ", str(text or "")).strip()[:limit]
+
+
+def _like_prefix(prefix: str) -> str:
+    """A LIKE pattern matching `prefix` literally (``\\``, ``%`` and ``_`` escaped; pair with ESCAPE '\\')."""
+    return prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def as_tag_list(raw: object) -> list[str]:
+    """Stored tags -> list[str], tolerating a JSON string, a double-encoded string, or garbage (-> [])."""
+    val = raw
+    for _ in range(2):
+        if isinstance(val, str):
+            try:
+                val = json.loads(val or "[]")
+            except ValueError:
+                return []
+    return [str(t) for t in val] if isinstance(val, list) else []
 
 
 APPROVAL_TAG_MAX = 10
@@ -277,24 +305,34 @@ def merge_approval_tags(queued: Sequence[str], extra: Sequence[str] | None) -> l
     return out
 
 
-def _approval_provenance(rowd: dict[str, Any], reviewer: str) -> Provenance:
+def _approval_provenance(
+    rowd: dict[str, Any], reviewer: str, added_tags: Sequence[str] | None = None
+) -> Provenance:
     """Provenance for an approved pending write (B1, 2026-11-01; board requirement 2).
 
     A decision message queued by the msg daemon keeps its ORIGIN on approval: actor ``msg`` and the sending host
     (``proposed_by = "msg:<host>"``), so the audit ledger attributes the memory to the agent that asserted it. The
     reviewer is recorded in the audit detail (and in pending_writes.reviewed_by). Every other approved write keeps
-    the governed-promotion provenance it always had.
+    the governed-promotion provenance it always had. Tags added at approval are recorded in the audit detail.
+    Sender-asserted text is single-lined and bounded (``_clean``) before it reaches the ledger.
     """
-    who = reviewer or "trusted-dreamer"
+    who = _clean(reviewer or "trusted-dreamer", 64)
+    tag_note = f" | +tags {_clean(','.join(added_tags), 300)}" if added_tags else ""
     proposed_by = str(rowd.get("proposed_by") or "")
-    if (rowd.get("source") or "").strip() == "msg_daemon" and proposed_by.startswith("msg:"):
+    source = str(rowd.get("source") or "").strip()
+    if source == "msg_daemon" and proposed_by.startswith("msg:"):
         return Provenance(
             actor="msg",
-            actor_detail=proposed_by[len("msg:") :] or "msg",
-            source=f"msg_daemon | approved by {who}",
+            actor_detail=_clean(proposed_by[len("msg:") :], 64) or "msg",
+            source=f"msg_daemon | approved by {who}{tag_note}",
             op="approve",
         )
-    return Provenance(actor="governed-promotion", source="store:approve", op="approve")
+    if source == "msg_daemon":
+        logger.warning(
+            "approve: msg_daemon row without a msg: proposer (%r); using governed-promotion",
+            proposed_by[:80],
+        )
+    return Provenance(actor="governed-promotion", source=f"store:approve{tag_note}", op="approve")
 
 
 class MemoryStore:
@@ -2183,12 +2221,10 @@ class MemoryStore:
         ``resolver.brief_membership`` (the normal brief's rule) and the cap is applied after it, so out-of-scope
         rows can neither leak nor consume the cap. ``max_rows`` is a safety bound, not the brief's cap.
         `since` accepts relative shorthand ("6h"/"7d") or ISO-8601 (``normalise_since``); exclusive bound.
-        Returns [] on a parse/DB error.
+        Errors RAISE (an unparseable `since` -> ValueError; DB errors propagate), as on Postgres: the caller reports
+        the feed unavailable rather than "nothing changed".
         """
-        try:
-            since_norm = normalise_since(since)
-        except (ValueError, TypeError):
-            return []
+        since_norm = normalise_since(since)
         conn = self._get_conn()
         conn.row_factory = sqlite3.Row
         try:
@@ -2203,9 +2239,6 @@ class MemoryStore:
                 """,
                 (since_norm, max_rows),
             ).fetchall()
-        except sqlite3.Error as e:
-            logger.warning("get_memories_changed_window failed: %s", e)
-            return []
         finally:
             conn.close()
         return [self._row_to_dict(r) for r in rows]
@@ -2213,37 +2246,38 @@ class MemoryStore:
     def get_scope_rows(self, names: Sequence[str]) -> dict[str, dict[str, Any]]:
         """{name: {tags, type, scope, tier}} for membership checks, INCLUDING superseded and soft-deleted rows
         (the superseded/evicted feeds name memories the live queries exclude). Latest row per name wins.
-        Unknown names are absent (the caller treats them as out of scope: fail closed)."""
-        if not names:
-            return {}
+        Unknown names are absent (the caller treats them as out of scope: fail closed). Errors RAISE, as on
+        Postgres. Queried in chunks of 500 names to stay under SQLite's bound-variable limit."""
+        wanted = [*dict.fromkeys(names)]
+        out: dict[str, dict[str, Any]] = {}
+        if not wanted:
+            return out
         conn = self._get_conn()
         conn.row_factory = sqlite3.Row
         try:
-            marks = ",".join("?" for _ in names)
-            rows = conn.execute(
-                f"SELECT name, tags, type, scope, tier FROM memories WHERE name IN ({marks}) ORDER BY id ASC",
-                [*names],
-            ).fetchall()
-        except sqlite3.Error as e:
-            logger.warning("get_scope_rows failed: %s", e)
-            return {}
+            for k in range(0, len(wanted), 500):
+                chunk = wanted[k : k + 500]
+                marks = ",".join("?" for _ in chunk)
+                for r in conn.execute(
+                    f"SELECT name, tags, type, scope, tier FROM memories WHERE name IN ({marks}) ORDER BY id ASC",
+                    chunk,
+                ).fetchall():
+                    d = dict(r)
+                    d["tags"] = as_tag_list(d.get("tags"))
+                    out[d["name"]] = d
         finally:
             conn.close()
-        out: dict[str, dict[str, Any]] = {}
-        for r in rows:
-            d = dict(r)
-            d["tags"] = self._parse_tags(str(d.get("tags") or "[]"))
-            out[d["name"]] = d
         return out
 
     def pending_count_by_proposer(self, proposed_by: str, prefix: bool = False) -> int:
-        """Pending (status='pending') rows proposed by `proposed_by` (or starting with it when `prefix`)."""
+        """Pending (status='pending') rows proposed by `proposed_by`, or starting with it LITERALLY when `prefix`
+        (``\\``, ``%`` and ``_`` escaped). Errors RAISE: a cap that counts must not read 0 when the count failed."""
         conn = self._get_conn()
         try:
             if prefix:
                 row = conn.execute(
-                    "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending' AND proposed_by LIKE ?",
-                    (proposed_by.replace("%", "") + "%",),
+                    "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending' AND proposed_by LIKE ? ESCAPE '\\'",
+                    (_like_prefix(proposed_by),),
                 ).fetchone()
             else:
                 row = conn.execute(
@@ -2251,9 +2285,6 @@ class MemoryStore:
                     (proposed_by,),
                 ).fetchone()
             return int(row[0]) if row else 0
-        except sqlite3.Error as e:
-            logger.warning("pending_count_by_proposer failed: %s", e)
-            return 0
         finally:
             conn.close()
 
@@ -2698,6 +2729,14 @@ class MemoryStore:
             source = (rowd.get("source") or "").strip()
 
             if source == "agent-intake":
+                if tags:
+                    # The finalizer writes canon from the intake ticket, not from this row: tags passed here
+                    # would be silently dropped, so refuse rather than report them applied.
+                    conn.rollback()
+                    return (
+                        f"Pending write #{write_id} NOT approved — tags cannot be added to an agent-intake "
+                        "row (the bridge finalizer writes canon from the intake ticket). Approve without tags."
+                    )
                 # VOTE ONLY — defer the canon write to the bridge finalizer.
                 conn.execute(
                     """
@@ -2714,13 +2753,16 @@ class MemoryStore:
                     "bridge finalizer (GOV-002 re-check, then canon write with lineage)."
                 )
 
+            queued_tags = self._parse_tags(rowd["tags"])
+            merged_tags = merge_approval_tags(queued_tags, tags)
+            added_tags = [t for t in merged_tags if t not in queued_tags]
             pw = {
                 "memory_name": rowd["memory_name"],
                 "title": rowd["title"],
                 "description": rowd["description"],
                 "type": rowd["type"],
                 "body": rowd["body"],
-                "tags": merge_approval_tags(self._parse_tags(rowd["tags"]), tags),
+                "tags": merged_tags,
                 "origin_session_ids": (
                     self._parse_tags(rowd["origin_session_ids"])
                     if rowd.get("origin_session_ids")
@@ -2746,7 +2788,7 @@ class MemoryStore:
                 origin_session_ids=pw["origin_session_ids"],
                 origin_clients=pw["origin_clients"],
                 client=reviewer or "trusted-dreamer",
-                provenance=_approval_provenance(rowd, reviewer),
+                provenance=_approval_provenance(rowd, reviewer, added_tags),
                 _skip_protection=True,
                 _conn=conn,
             )

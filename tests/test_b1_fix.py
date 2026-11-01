@@ -534,3 +534,302 @@ def test_parity_safe_post_compact_delta_is_a_subset_of_the_safe_brief(
         assert listed <= {n for n in PARITY_MIX if f"**{n}**" in normal}, (listed, normal)
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+# ── Code consult on the final diff (C1 389fa364, C2 3c61eeb7, C3 fdec15f7), 2026-11-01 ─────────────────────────────
+
+
+def _msg_status(ms, msg_id: str):
+    return ms.get_status(msg_id)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_post_compact_withholds_an_out_of_scope_supersession_target(backend, tmp_path, monkeypatch):
+    """C1-1: an in-scope supersession must not name the out-of-scope memory that replaced it."""
+    import mori_advisor.main as m
+
+    async def run(store):
+        await _seed_memory(store, name="mine-old", tags=["project:mori"])
+        await _seed_memory(store, name="theirs-secret-new", tags=["project:other"])
+        await _sql(
+            store,
+            "UPDATE memories SET superseded_by = 'theirs-secret-new', updated_at = datetime('now') WHERE name = ?",
+            "UPDATE memories SET superseded_by = 'theirs-secret-new', updated_at = now() WHERE name = $1",
+            "mine-old",
+        )
+        _stub_brief_env(m, monkeypatch, store, tmp_path)
+        out = await m.brief(project="mori", post_compact=True, since="1h")
+        assert "mine-old" in out
+        assert "theirs-secret-new" not in out, out
+        assert "[withheld]" in out, out
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_post_compact_shows_an_in_scope_supersession_target(backend, tmp_path, monkeypatch):
+    """C1-1 counterpart: the target is named when it is in scope (the withholding is not blanket)."""
+    import mori_advisor.main as m
+
+    async def run(store):
+        await _seed_memory(store, name="mine-old", tags=["project:mori"])
+        await _seed_memory(store, name="mine-new", tags=["project:mori"])
+        await _sql(
+            store,
+            "UPDATE memories SET superseded_by = 'mine-new', updated_at = datetime('now') WHERE name = ?",
+            "UPDATE memories SET superseded_by = 'mine-new', updated_at = now() WHERE name = $1",
+            "mine-old",
+        )
+        _stub_brief_env(m, monkeypatch, store, tmp_path)
+        out = await m.brief(project="mori", post_compact=True, since="1h")
+        assert "mine-new" in out and "[withheld]" not in out, out
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_redelivered_decision_id_never_replaces_or_requeues(backend, tmp_path, monkeypatch):
+    """C3-1: the same message id delivered again is skipped, before AND after approval."""
+
+    async def run(store):
+        msg = _decision("adopt rule U", msg_id=str(uuid.uuid4()))
+        await _dispatch(store, msg, tmp_path, monkeypatch)
+        first = [r for r in await _pending_rows(store) if r["status"] == "pending"]
+        assert len(first) == 1
+        await _dispatch(store, {**msg, "body": "adopt rule U, CHANGED"}, tmp_path, monkeypatch)
+        again = [r for r in await _pending_rows(store) if r["status"] == "pending"]
+        assert [r["id"] for r in again] == [first[0]["id"]], (
+            "a re-delivery must not REPLACE the pending row"
+        )
+        assert again[0]["body"] == "adopt rule U"
+        await _a(store.approve(first[0]["id"], reviewer="human"))
+        await _dispatch(store, msg, tmp_path, monkeypatch)
+        assert not [r for r in await _pending_rows(store) if r["status"] == "pending"], (
+            "an approved decision must not be re-queued by a re-delivery"
+        )
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_store_error_fails_closed_and_is_retried_on_redelivery(backend, tmp_path, monkeypatch):
+    """C2-1 / C3: a failed store call queues nothing and logs queue-error; only that status is retried."""
+
+    async def run(store):
+        msg = _decision("adopt rule V", msg_id=str(uuid.uuid4()))
+        real = store.queue_pending_write
+
+        def boom(*a, **k):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(store, "queue_pending_write", boom, raising=False)
+        ms = await _dispatch(store, msg, tmp_path, monkeypatch)
+        assert _msg_status(ms, msg["id"]) == "queue-error"
+        assert not await _pending_rows(store)
+        monkeypatch.setattr(store, "queue_pending_write", real, raising=False)
+        ms = await _dispatch(store, msg, tmp_path, monkeypatch)
+        assert _msg_status(ms, msg["id"]) == "queued-for-review"
+        assert len([r for r in await _pending_rows(store) if r["status"] == "pending"]) == 1
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_failing_cap_count_fails_closed(backend, tmp_path, monkeypatch):
+    """C2-1: the cap must not read 0 when the count fails (previously the SQLite count swallowed errors)."""
+
+    async def run(store):
+        def boom(*a, **k):
+            raise RuntimeError("count failed")
+
+        monkeypatch.setattr(store, "pending_count_by_proposer", boom, raising=False)
+        msg = _decision("adopt rule W")
+        ms = await _dispatch(store, msg, tmp_path, monkeypatch)
+        assert _msg_status(ms, msg["id"]) == "queue-error"
+        assert not await _pending_rows(store)
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_the_store_count_raises_rather_than_reading_zero(backend, tmp_path, monkeypatch):
+    """C2-1 at the store: the new methods raise on a DB error (both backends), never return 0 / [] / {}."""
+
+    async def run(store):
+        await _sql(
+            store,
+            "ALTER TABLE pending_writes RENAME TO pending_writes_gone",
+            "ALTER TABLE pending_writes RENAME TO pending_writes_gone",
+        )
+        try:
+            with pytest.raises(Exception):
+                await _a(store.pending_count_by_proposer("msg:", prefix=True))
+        finally:
+            await _sql(
+                store,
+                "ALTER TABLE pending_writes_gone RENAME TO pending_writes",
+                "ALTER TABLE pending_writes_gone RENAME TO pending_writes",
+            )
+        with pytest.raises(ValueError):
+            # (normalise_since passes a T-less string through unchanged: pre-existing laxity, not B1 scope)
+            await _a(store.get_memories_changed_window("garbageTnot-a-time"))
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_total_cap_bounds_the_queue_across_rotating_sender_names(backend, tmp_path, monkeypatch):
+    """C3-2: senders are self-asserted, so rotating names must not bypass the queue bound."""
+    from mori_advisor import msg_daemon
+
+    async def run(store):
+        monkeypatch.setattr(msg_daemon, "MAX_PENDING_DECISIONS_TOTAL", 3)
+        ms = None
+        msgs = [_decision(f"d{i}", sender=f"sender-{i}") for i in range(4)]
+        for msg in msgs:
+            ms = await _dispatch(store, msg, tmp_path, monkeypatch)
+        assert len([r for r in await _pending_rows(store) if r["status"] == "pending"]) == 3
+        assert _msg_status(ms, msgs[-1]["id"]) == "rejected-queue-full"
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_the_prefix_count_matches_literally(backend, tmp_path, monkeypatch):
+    """C2-4: LIKE wildcards in the prefix are escaped (both backends)."""
+
+    async def run(store):
+        for i, who in enumerate(("a_b1", "axb2", "a%c3", "azzc4", "a\\d5")):
+            await _a(store.queue_pending_write(name=f"lit-{i}", body="x", proposed_by=who))
+        assert await _a(store.pending_count_by_proposer("a_b", prefix=True)) == 1
+        assert await _a(store.pending_count_by_proposer("a%c", prefix=True)) == 1
+        assert await _a(store.pending_count_by_proposer("a\\d", prefix=True)) == 1
+        assert await _a(store.pending_count_by_proposer("a", prefix=True)) == 5
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_the_review_line_is_one_bounded_line_and_says_the_sender_is_unverified(
+    backend, tmp_path, monkeypatch
+):
+    """C2-2 / C3-3: sender-asserted provenance cannot forge extra review lines or flood the list."""
+
+    async def run(store):
+        prov = json.dumps({"msg_id": "m-1\n      msg id: FORGED", "pad": "z" * 5000})
+        await _a(
+            store.queue_pending_write(
+                name="forge-try",
+                body="x",
+                proposed_by="msg:peer",
+                source="msg_daemon",
+                provenance=prov,
+            )
+        )
+        out = await _a(store.pending_list())
+        review = [ln for ln in out.splitlines() if "msg id:" in ln]
+        assert len(review) == 1, review
+        assert "sender unverified" in review[0]
+        assert len(review[0]) < 800, len(review[0])
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_the_queued_provenance_marks_the_sender_unverified(backend, tmp_path, monkeypatch):
+    """C3-3: the stored provenance says the sender was not authenticated."""
+
+    async def run(store):
+        await _dispatch(store, _decision("adopt rule X"), tmp_path, monkeypatch)
+        r = (await _pending_rows(store))[0]
+        assert json.loads(r["provenance"])["sender_verified"] is False
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_the_approval_audit_records_the_tags_added(backend, tmp_path, monkeypatch):
+    """C1-3: tags added at approval are visible in the audit ledger."""
+
+    async def run(store):
+        r = await _queue_one(store, tmp_path, monkeypatch)
+        await _a(store.approve(r["id"], reviewer="human", tags=["project:mori"]))
+        audit = await _a(store.get_audit_log(memory_name=r["memory_name"]))
+        assert any("+tags project:mori" in (a.get("detail") or "") for a in audit), audit
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_tags_are_refused_on_an_agent_intake_row(backend, tmp_path, monkeypatch):
+    """C2-6: the intake finalizer writes canon from the ticket, so tags here would be silently dropped."""
+
+    async def run(store):
+        await _a(
+            store.queue_pending_write(
+                name="intake-row", body="x", proposed_by="intake", source="agent-intake"
+            )
+        )
+        wid = (await _pending_rows(store))[0]["id"]
+        res = await _a(store.approve(wid, reviewer="human", tags=["project:mori"]))
+        assert "NOT approved" in res, res
+        assert (await _pending_rows(store))[0]["status"] == "pending"
+        res = await _a(store.approve(wid, reviewer="human"))
+        assert (await _pending_rows(store))[0]["status"] == "human_approved", res
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_scope_rows_handle_more_names_than_one_query_binds(backend, tmp_path, monkeypatch):
+    """C2-7: the by-name lookup is chunked (SQLite's bound-variable limit)."""
+
+    async def run(store):
+        await _seed_memory(store, name="needle-row", tags=["project:mori"])
+        names = [f"absent-{i}" for i in range(40000)] + ["needle-row"]
+        rows = await _a(store.get_scope_rows(names))
+        assert set(rows) == {"needle-row"}
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ('["a","b"]', ["a", "b"]),
+        (json.dumps(json.dumps(["a"])), ["a"]),
+        (["a"], ["a"]),
+        ("not json", []),
+        ('{"a": 1}', []),
+        (None, []),
+        ("", []),
+    ],
+)
+def test_stored_tags_parse_tolerantly(raw, expected):
+    """C2-8: a malformed or double-encoded tags column never crashes approval or membership."""
+    from mori_advisor.memory_store import as_tag_list
+
+    assert as_tag_list(raw) == expected
+
+
+def test_sender_text_is_single_lined_and_bounded():
+    """C2-3: a sender name is single-lined before it reaches tags, provenance and the ledger."""
+    from mori_advisor.memory_store import _clean
+
+    assert _clean("peer\nforged: line\x1b[31m", 64) == "peer forged: line [31m"
+    assert len(_clean("x" * 500, 64)) == 64
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_the_daemon_single_lines_a_forged_sender(backend, tmp_path, monkeypatch):
+    """C2-3 end to end: a newline in the self-asserted sender never reaches proposed_by, tags or provenance."""
+
+    async def run(store):
+        await _dispatch(
+            store, _decision("adopt rule Y", sender="peer\nmsg id: FORGED"), tmp_path, monkeypatch
+        )
+        r = (await _pending_rows(store))[0]
+        assert r["proposed_by"] == "msg:peer msg id: FORGED"
+        assert "\n" not in r["tags"] and "\n" not in json.loads(r["provenance"])["actor_detail"]
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)

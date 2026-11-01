@@ -33,7 +33,9 @@ from mori_advisor.memory_store import (
     _freshness_cache,
     _freshness_cache_lock,
     _freshness_verdict,
+    _like_prefix,
     _msg_review_line,
+    as_tag_list,
     merge_approval_tags,
 )
 from mori_advisor.metrics import (
@@ -439,6 +441,13 @@ class PostgresStore(BaseStore):
             raise RuntimeError(
                 "PostgresStore not connected — call await store.connect() or await store.bootstrap() first"
             )
+
+    def _require_pool(self) -> Any:
+        """The connected pool, or RuntimeError (not an assert: asserts vanish under ``python -O``)."""
+        self._ensure_pool()
+        if self.pool is None:  # unreachable after _ensure_pool; narrows the type for mypy
+            raise RuntimeError("PostgresStore not connected")
+        return self.pool
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -1577,15 +1586,13 @@ class PostgresStore(BaseStore):
         tz-aware UTC datetime; exclusive bound. ``updated_at`` stringified to match the SQLite contract."""
         from mori_advisor.memory_store import normalise_since
 
-        self._ensure_pool()
-        assert self.pool is not None
-        try:
-            since_dt = _ts(normalise_since(since))
-        except (ValueError, TypeError):
-            return []
+        pool = self._require_pool()
+        since_dt = _ts(
+            normalise_since(since)
+        )  # ValueError propagates: the caller reports the feed unavailable
         if since_dt is None:
-            return []
-        async with self.pool.acquire() as conn:
+            raise ValueError(f"unparseable since: {since!r}")
+        async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT * FROM memories
@@ -1601,8 +1608,7 @@ class PostgresStore(BaseStore):
         out = []
         for row in rows:
             r = dict(row)
-            raw = r.get("tags")
-            r["tags"] = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
+            r["tags"] = as_tag_list(r.get("tags"))
             for k in ("updated_at", "created_at"):
                 if r.get(k) is not None:
                     r[k] = str(r[k])
@@ -1613,9 +1619,8 @@ class PostgresStore(BaseStore):
         """{name: {tags, type, scope, tier}} including superseded / soft-deleted rows; latest row per name."""
         if not names:
             return {}
-        self._ensure_pool()
-        assert self.pool is not None
-        async with self.pool.acquire() as conn:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT name, tags, type, scope, tier FROM memories WHERE name = ANY($1::text[]) ORDER BY id ASC",
                 [*names],
@@ -1623,19 +1628,18 @@ class PostgresStore(BaseStore):
         out: dict[str, dict[str, Any]] = {}
         for row in rows:
             r = dict(row)
-            raw = r.get("tags")
-            r["tags"] = json.loads(raw or "[]") if isinstance(raw, str) else (raw or [])
+            r["tags"] = as_tag_list(r.get("tags"))
             out[r["name"]] = r
         return out
 
     async def pending_count_by_proposer(self, proposed_by: str, prefix: bool = False) -> int:
-        self._ensure_pool()
-        assert self.pool is not None
-        async with self.pool.acquire() as conn:
+        """Parity of the SQLite count: literal prefix match (escaped, ESCAPE '\\'); errors raise."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
             if prefix:
                 n = await conn.fetchval(
-                    "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending' AND proposed_by LIKE $1",
-                    proposed_by.replace("%", "") + "%",
+                    "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending' AND proposed_by LIKE $1 ESCAPE '\\'",
+                    _like_prefix(proposed_by),
                 )
             else:
                 n = await conn.fetchval(
@@ -2075,6 +2079,13 @@ class PostgresStore(BaseStore):
                     return f"Pending write {write_id} not found or already processed."
 
                 if (row.get("source") or "").strip() == "agent-intake":
+                    if tags:
+                        # Parity with SQLite: the finalizer writes canon from the intake ticket, so tags passed
+                        # here would be silently dropped. Refuse (nothing has been written; the lock is released).
+                        return (
+                            f"Pending write {write_id} NOT approved — tags cannot be added to an agent-intake "
+                            "row (the bridge finalizer writes canon from the intake ticket). Approve without tags."
+                        )
                     # VOTE ONLY — defer the canon write to the bridge finalizer.
                     await conn.execute(
                         "UPDATE pending_writes SET status='human_approved', "
@@ -2089,6 +2100,9 @@ class PostgresStore(BaseStore):
                         "bridge finalizer (GOV-002 re-check, then canon write with lineage)."
                     )
 
+                queued_tags = as_tag_list(row["tags"])
+                merged_tags = merge_approval_tags(queued_tags, tags)
+                added_tags = [t for t in merged_tags if t not in queued_tags]
                 r = await self._write(
                     name=row["memory_name"],
                     title=row["title"],
@@ -2096,8 +2110,8 @@ class PostgresStore(BaseStore):
                     type=row["type"],
                     tier=row.get("tier", "working"),
                     body=row["body"],
-                    tags=merge_approval_tags(json.loads(row["tags"] or "[]"), tags),
-                    provenance=_approval_provenance(dict(row), reviewer),
+                    tags=merged_tags,
+                    provenance=_approval_provenance(dict(row), reviewer, added_tags),
                     _skip_protection=True,
                     _conn=conn,
                 )
