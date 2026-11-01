@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # #73: request a run for an exact ref when GitHub never delivered the push event (v2.3.10's merge commit got
+  # none). The CD gate accepts a dispatch run on the exact tagged commit: `gh workflow run ci.yml --ref vX.Y.Z`.
+  workflow_dispatch:
 
 # FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 removed — all actions in CI now target
 # Node 24 natively (checkout@v5, setup-python@v6, setup-buildx-action@v4,
@@ -181,8 +184,20 @@ jobs:
         env:
           # PR: the base branch tip. Push: the previous tip (all zeros for a new branch → the
           # bump rule is skipped, the version sources are still checked against each other).
-          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: python3 scripts/check-artifact-versions.py --base "$BASE"
+          # Dispatch (#73): there is no `before`, and an empty base would SKIP the bump rule, making a
+          # dispatched run weaker than the push run it stands in for. Use the first parent instead
+          # (main before the merge); a commit with no parent fails here rather than passing.
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request) BASE="$PR_BASE" ;;
+            workflow_dispatch) BASE="$(git rev-parse HEAD^1)" ;;
+            *) BASE="$BEFORE" ;;
+          esac
+          python3 scripts/check-artifact-versions.py --base "$BASE"
 
   test:
     name: Unit tests
@@ -264,3 +279,30 @@ jobs:
           tags: ghcr.io/fjwood69/mori:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # #73: the ONE list of required jobs. The CD gate requires this job (and every job) to have succeeded on the
+  # exact tagged commit, and it is the required status check on main. tests/test_cd_workflows.py fails if a job
+  # in this file is missing from `needs` (new jobs are required by default), or if `if: always()` or the
+  # every-result check is removed. Why `if: always()`: without it a failed job leaves ci-ok SKIPPED, and a
+  # skipped job counts as passing for a branch-protection required check. (The CD gate reads the jobs API, where
+  # skipped is not success, so the gate itself fails closed either way.)
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [hygiene, sterility, lint, typecheck, plugin-validate, version-guard, test, test-postgres, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every required job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS"])
+          bad = {name: v.get("result") for name, v in needs.items() if v.get("result") != "success"}
+          for name, result in sorted(bad.items()):
+              print(f"::error::{name}: {result}")
+          if not needs or bad:
+              sys.exit(1)
+          print(f"OK: all {len(needs)} required jobs succeeded")
+          PY

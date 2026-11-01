@@ -1,0 +1,21 @@
+{
+ "tag": "v2.3.10",
+ "ref": {
+  "object": {
+   "type": "commit",
+   "sha": "3ba0ecb0d58d0e63c6bdd848468a0e7664a507aa"
+  }
+ },
+ "sha": "3ba0ecb0d58d0e63c6bdd848468a0e7664a507aa",
+ "compare": {
+  "status": "ahead"
+ },
+ "pyproject_toml": "[project]\nname = \"mori-advisor\"\nversion = \"2.3.10\"",
+ "ci_yml_markers": {
+  "workflow_dispatch": false,
+  "ci_ok_job": false
+ },
+ "runs": [],
+ "jobs": {},
+ "recorded": "2026-11-01 via gh api (trimmed to the fields cd_gate reads)"
+}

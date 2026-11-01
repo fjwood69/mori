@@ -1,0 +1,36 @@
+name: CD gate check (dry run)
+
+# #73: run ONLY the CD gate against an existing tag, with no route to production: this workflow has no build,
+# deploy or release job, no environment and no secret beyond its read-only token. It runs the gate code from the
+# ref it was dispatched on (main), never from the tag being checked, so an old tag that predates the gate still
+# gets a gate verdict. The tag is data: passed through env, validated by the gate before any use.
+#   gh workflow run cd-gate-check.yml -f tag=v2.3.13
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to check (vX.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  check:
+    name: Gate dry run
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Gate (dry run; the commit is taken from the tag)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: python3 scripts/cd_gate.py check --repo "$REPO" --tag "$TAG"
