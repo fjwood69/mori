@@ -23,13 +23,28 @@ SessionStart hook fires after every compaction on every device.
   message id (`decision-msg-<id>`, so it can never overwrite an existing memory), tagged `decision-msg` and
   `from:<host>`, `proposed_by="msg:<host>"`, with the raw provenance kept for the reviewer. At most 20 pending per
   sender. Approval keeps the origin: the memory's audit actor is the sending host (actor `msg`), and the reviewer is
-  recorded. An approved decision has no project tag, so it's findable by search; a reviewer who wants it in a
-  project's brief adds the project tag.
+  recorded. `memory_approve` (and `POST /api/memories/{name}/approve`) take an optional `tags` list that is ADDED
+  at approval: pass `["project:<p>"]` to put an approved decision in that project's brief in the same step.
+  Without it, an approved decision stays unrouted (findable by search, in no brief).
 - **The msg daemon uses the configured backend.** It wrote to a hard-coded SQLite file, which in a Postgres
   deployment no brief and no reviewer ever reads (and on Postgres its write was never awaited).
 - **Reviewers can see the queue.** A normal brief shows "N decision message(s) awaiting review" (count only);
   `memory_pending_list` shows the message id and raw provenance for each.
 - **No direct memory writes from the daemon:** a standing test fails if it calls `.write()`.
+- **Review-path hardening** (code consult on the final diff):
+  - The sender of a NATS message is not authenticated (NATS uses shared credentials). The review line and the
+    stored provenance now say so (`sender unverified`, `sender_verified: false`).
+  - Because sender names can be invented, there is also a cap of 100 pending decisions in total, alongside the
+    20 per sender.
+  - A message id that was already handled is skipped when delivered again, so a re-delivery can't replace a
+    pending row a reviewer is looking at. Only a message that hit `queue-error` is retried.
+  - If the store fails (including the cap counts), nothing is queued and the message is logged `queue-error`.
+  - Sender text is cut to one line and a fixed length before it reaches tags, the review line or the audit.
+  - The prefix count escapes LIKE wildcards literally on both backends.
+  - Tags added at approval are recorded in the audit detail.
+  - Approving an agent-intake row with tags is refused: its finalizer writes from the intake ticket, so the
+    tags would be silently dropped.
+  - The post-compact superseded feed shows the replacing memory as `[withheld]` when that memory is out of scope.
 
 **Existing data:** no decision rows in the production store (checked three ways on 2026-11-01). No migration.
 Three untagged canonical `pattern` memories were only ever reached through the legacy type-based global rule; safe

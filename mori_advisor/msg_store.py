@@ -71,6 +71,15 @@ class MsgStore:
         finally:
             conn.close()
 
+    def get_status(self, msg_id: str) -> str | None:
+        """Status of a logged message, or None if this id has never been logged (B1 idempotency check)."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute("SELECT status FROM msg_log WHERE id = ?", (msg_id,)).fetchone()
+            return None if row is None else str(row[0])
+        finally:
+            conn.close()
+
     def set_status(self, msg_id: str, status: str) -> None:
         """Update the status of a message by ID."""
         conn = self._get_conn()

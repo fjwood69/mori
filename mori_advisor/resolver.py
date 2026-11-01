@@ -154,6 +154,16 @@ def brief_membership(row: dict[str, Any], project: str | None, strict_global: bo
     if not in_scope(compile_memory_scope(row), compile_context_tags(project, strict_global)):
         return False
     tags = row.get("tags") or []
+    if isinstance(
+        tags, str
+    ):  # an unparsed JSON blob: parse it, or treat as untagged (never char-iterate)
+        try:
+            import json
+
+            parsed = json.loads(tags)
+            tags = parsed if isinstance(parsed, list) else []
+        except ValueError:
+            tags = []
     if project and f"project:{project}" in {str(t) for t in tags}:
         return str(row.get("tier", "")) in BRIEF_PROJECT_LANE_TIERS
     return True
