@@ -36,6 +36,10 @@ an operator checking the merge commit's CI by hand before tagging.
     moved.
   - SSH host-key checking is on, from the new `GCE_HOST_KEY` environment secret.
   - Deploys run one at a time (`concurrency`) and are never cancelled.
+  - The host pulls the image **by the digest this run built**, never by a registry tag that could move in between.
+  - The host-key secret is format-checked before anything runs on the host. The deploy job's token has no
+    permissions and it times out after 30 minutes. No checkout persists credentials.
+  - `ci.yml` jobs get a read-only token, and lint covers `scripts/`.
 - **The registry's `latest` moves only when the release is the highest version.** Before, every release pushed
   `latest`, so re-running CD for an older tag moved it backwards. The production host still retags its *local*
   `latest` to whatever it just pulled, including on a rollback, because the running units follow that local tag.

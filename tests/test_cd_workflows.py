@@ -23,9 +23,6 @@ ROOT = Path(__file__).resolve().parent.parent
 WF = ROOT / ".github" / "workflows"
 # Jobs deliberately NOT required by ci-ok. Adding one here is the only way to opt a job out; it shows in the diff.
 CI_OK_EXEMPT: set[str] = set()
-UNTRUSTED = re.compile(
-    r"\$\{\{\s*(github\.ref_name|github\.ref|github\.head_ref|github\.event\.|inputs\.)"
-)
 
 
 def _load(name: str) -> dict:
@@ -176,24 +173,126 @@ def test_every_checkout_after_the_gate_is_pinned_to_the_gated_commit():
 
 
 @pytest.mark.parametrize("wf", ["cd.yml", "cd-gate-check.yml", "ci.yml"])
-def test_no_untrusted_expression_is_pasted_into_a_script(wf):
+def test_no_expression_is_pasted_into_a_script(wf):
+    """Stricter than a deny-list of contexts (which `${{ github['head_ref'] }}` would evade): NO `${{` at all in a
+    `run:` script. Every value reaches a script through `env:`."""
     for name, job in _load(wf)["jobs"].items():
         for s in _steps(job):
-            assert not UNTRUSTED.search(str(s.get("run", ""))), (wf, name, s.get("name"))
+            assert "${{" not in str(s.get("run", "")), (wf, name, s.get("name"))
 
 
-def test_ssh_host_key_checking_is_on():
-    run = _step(_load("cd.yml")["jobs"]["deploy"], "Deploy to GCE via SSH")["run"]
+def test_ssh_host_key_checking_is_on_and_the_key_comes_from_the_secret():
+    deploy = _load("cd.yml")["jobs"]["deploy"]
+    step = _step(deploy, "Deploy to GCE via SSH")
+    run = step["run"]
     assert "StrictHostKeyChecking=yes" in run
-    assert "StrictHostKeyChecking=no" not in run and "/dev/null" not in run
+    assert "StrictHostKeyChecking=no" not in run and "UserKnownHostsFile=/dev/null" not in run
+    assert 'UserKnownHostsFile="$KNOWN"' in run
+    assert "ssh-keyscan" not in str(deploy), "no trust-on-first-use"
+    assert step["env"]["GCE_HOST_KEY"] == "${{ secrets.GCE_HOST_KEY }}"
 
 
 def test_the_deploy_step_validates_the_tag_with_the_gates_pattern():
     run = _step(_load("cd.yml")["jobs"]["deploy"], "Deploy to GCE via SSH")["run"]
     assert cd_gate.TAG_RE.pattern in run
-    assert "\"MORI_VERSION='${VERSION}' bash -s\"" in run, (
-        "only the validated version crosses to the remote"
-    )
+
+
+def test_deploy_is_least_privilege_and_bounded():
+    deploy = _load("cd.yml")["jobs"]["deploy"]
+    assert deploy["permissions"] == {} and deploy["timeout-minutes"] <= 30
+
+
+def test_no_checkout_in_cd_persists_credentials():
+    for name, job in _load("cd.yml")["jobs"].items():
+        for s in _steps(job):
+            if str(s.get("uses", "")).startswith("actions/checkout"):
+                assert (s.get("with") or {}).get("persist-credentials") is False, name
+
+
+def test_the_deploy_pulls_the_build_by_digest():
+    jobs = _load("cd.yml")["jobs"]
+    build = jobs["build-and-push"]
+    assert build["outputs"]["digest"] == "${{ steps.build.outputs.digest }}"
+    assert _step(build, "Build and push")["id"] == "build"
+    step = _step(jobs["deploy"], "Deploy to GCE via SSH")
+    assert step["env"]["DIGEST"] == "${{ needs.build-and-push.outputs.digest }}"
+
+
+# ── The deploy step, RUN (with a fake ssh that records what it was given) ────────────────────────────────────────
+
+HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOnlyNotARealKeyxxxxxxxxxxxxxxxxxxxx"
+DIGEST = "sha256:" + "ab" * 32
+FAKE_SSH = """#!/bin/bash
+printf '%s\\n' "$@" > "$REC/args"
+for a in "$@"; do
+  case "$a" in UserKnownHostsFile=*) cp "${a#UserKnownHostsFile=}" "$REC/known" ;; esac
+done
+cat > "$REC/stdin"
+"""
+
+
+def _run_deploy(tmp_path, **over):
+    step = _step(_load("cd.yml")["jobs"]["deploy"], "Deploy to GCE via SSH")
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    (fakebin / "ssh").write_text(FAKE_SSH)
+    (fakebin / "ssh").chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fakebin}:{os.environ['PATH']}",
+        "REC": str(rec),
+        "GCE_SSH_KEY": "dummy-private-key",
+        "GCE_USER": "deploy",
+        "GCE_HOST": "198.51.100.7",
+        "GCE_HOST_KEY": HOST_KEY,
+        "REF_NAME": "v2.3.14",
+        "DIGEST": DIGEST,
+        **over,
+    }
+    p = subprocess.run(["bash", "-c", step["run"]], env=env, capture_output=True, text=True)
+    return p, rec
+
+
+def test_the_deploy_step_runs_with_host_key_checking_and_a_digest(tmp_path):
+    p, rec = _run_deploy(tmp_path)
+    assert p.returncode == 0, p.stdout + p.stderr
+    args = (rec / "args").read_text().splitlines()
+    assert "StrictHostKeyChecking=yes" in args
+    assert (rec / "known").read_text() == f"198.51.100.7 {HOST_KEY}\n"
+    assert args[-1] == f"MORI_VERSION='2.3.14' MORI_DIGEST='{DIGEST}' bash -s"
+    remote = (rec / "stdin").read_text()
+    assert "podman pull '$IMAGE_PINNED'" in remote and "podman pull '$IMAGE_VERSION'" not in remote
+    assert 'IMAGE_PINNED="ghcr.io/fjwood69/mori@${MORI_DIGEST}"' in remote
+
+
+@pytest.mark.parametrize("key", [HOST_KEY + "\n", HOST_KEY + "\r\n", "  " + HOST_KEY + "  "])
+def test_the_host_key_tolerates_surrounding_whitespace(tmp_path, key):
+    p, rec = _run_deploy(tmp_path, GCE_HOST_KEY=key)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert (rec / "known").read_text() == f"198.51.100.7 {HOST_KEY}\n"
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"GCE_HOST_KEY": ""},
+        {"GCE_HOST_KEY": "198.51.100.7 " + HOST_KEY},  # a full known_hosts line, host included
+        {"GCE_HOST_KEY": "ssh-ed25519"},
+        {"GCE_HOST_KEY": HOST_KEY + " trailing-comment"},  # the secret is exactly "<type> <base64>"
+        {"GCE_HOST_KEY": "ssh-dss AAAAB3NzaC1kc3MAAACBAexample"},  # DSA is not accepted
+        {"REF_NAME": "v2.3.14';id;'"},
+        {"REF_NAME": "v2.03.14"},
+        {"DIGEST": ""},
+        {"DIGEST": "sha256:xyz"},
+        {"DIGEST": "latest"},
+    ],
+)
+def test_the_deploy_step_refuses_before_contacting_the_host(tmp_path, over):
+    p, rec = _run_deploy(tmp_path, **over)
+    assert p.returncode != 0
+    assert not (rec / "args").exists(), "ssh must not be reached"
 
 
 def test_registry_latest_moves_only_for_the_highest_version():
@@ -204,11 +303,22 @@ def test_registry_latest_moves_only_for_the_highest_version():
     assert latest == ["type=raw,value=latest,enable=${{ needs.gate.outputs.is_highest == 'true' }}"]
 
 
-def test_release_rechecks_the_tag_before_publishing():
+def test_release_rechecks_the_tag_immediately_before_and_after_publishing():
     steps = _load("cd.yml")["jobs"]["create-release"]["steps"]
     names = [s.get("name") for s in steps]
-    assert names.index("Tag unmoved since the gate") < names.index("Create or update release")
-    assert "cd_gate.py verify-tag" in _step({"steps": steps}, "Tag unmoved since the gate")["run"]
+    i = names.index("Create or update release")
+    assert names[i - 1] == "Tag unmoved since the gate"
+    assert names[i + 1] == "Tag still unmoved after the release"
+    for n in ("Tag unmoved since the gate", "Tag still unmoved after the release"):
+        assert "cd_gate.py verify-tag" in _step({"steps": steps}, n)["run"]
+
+
+def test_ci_token_is_read_only_and_lint_covers_scripts():
+    wf = _load("ci.yml")
+    assert wf["permissions"] == {"contents": "read"}
+    lint = wf["jobs"]["lint"]
+    assert "scripts/" in _step(lint, "Ruff lint")["run"]
+    assert "scripts/" in _step(lint, "Ruff format check")["run"]
 
 
 # ── cd-gate-check.yml ─────────────────────────────────────────────────────────────────────────────────────────────

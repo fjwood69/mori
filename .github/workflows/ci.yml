@@ -9,6 +9,10 @@ on:
   # none). The CD gate accepts a dispatch run on the exact tagged commit: `gh workflow run ci.yml --ref vX.Y.Z`.
   workflow_dispatch:
 
+# Read-only token for every job (#73 code consult): nothing in CI writes to the repository.
+permissions:
+  contents: read
+
 # FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 removed — all actions in CI now target
 # Node 24 natively (checkout@v5, setup-python@v6, setup-buildx-action@v4,
 # build-push-action@v7).
@@ -79,10 +83,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: Ruff lint
-        run: ruff check mori_advisor/
+        run: ruff check mori_advisor/ scripts/
 
       - name: Ruff format check
-        run: ruff format --check mori_advisor/
+        run: ruff format --check mori_advisor/ scripts/
 
   typecheck:
     # Ratchet (issue #78): strict mypy errors may only go down from the committed baseline.

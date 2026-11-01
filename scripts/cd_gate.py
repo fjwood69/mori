@@ -372,9 +372,11 @@ def latest_decision(gh: GitHub, tag: str) -> tuple[bool, str]:
         names = gh.tag_names()
     except GateError as e:
         return False, f"latest not moved: could not list tags ({e})"
-    top = max((version_tuple(n) for n in names), default=None)
+    if tag not in names:  # the tag being deployed exists, so a list without it is incomplete
+        return False, f"latest not moved: the tag list does not include {tag} (incomplete list)"
+    top = max(version_tuple(n) for n in names)
     mine = version_tuple(tag)
-    if top is not None and mine < top:
+    if mine < top:
         return False, f"latest not moved: {tag} is older than the highest release tag"
     return True, f"latest moves to {tag} (the highest release tag)"
 

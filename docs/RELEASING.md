@@ -25,7 +25,8 @@ job (the **CD gate**, `scripts/cd_gate.py`, issue #73) refuses to build anything
 
 - The tag name is strictly `vX.Y.Z` (no leading zeros). **Pre-release tags such as `v1.2.3-rc1` do not deploy.**
 - The tag is **annotated** and points at the commit the workflow was triggered for.
-- The commit is on `main` (`identical` to its tip; a commit behind the tip passes with a warning).
+- The commit is on `main`: the compare API returns `identical` (the tip of main), or `ahead` (main is ahead of
+  the tagged commit), which passes with a warning. `behind` or `diverged` fails.
 - The tag name equals `version` in `pyproject.toml` at that commit.
 - The **newest** run of `ci.yml` on that exact commit, from a push to `main` or a manual dispatch, completed with
   `success`, its `ci-ok` job succeeded, and every job in its latest attempt succeeded. A pull-request run never

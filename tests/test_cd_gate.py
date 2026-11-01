@@ -339,9 +339,18 @@ class FakeAPI:
             )
             body = {"encoding": "base64", "content": _b64(text)}
         elif "/actions/workflows/ci.yml/runs" in url:
-            runs = self.runs_seq.pop(0) if self.runs_seq else fx["runs"]
+            assert f"head_sha={fx['sha']}" in url, (
+                url
+            )  # the request is filtered to the exact commit
+            if (
+                self.runs_seq
+            ):  # sticky: once exhausted, keep serving the last list, never the fixture's green one
+                runs = self.runs_seq.pop(0) if len(self.runs_seq) > 1 else self.runs_seq[0]
+            else:
+                runs = fx["runs"]
             body = {"workflow_runs": runs}
         elif "/jobs" in url:
+            assert "filter=latest" in url, url  # the latest attempt's jobs
             rid = url.split("/actions/runs/")[1].split("/")[0]
             body = {"jobs": fx["jobs"][rid]}
         else:  # pragma: no cover
@@ -439,7 +448,7 @@ def test_a_run_still_in_progress_at_the_limit_fails():
     fx = _green_fixture()
     running = dict(fx["runs"][0], status="in_progress", conclusion=None)
     c = Clock()
-    api = FakeAPI(fx, runs_seq=[[running]] * 200)
+    api = FakeAPI(fx, runs_seq=[[running]])
     v = g.run_gate(
         g.GitHub("fjwood69/mori", "t", opener=api), "v2.3.13", V13_SHA, clock=c, sleep=c.sleep
     )
@@ -512,18 +521,24 @@ def _refs_api(refs=None, fail=False):
     ],
 )
 def test_latest_moves_only_for_the_highest_version(tag, moves):
-    """Recorded tag list (91 refs on 2026-11-01; the highest is v2.3.13)."""
-    highest, why = g.latest_decision(_refs_api(), tag)
+    """Recorded tag list (91 refs on 2026-11-01; the highest is v2.3.13), plus the tag being deployed (which exists
+    by the time CD runs)."""
+    refs = _load("matching_refs_tags.json") + [{"ref": f"refs/tags/{tag}"}]
+    highest, why = g.latest_decision(_refs_api(refs), tag)
     assert highest is moves, why
 
 
 def test_latest_ignores_tags_that_are_not_strict_releases():
-    refs = [
-        {"ref": "refs/tags/v2.3.13"},
-        {"ref": "refs/tags/v9.0.0-rc1"},
-        {"ref": "refs/tags/v10.0"},
-    ]
+    refs = [{"ref": f"refs/tags/{t}"} for t in ("v2.3.13", "v2.3.14", "v9.0.0-rc1", "v10.0")]
     assert g.latest_decision(_refs_api(refs), "v2.3.14")[0] is True
+
+
+def test_latest_stays_put_if_the_list_does_not_include_the_tag_being_deployed():
+    refs = [
+        {"ref": "refs/tags/v2.3.12"}
+    ]  # incomplete: v2.3.14 exists by the time CD runs, but is missing
+    highest, why = g.latest_decision(_refs_api(refs), "v2.3.14")
+    assert highest is False and "incomplete" in why
 
 
 def test_latest_stays_put_if_the_tags_cannot_be_listed():

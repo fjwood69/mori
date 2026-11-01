@@ -64,12 +64,16 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      # #73: the deploy pulls THIS build by digest, never by a registry tag that could be moved in between.
+      digest: ${{ steps.build.outputs.digest }}
 
     steps:
       # #73: build exactly the commit the gate approved, never whatever the tag points at by now.
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
 
       # Gate: the release docs must reflect this version before anything builds.
       # Prevents CHANGELOG/ROADMAP silently lapsing behind releases.
@@ -99,6 +103,7 @@ jobs:
             type=raw,value=latest,enable=${{ needs.gate.outputs.is_highest == 'true' }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -114,6 +119,8 @@ jobs:
     needs: [gate, build-and-push]
     runs-on: ubuntu-latest
     environment: production
+    timeout-minutes: 30
+    permissions: {}
 
     steps:
       - name: Connect to Tailscale
@@ -141,13 +148,19 @@ jobs:
           # band. Host-key checking is ON: a changed host key fails the deploy instead of being trusted blindly.
           GCE_HOST_KEY: ${{ secrets.GCE_HOST_KEY }}
           REF_NAME: ${{ github.ref_name }}
+          DIGEST: ${{ needs.build-and-push.outputs.digest }}
         run: |
           set -euo pipefail
           # #73: the tag name reaches the remote shell below, so it is validated again here (the gate already did)
           # and only the validated version, which can contain nothing but digits and dots, crosses as data.
           [[ "$REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "bad tag name"; exit 1; }
           VERSION="${REF_NAME#v}"
-          if [ -z "$GCE_HOST_KEY" ]; then echo "FATAL: GCE_HOST_KEY secret missing — refusing to deploy without host-key checking"; exit 1; fi
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "FATAL: no image digest from the build"; exit 1; }
+          # The secret is "<type> <base64>" (the known_hosts entry without the host). Checked before anything runs
+          # on the host, so a malformed secret fails here, not halfway through a deploy.
+          GCE_HOST_KEY="$(printf '%s' "$GCE_HOST_KEY" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+          [[ "$GCE_HOST_KEY" =~ ^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa)\ [A-Za-z0-9+/]+={0,3}$ ]] \
+            || { echo "FATAL: GCE_HOST_KEY missing or not '<type> <base64>' — refusing to deploy without host-key checking"; exit 1; }
 
           KEYFILE=$(mktemp)
           KNOWN=$(mktemp)
@@ -155,6 +168,7 @@ jobs:
           printf '%s\n' "$GCE_SSH_KEY" > "$KEYFILE"
           printf '%s %s\n' "$GCE_HOST" "$GCE_HOST_KEY" > "$KNOWN"
           trap "rm -f '$KEYFILE' '$KNOWN'" EXIT
+          ssh-keygen -F "$GCE_HOST" -f "$KNOWN" >/dev/null || { echo "FATAL: known_hosts entry for the host is unusable"; exit 1; }
 
           ssh -i "$KEYFILE" \
             -o StrictHostKeyChecking=yes \
@@ -163,9 +177,11 @@ jobs:
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=3 \
             "${GCE_USER}@${GCE_HOST}" \
-            "MORI_VERSION='${VERSION}' bash -s" << 'REMOTESCRIPT'
+            "MORI_VERSION='${VERSION}' MORI_DIGEST='${DIGEST}' bash -s" << 'REMOTESCRIPT'
           set -e
           VERSION="${MORI_VERSION}"
+          # #73: the exact image this run built, by digest; the version tag is applied locally from it.
+          IMAGE_PINNED="ghcr.io/fjwood69/mori@${MORI_DIGEST}"
           IMAGE_VERSION="ghcr.io/fjwood69/mori:${VERSION}"
           IMAGE_LATEST="ghcr.io/fjwood69/mori:latest"
           IMAGE_ROLLBACK="ghcr.io/fjwood69/mori:previous-rollback"
@@ -195,11 +211,12 @@ jobs:
           sudo su - mori -c "$RT podman image exists '$IMAGE_LATEST'" \
             && sudo su - mori -c "$RT podman tag '$IMAGE_LATEST' '$IMAGE_ROLLBACK'" || true
 
-          # Pull the new build and move :latest onto it. The Quadlet units reference
+          # Pull the new build BY DIGEST and move :latest onto it. The Quadlet units reference
           # :latest and do NOT re-pull on restart, so retagging locally is what makes
           # the restart pick up exactly this build (deterministic — not registry latest).
-          sudo su - mori -c "$RT podman pull '$IMAGE_VERSION'"
-          sudo su - mori -c "$RT podman tag '$IMAGE_VERSION' '$IMAGE_LATEST'"
+          sudo su - mori -c "$RT podman pull '$IMAGE_PINNED'"
+          sudo su - mori -c "$RT podman tag '$IMAGE_PINNED' '$IMAGE_VERSION'"
+          sudo su - mori -c "$RT podman tag '$IMAGE_PINNED' '$IMAGE_LATEST'"
 
           # Restart the units — Quadlet recreates each container from the refreshed
           # :latest. Atomic stop-old/start-new per unit (no port clash under --network=host).
@@ -225,7 +242,7 @@ jobs:
             echo "DEPLOYMENT CONTRACT FAILED — the deployed container is not serving the expected route surface"
             exit 1
           }
-          echo "Deploy OK: $IMAGE_VERSION (rootless, --env-file, contract verified)"
+          echo "Deploy OK: $IMAGE_VERSION = $IMAGE_PINNED (rootless, --env-file, contract verified)"
           REMOTESCRIPT
 
   create-release:
@@ -239,15 +256,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.gate.outputs.sha }}
-
-      # #73: the tag must still point at the commit the gate approved and that was deployed.
-      - name: Tag unmoved since the gate
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-          SHA: ${{ needs.gate.outputs.sha }}
-        run: python3 scripts/cd_gate.py verify-tag --repo "$REPO" --tag "$TAG" --sha "$SHA"
+          persist-credentials: false
 
       - name: Extract release notes from CHANGELOG
         id: notes
@@ -272,6 +281,16 @@ jobs:
               f.write(notes)
           EOF
 
+      # #73: the tag must still point at the commit the gate approved and that was deployed: checked
+      # immediately before the release is created, and again after (the tag ruleset forbids moving it).
+      - name: Tag unmoved since the gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: python3 scripts/cd_gate.py verify-tag --repo "$REPO" --tag "$TAG" --sha "$SHA"
+
       - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -283,3 +302,11 @@ jobs:
           else
             gh release create "$TAG" --repo "$REPO" --title "$TAG" --notes-file release_notes.md --verify-tag
           fi
+
+      - name: Tag still unmoved after the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: python3 scripts/cd_gate.py verify-tag --repo "$REPO" --tag "$TAG" --sha "$SHA"
