@@ -53,6 +53,10 @@ release job; read-only token).
   replaces the pending one, and that version is never deployed.
 - There is **no override** in CD. In an emergency, deploy by hand on the production host (pull the image, retag,
   restart the units, as the deploy step does) and record who did it and why alongside the release decision.
+- The production host pulls the image from GHCR **anonymously**, which works because the package is public. Its
+  stored registry login was removed on 2026-11-01 after it started returning `403` on every pull (a `403` while
+  "requesting bearer token" means a stale credential, not a wrong image reference). **Before making the package
+  private, add a read-only pull token for the host** (`read:packages`), or every deploy will fail at the pull.
 - SSH host-key checking is on. The production host's public key is the `GCE_HOST_KEY` secret of the `production`
   environment. If the host is recreated, deploys fail until that secret is updated with the new key, verified out
   of band.
