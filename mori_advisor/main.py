@@ -2529,23 +2529,46 @@ async def memory_req(
         limit: Max lines (default 50), applied AFTER scope and filters.
         all_projects: List across every project.
 
-    Done items carry ``self-attested`` and the actor and date of the LAST audited write to the requirement: the data
-    records who last wrote a done requirement, not who marked it done. Read-only.
+    Done items carry ``self-attested`` and the actor and date of the LAST audited write to the requirement (the audit
+    log is newest-first on both backends): the data records who last wrote a done requirement, not who marked it done.
+
+    Status and priority come from ``status-*`` / ``pri-*`` tags through a strict whitelist (lowercase ``[a-z0-9-]``,
+    at most 32 characters): tags are stored unvalidated, so a crafted tag could otherwise forge an output line. With
+    several status tags, the most advanced wins (done > blocked > in-progress > pending). A row whose stored ``scope``
+    column is set is decided by that scope, as everywhere in mori (it is authoritative); the ``project-<p>`` mapping
+    applies to tag-scoped rows, which is every requirement today. Read-only.
     """
+    import unicodedata
+
     from mori_advisor.resolver import brief_membership
 
+    safety = 5000
+    limit = max(0, min(int(limit), 200))
     try:
-        rows = await _a(store.get_requirements())
+        rows = await _a(store.get_requirements(limit=safety))
     except Exception as e:
         logger.warning("memory_req: get_requirements failed: %s", e)
         return "Requirements unavailable (see server log)."
 
     def clean(text: object, width: int) -> str:
-        t = re.sub(r"[\x00-\x1f\x7f`]", " ", str(text or "")).replace("|", "\\|").strip()
+        raw = "".join(" " if unicodedata.category(ch) == "Cf" else ch for ch in str(text or ""))
+        t = re.sub(r"[\x00-\x1f\x7f`]", " ", raw).replace("|", "\\|").strip()
         t = re.sub(r"\s+", " ", t)
         return t if len(t) <= width else t[:width] + "…"
 
     open_states = {"pending", "in-progress", "blocked"}
+    status_rank = {"pending": 1, "in-progress": 2, "blocked": 3, "done": 4}
+    token = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+
+    def tag_values(tags: list[str], prefix: str) -> list[str]:
+        out = []
+        for t in tags:
+            if t.startswith(prefix):
+                v = t[len(prefix) :].strip().lower()
+                if token.fullmatch(v):
+                    out.append(v)
+        return out
+
     wanted_status = (status or "open").strip().lower()
     wanted_pri = priority.strip().lower()
     proj = project.strip()
@@ -2566,11 +2589,16 @@ async def memory_req(
             if not member:
                 withheld += 1
                 continue
-        st = next((t[len("status-") :] for t in tags if t.startswith("status-")), "")
-        pri = next((t[len("pri-") :] for t in tags if t.startswith("pri-")), "")
-        projects = ",".join(
-            sorted({t[len("project-") :] for t in tags if t.startswith("project-")})
-        ) or ("global" if any(t in ("scope:global", "scope:cross-project") for t in tags) else "-")
+        statuses = tag_values(tags, "status-")
+        st = max(statuses, key=lambda v: status_rank.get(v, 0)) if statuses else ""
+        pri = next(iter(tag_values(tags, "pri-")), "")
+        is_global = any(t in ("scope:global", "scope:cross-project") for t in tags)
+        named = ",".join(sorted({t[len("project-") :] for t in tags if t.startswith("project-")}))
+        projects = (
+            (f"{named} (global)" if is_global else named)
+            if named
+            else ("global" if is_global else "-")
+        )
         in_scope_rows.append((r, tags, st, pri, projects))
 
     def keep(item: tuple[dict[str, Any], list[str], str, str, str]) -> bool:
@@ -2584,7 +2612,7 @@ async def memory_req(
         return not (tag and tag not in tags)
 
     matched = [x for x in in_scope_rows if keep(x)]
-    shown = matched[: max(0, int(limit))]
+    shown = matched[:limit]
 
     lines: list[str] = []
     for r, _tags, st, pri, projects in shown:
@@ -2610,8 +2638,9 @@ async def memory_req(
     counts: dict[str, int] = {}
     for _r, _t, st, _p, _pj in matched:
         counts[st or "no status"] = counts.get(st or "no status", 0) + 1
-    order = ["pending", "in-progress", "blocked", "done", "no status"]
-    by_status = ", ".join(f"{counts[k]} {k}" for k in order if k in counts) or "none"
+    order = ["pending", "in-progress", "blocked", "done"]
+    keys = order + sorted(k for k in counts if k not in order and k != "no status") + ["no status"]
+    by_status = ", ".join(f"{counts[k]} {k}" for k in keys if k in counts) or "none"
     missing_status = sum(1 for x in matched if not x[2])
     missing_pri = sum(1 for x in matched if not x[3])
     scope_txt = (
@@ -2621,6 +2650,8 @@ async def memory_req(
         f"{len(shown)} of {len(matched)} shown ({scope_txt}, status {wanted_status}): {by_status}"
         f" | {withheld} withheld by scope | missing status: {missing_status}, missing priority: {missing_pri}"
     )
+    if len(rows) >= safety:
+        footer += f" | TRUNCATED: only the first {safety} requirements were read"
     if not lines:
         return "No requirements match.\n" + footer
     return "\n".join(lines) + "\n" + footer
