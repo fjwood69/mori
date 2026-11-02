@@ -398,8 +398,16 @@ class BaseStore(ABC):
 
     @abstractmethod
     def get_requirements(
-        self, project: str = "", status: str = "", tag: str = "", limit: int = 50
-    ) -> list: ...
+        self, limit: int = 5000
+    ) -> list[dict[str, Any]] | Awaitable[list[dict[str, Any]]]:
+        """Every LIVE requirement (``type='requirement'``, not deleted, not superseded), by name.
+
+        v2.3.15: no project/status/tag pre-filter in SQL. Scope (the brief's rule, through a read-time
+        ``project-<p>`` -> ``project:<p>`` mapping) and the filters are applied by ``memory_req``; a SQL pre-filter
+        dropped explicitly-global requirements before membership ran, and SQLite's LIKE over-matched. ``limit`` is a
+        safety bound, not the listing's limit (that is applied after filtering).
+        """
+        ...
 
     # ── Agent-memory intake lineage ────────────────────────────────────────
 

@@ -301,7 +301,7 @@ def test_pg_get_requirements_returns_list_not_coroutine():
             tier="working",
             tags=["project-test", "status-open"],
         )
-        rows = await store.get_requirements(project="test", status="", tag="", limit=10)
+        rows = await store.get_requirements(limit=10)
         # parse_tags must be sync: calling it without await must return a list.
         if rows:
             tags_raw = rows[0]["tags"]

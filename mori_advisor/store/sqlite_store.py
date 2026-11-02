@@ -1024,37 +1024,17 @@ class SQLiteStore(BaseStore):
             "UNAVAILABLE on the SQLite backend."
         )
 
-    def get_requirements(
-        self, project: str = "", status: str = "", tag: str = "", limit: int = 50
-    ) -> list:
-        """Return requirement memories filtered by project, status, or tag."""
+    def get_requirements(self, limit: int = 5000) -> list[dict[str, Any]]:
+        """See ``BaseStore.get_requirements``: every live requirement; filtering happens in ``memory_req``."""
         conn = self._mem._get_conn()
         try:
-            sql = "SELECT name, title, tags, description, body FROM memories WHERE type = 'requirement'"
-            params = []
-            if tag:
-                sql += " AND tags LIKE ?"
-                params.append(f'%"{tag}"%')
-            else:
-                if project:
-                    sql += " AND tags LIKE ?"
-                    params.append(f'%"project-{project}"%')
-                if status:
-                    sql += " AND tags LIKE ?"
-                    params.append(f'%"status-{status}"%')
-            sql += " ORDER BY name ASC LIMIT ?"
-            params.append(limit)
-
-            rows = conn.execute(sql, params).fetchall()
-            return [
-                {
-                    "name": r[0],
-                    "title": r[1],
-                    "tags": r[2],
-                    "description": r[3],
-                    "body": r[4],
-                }
-                for r in rows
-            ]
+            rows = conn.execute(
+                "SELECT name, title, tags, description, body, tier, type, scope FROM memories "
+                "WHERE type = 'requirement' AND deleted_at IS NULL "
+                "AND (superseded_by IS NULL OR superseded_by = '') ORDER BY name ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            keys = ("name", "title", "tags", "description", "body", "tier", "type", "scope")
+            return [dict(zip(keys, r)) for r in rows]
         finally:
             conn.close()

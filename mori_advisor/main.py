@@ -2507,71 +2507,123 @@ async def memory_list(
 @mcp.tool()
 async def memory_req(
     project: str = "",
-    status: str = "",
+    status: str = "open",
+    priority: str = "",
     tag: str = "",
     limit: int = 50,
+    all_projects: bool = False,
 ) -> str:
-    """List requirement memories as a delivery-status table.
+    """List requirements, one line each, under the brief's scope rules (v2.3.15, `/req list`).
 
-    Filters by project tag (project-<name>), status tag (status-<value>),
-    or arbitrary tag. Returns a grouped Markdown table with summary counts.
+    Scope follows the brief: with a project, that project's requirements plus explicitly global ones; with no
+    project, explicitly global ones only, and a COUNT of the rest (never named); ``all_projects=True`` lists every
+    project (an explicit opt-in: a disclosure default, not an authorization boundary). Requirements are tagged
+    ``project-<p>`` (the /req convention), which brief scope does not read, so a ``project-<p>`` tag also counts as
+    ``project:<p>`` here (a read-time view; nothing is stored). Deleted and superseded rows are never listed.
 
     Args:
-        project: Project filter (e.g. "mori" to match tag project-mori).
-        status: Status filter (e.g. "done" to match tag status-done).
-        tag: Arbitrary tag filter (overrides project/status if provided).
-        limit: Max results (default 50).
+        project: The project in context (e.g. "mori"). Empty = global requirements only (the rest counted).
+        status: "open" (pending, in-progress, blocked; default), "done", "all", or one exact status.
+        priority: "high", "medium" or "low". Empty = any.
+        tag: An extra exact tag every listed requirement must carry. Scope still applies.
+        limit: Max lines (default 50), applied AFTER scope and filters.
+        all_projects: List across every project.
+
+    Done items carry ``self-attested`` and the actor and date of the LAST audited write to the requirement: the data
+    records who last wrote a done requirement, not who marked it done. Read-only.
     """
+    from mori_advisor.resolver import brief_membership
+
     try:
-        rows = await _a(
-            store.get_requirements(project=project, status=status, tag=tag, limit=min(limit, 100))
-        )
+        rows = await _a(store.get_requirements())
     except Exception as e:
-        return f"Database error: {e}"
+        logger.warning("memory_req: get_requirements failed: %s", e)
+        return "Requirements unavailable (see server log)."
 
-    if not rows:
-        return "No requirements found."
+    def clean(text: object, width: int) -> str:
+        t = re.sub(r"[\x00-\x1f\x7f`]", " ", str(text or "")).replace("|", "\\|").strip()
+        t = re.sub(r"\s+", " ", t)
+        return t if len(t) <= width else t[:width] + "…"
 
-    lines = [
-        "| Requirement | Title | Status | Project | Pri | FR/NFR | Preview |\n|---|---|---|---|---|---|---|\n"
-    ]
-    status_counts: dict[str, int] = {}
+    open_states = {"pending", "in-progress", "blocked"}
+    wanted_status = (status or "open").strip().lower()
+    wanted_pri = priority.strip().lower()
+    proj = project.strip()
+
+    in_scope_rows: list[tuple[dict[str, Any], list[str], str, str, str]] = []
+    withheld = 0
     for r in rows:
-        name = r["name"]
-        title = r["title"]
-        tags_raw = r["tags"]
-        desc = r["description"]
-        body = r["body"]
-        tags = store.parse_tags(tags_raw)
-        status_val = "unknown"
-        project_val = ""
-        priority = ""
-        fr_nfr = ""
-        for t in tags:
-            if t.startswith("status-"):
-                status_val = t[7:]
-            elif t.startswith("project-"):
-                project_val = t[8:]
-            elif t.startswith("pri-"):
-                priority = t[4:]
-            elif t in ("fr", "nfr"):
-                fr_nfr = t.upper()
-        status_counts[status_val] = status_counts.get(status_val, 0) + 1
-        preview = (body or desc or "").strip().split("\n")[0][:60].replace("|", "\\|")
-        title_clean = title[:40].replace("|", "\\|")
+        tags = [str(t) for t in store.parse_tags(r.get("tags") or "[]")]
+        view_tags = tags + [
+            f"project:{t[len('project-') :]}" for t in tags if t.startswith("project-")
+        ]
+        view = {**r, "tags": view_tags}
+        if not all_projects:
+            try:
+                member = brief_membership(view, proj or None, strict_global=True, tier_gate=False)
+            except Exception:
+                member = False  # a malformed row is withheld, never listed
+            if not member:
+                withheld += 1
+                continue
+        st = next((t[len("status-") :] for t in tags if t.startswith("status-")), "")
+        pri = next((t[len("pri-") :] for t in tags if t.startswith("pri-")), "")
+        projects = ",".join(
+            sorted({t[len("project-") :] for t in tags if t.startswith("project-")})
+        ) or ("global" if any(t in ("scope:global", "scope:cross-project") for t in tags) else "-")
+        in_scope_rows.append((r, tags, st, pri, projects))
+
+    def keep(item: tuple[dict[str, Any], list[str], str, str, str]) -> bool:
+        _, tags, st, pri, _p = item
+        if wanted_status == "open" and st not in open_states:
+            return False
+        if wanted_status not in ("open", "all") and st != wanted_status:
+            return False
+        if wanted_pri and pri != wanted_pri:
+            return False
+        return not (tag and tag not in tags)
+
+    matched = [x for x in in_scope_rows if keep(x)]
+    shown = matched[: max(0, int(limit))]
+
+    lines: list[str] = []
+    for r, _tags, st, pri, projects in shown:
+        status_txt = st or "no-status"
+        if st == "done":
+            try:
+                audit = await _a(store.get_audit_log(memory_name=r["name"], limit=20))
+            except Exception:
+                audit = []
+            last = next((a for a in audit or [] if "delete" not in str(a.get("op", ""))), None)
+            if last:
+                status_txt = (
+                    f"done (self-attested; last write by {clean(last.get('actor_key_name') or 'unknown', 40)}, "
+                    f"{str(last.get('ts') or '')[:10]})"
+                )
+            else:
+                status_txt = "done (self-attested; unattributed — history predates the audit log or was pruned)"
         lines.append(
-            f"| {name} | {title_clean} | {status_val} "
-            f"| {project_val} | {priority} | {fr_nfr} | {preview} |"
+            f"{clean(r['name'], 80)}  {clean(projects, 40)}  {status_txt}  {clean(pri or '-', 10)}  "
+            f"{clean(r.get('title'), 60)}"
         )
 
-    total = len(rows)
-    parts: list[str] = []
-    for s in ("pending", "in-progress", "done", "blocked", "unknown"):
-        if s in status_counts:
-            parts.append(f"{status_counts[s]} {s}")
-    summary = " | ".join(parts) if parts else f"{total} total"
-    lines.append(f"\n**Total**: {total} — {summary}")
-    return "\n".join(lines)
+    counts: dict[str, int] = {}
+    for _r, _t, st, _p, _pj in matched:
+        counts[st or "no status"] = counts.get(st or "no status", 0) + 1
+    order = ["pending", "in-progress", "blocked", "done", "no status"]
+    by_status = ", ".join(f"{counts[k]} {k}" for k in order if k in counts) or "none"
+    missing_status = sum(1 for x in matched if not x[2])
+    missing_pri = sum(1 for x in matched if not x[3])
+    scope_txt = (
+        "all projects" if all_projects else (f"project {proj} + global" if proj else "global only")
+    )
+    footer = (
+        f"{len(shown)} of {len(matched)} shown ({scope_txt}, status {wanted_status}): {by_status}"
+        f" | {withheld} withheld by scope | missing status: {missing_status}, missing priority: {missing_pri}"
+    )
+    if not lines:
+        return "No requirements match.\n" + footer
+    return "\n".join(lines) + "\n" + footer
 
 
 @mcp.tool()
