@@ -3235,48 +3235,17 @@ class PostgresStore(BaseStore):
 
         return CanonReader(search=_search, fetch_body=_fetch_body)
 
-    async def get_requirements(
-        self, project: str = "", status: str = "", tag: str = "", limit: int = 50
-    ) -> list:
-        """Return requirement memories filtered by project, status, or tag."""
-        self._ensure_pool()
-        import json
-
-        clauses = ["type = 'requirement'"]
-        params = []
-        i = 1
-        if tag:
-            clauses.append(f"tags @> ${i}::jsonb")
-            params.append(json.dumps([tag]))
-            i += 1
-        else:
-            if project:
-                clauses.append(f"tags @> ${i}::jsonb")
-                params.append(json.dumps([f"project-{project}"]))
-                i += 1
-            if status:
-                clauses.append(f"tags @> ${i}::jsonb")
-                params.append(json.dumps([f"status-{status}"]))
-                i += 1
-
-        where = " AND ".join(clauses)
-        params.append(limit)
-
-        async with self.pool.acquire() as conn:
+    async def get_requirements(self, limit: int = 5000) -> list[dict[str, Any]]:
+        """See ``BaseStore.get_requirements``: every live requirement; filtering happens in ``memory_req``."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT name, title, tags, description, body FROM memories WHERE {where} ORDER BY name ASC LIMIT ${i}",
-                *params,
+                "SELECT name, title, tags, description, body, tier, type, scope FROM memories "
+                "WHERE type = 'requirement' AND deleted_at IS NULL "
+                "AND (superseded_by IS NULL OR superseded_by = '') ORDER BY name ASC LIMIT $1",
+                limit,
             )
-        return [
-            {
-                "name": r["name"],
-                "title": r["title"],
-                "tags": r["tags"],
-                "description": r["description"],
-                "body": r["body"],
-            }
-            for r in rows
-        ]
+        return [dict(r) for r in rows]
 
 
 async def _rollback_via_chokepoint(

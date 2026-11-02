@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.3.15 — `/req list`: requirements listed under the brief's scope rules
+
+> **Deliberate behaviour change: `/req` with no project no longer lists every project's requirements.** It now lists
+> only explicitly global requirements, and counts the rest without naming them, the same rule as an unscoped brief.
+> `/req list --project <p>` (or the project in context) lists that project's requirements, plus global ones.
+> `--all-projects` lists every project, as an explicit opt-in.
+
+Found 2 Nov, before building:
+- **Requirements are tagged `project-<p>`** (with a hyphen, the `/req` convention), while brief scope reads `project:<p>`. So every requirement compiled to "unrouted" and reached no brief at all.
+- **`memory_req` with no project listed every project's requirements:** a cross-project leak in the tool itself.
+- **Neither backend's `get_requirements` excluded deleted or superseded rows.**
+
+**Changes**
+
+- **`memory_req`** (MCP tool; no new tool):
+  - **Scope:** applies the brief's membership rule (`resolver.brief_membership`), through a read-time view in which a `project-<p>` tag also counts as `project:<p>`. Nothing is stored or migrated.
+  - **Filters:** `status` (`open` = pending, in-progress or blocked, the default; `done`; `all`; or an exact status), `priority`, `tag` (scope still applies; it no longer overrides it), `limit` (applied after filtering), and `all_projects`.
+  - **Output:** one line per requirement, with every stored field escaped. A footer gives counts by status, how many were withheld by scope, and how many lack a status or priority.
+  - **Done items** read `done (self-attested; last write by <actor>, <date>)`, from the audit log. The data records who last wrote a done requirement, not who marked it done.
+  - **Read-only,** with a standing test.
+- **`get_requirements`** (both backends) returns every live requirement. Deleted and superseded rows are excluded, and the SQL project/status/tag pre-filters are gone: they dropped global requirements before membership ran, and SQLite's `LIKE` over-matched (`project-mori` matched `project-moribund`).
+- **`brief_membership`** gains `tier_gate` (default `True`, unchanged for briefs). The listing passes `False`, so a demoted requirement doesn't vanish from its project's list.
+- **The `/req` skill** gains `list` (also the default) and resolves the project in context the way `/brief --auto` does. Plugin 0.4.1.
+
+**Not in this release:** whether requirements should appear in **briefs** (that would need the mapping in the brief path, or a tag migration: a separate decision), and exact "marked done by" attribution (a write-path follow-up).
+
 ## v2.3.14 — CD deploys only a tag whose own commit passed CI (#73)
 
 > **Release-process change.** Release tags must now be **annotated**, strictly `vX.Y.Z` (no pre-release tags), on

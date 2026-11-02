@@ -135,7 +135,9 @@ def compile_context_tags(project: str | None, strict_global: bool) -> frozenset[
 BRIEF_PROJECT_LANE_TIERS = frozenset({"canonical", "working"})
 
 
-def brief_membership(row: dict[str, Any], project: str | None, strict_global: bool) -> bool:
+def brief_membership(
+    row: dict[str, Any], project: str | None, strict_global: bool, tier_gate: bool = True
+) -> bool:
     """The normal brief's membership rule for ONE row, as ``filter_by_scope`` applies it (B1, 2026-11-01).
 
     Shared by every path that surfaces memories into a brief (the post-compact delta included), so the paths
@@ -148,6 +150,10 @@ def brief_membership(row: dict[str, Any], project: str | None, strict_global: bo
 
     With ``project`` empty and ``strict_global`` True (the unscoped safe brief) only genuinely global rows match.
     An untagged row compiles to the UNROUTED sentinel and never matches.
+
+    ``tier_gate=False`` drops the project-lane tier gate and keeps the scope rule (v2.3.15, the requirements listing):
+    a demoted requirement is still the project's requirement, and must not vanish from ``/req list`` silently.
+    Briefs keep the default.
     """
     from mori_advisor.scope import in_scope
 
@@ -164,6 +170,6 @@ def brief_membership(row: dict[str, Any], project: str | None, strict_global: bo
             tags = parsed if isinstance(parsed, list) else []
         except ValueError:
             tags = []
-    if project and f"project:{project}" in {str(t) for t in tags}:
+    if tier_gate and project and f"project:{project}" in {str(t) for t in tags}:
         return str(row.get("tier", "")) in BRIEF_PROJECT_LANE_TIERS
     return True
