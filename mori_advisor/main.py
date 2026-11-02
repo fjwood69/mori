@@ -2534,7 +2534,8 @@ async def memory_req(
 
     Status and priority come from ``status-*`` / ``pri-*`` tags through a strict whitelist (lowercase ``[a-z0-9-]``,
     at most 32 characters): tags are stored unvalidated, so a crafted tag could otherwise forge an output line. With
-    several status tags, the most advanced wins (done > blocked > in-progress > pending). A row whose stored ``scope``
+    several status tags, the most advanced wins (done > blocked > in-progress > pending); with several priority tags,
+    the highest wins. A status outside those four is listed only under ``status=all`` (and counted in the footer). A row whose stored ``scope``
     column is set is decided by that scope, as everywhere in mori (it is authoritative); the ``project-<p>`` mapping
     applies to tag-scoped rows, which is every requirement today. Read-only.
     """
@@ -2552,12 +2553,13 @@ async def memory_req(
 
     def clean(text: object, width: int) -> str:
         raw = "".join(" " if unicodedata.category(ch) == "Cf" else ch for ch in str(text or ""))
-        t = re.sub(r"[\x00-\x1f\x7f`]", " ", raw).replace("|", "\\|").strip()
+        t = re.sub(r"[\x00-\x1f\x7f-\x9f`]", " ", raw).replace("|", "\\|").strip()
         t = re.sub(r"\s+", " ", t)
         return t if len(t) <= width else t[:width] + "…"
 
     open_states = {"pending", "in-progress", "blocked"}
     status_rank = {"pending": 1, "in-progress": 2, "blocked": 3, "done": 4}
+    pri_rank = {"low": 1, "medium": 2, "high": 3}
     token = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 
     def tag_values(tags: list[str], prefix: str) -> list[str]:
@@ -2591,11 +2593,12 @@ async def memory_req(
                 continue
         statuses = tag_values(tags, "status-")
         st = max(statuses, key=lambda v: status_rank.get(v, 0)) if statuses else ""
-        pri = next(iter(tag_values(tags, "pri-")), "")
+        pris = tag_values(tags, "pri-")
+        pri = max(pris, key=lambda v: pri_rank.get(v, 0)) if pris else ""
         is_global = any(t in ("scope:global", "scope:cross-project") for t in tags)
         named = ",".join(sorted({t[len("project-") :] for t in tags if t.startswith("project-")}))
         projects = (
-            (f"{named} (global)" if is_global else named)
+            (f"(global) {named}" if is_global else named)
             if named
             else ("global" if is_global else "-")
         )
@@ -2626,7 +2629,7 @@ async def memory_req(
             if last:
                 status_txt = (
                     f"done (self-attested; last write by {clean(last.get('actor_key_name') or 'unknown', 40)}, "
-                    f"{str(last.get('ts') or '')[:10]})"
+                    f"{clean(str(last.get('ts') or ''), 10)})"
                 )
             else:
                 status_txt = "done (self-attested; unattributed — history predates the audit log or was pruned)"
@@ -2644,10 +2647,12 @@ async def memory_req(
     missing_status = sum(1 for x in matched if not x[2])
     missing_pri = sum(1 for x in matched if not x[3])
     scope_txt = (
-        "all projects" if all_projects else (f"project {proj} + global" if proj else "global only")
+        "all projects"
+        if all_projects
+        else (f"project {clean(proj, 40)} + global" if proj else "global only")
     )
     footer = (
-        f"{len(shown)} of {len(matched)} shown ({scope_txt}, status {wanted_status}): {by_status}"
+        f"{len(shown)} of {len(matched)} shown ({scope_txt}, status {clean(wanted_status, 32)}): {by_status}"
         f" | {withheld} withheld by scope | missing status: {missing_status}, missing priority: {missing_pri}"
     )
     if len(rows) >= safety:

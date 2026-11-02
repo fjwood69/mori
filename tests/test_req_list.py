@@ -437,7 +437,7 @@ def test_status_precedence_case_and_display(backend, tmp_path, monkeypatch):
         line = next(
             x for x in (await memory_req(project="mori")).splitlines() if x.startswith("req-both")
         )
-        assert "mori (global)" in line, line
+        assert "(global) mori" in line, line
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
 
@@ -472,5 +472,23 @@ def test_limit_is_capped_at_200(backend, tmp_path, monkeypatch):
         out = await memory_req(project="mori", limit=10**6)
         assert len(_listed(out)) == 200, len(_listed(out))
         assert "200 of 205 shown" in out.splitlines()[-1], out.splitlines()[-1]
+
+    _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_highest_priority_wins_and_c1_controls_are_stripped(backend, tmp_path, monkeypatch):
+    """Code consult round 2 (#2, #4)."""
+    from mori_advisor.main import memory_req
+
+    async def run(store):
+        await _w(
+            store,
+            "req-pri",
+            ["project-mori", "status-pending", "pri-low", "pri-high"],
+            title="ok\x9b31mred",
+        )
+        assert "req-pri" in _listed(await memory_req(project="mori", priority="high"))
+        assert "\x9b" not in await memory_req(project="mori")
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
