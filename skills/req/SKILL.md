@@ -1,6 +1,6 @@
 ---
 name: req
-description: Lightweight project requirements checklist surfaced via /brief. Use to track or update outstanding project tasks.
+description: Lightweight project requirements checklist, listed with /req list (requirements do not appear in /brief). Use to track or update outstanding project tasks.
 ---
 
 # /req — Project Requirements and Delivery Tracking
