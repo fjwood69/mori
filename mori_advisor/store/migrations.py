@@ -620,7 +620,41 @@ MIGRATIONS: tuple[Migration, ...] = (
         sqlite_fn=lambda conn, db_path: _recovery_keys_sqlite(conn, db_path),
         postgres_fn=lambda conn: _recovery_keys_postgres(conn),
     ),
+    Migration(
+        id=18,
+        name="pending_writes_proposals",
+        # v2.3.16 (the canon lock): a proposal names its operation (write | rollback | delete), the
+        # rollback's target version, and a digest of the target's state when it was proposed
+        # (approval of a changed target fails `stale-proposal`). Proposals are immutable: a
+        # same-proposer re-proposal closes the open row as `superseded-by-proposal`; the new row
+        # points back at it (replaces_id), the closed row forward (superseded_by_id). Additive.
+        sqlite_fn=lambda conn, db_path: _pending_proposals_sqlite(conn),
+        postgres_sql=(
+            "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS operation TEXT NOT NULL "
+            "DEFAULT 'write'; "
+            "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS target_version_id BIGINT; "
+            "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS target_state TEXT; "
+            "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS replaces_id BIGINT; "
+            "ALTER TABLE pending_writes ADD COLUMN IF NOT EXISTS superseded_by_id BIGINT"
+        ),
+    ),
 )
+
+PENDING_PROPOSAL_COLUMNS = (
+    ("operation", "TEXT NOT NULL DEFAULT 'write'"),
+    ("target_version_id", "INTEGER"),
+    ("target_state", "TEXT"),
+    ("replaces_id", "INTEGER"),
+    ("superseded_by_id", "INTEGER"),
+)
+
+
+def _pending_proposals_sqlite(conn: Any) -> None:
+    """Migration 18 (SQLite): add the proposal columns, guarded like migration 7."""
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(pending_writes)")}
+    for col_name, col_def in PENDING_PROPOSAL_COLUMNS:
+        if col_name not in existing_cols:
+            conn.execute(f"ALTER TABLE pending_writes ADD COLUMN {col_name} {col_def}")
 
 
 # ── Migration 16 — JSONB array columns must hold arrays (v2.3.10) ─────────────────

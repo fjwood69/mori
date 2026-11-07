@@ -154,9 +154,9 @@ async def _queue_decision_for_review(
             "ts": str(m.ts),
             "sender_verified": False,
         }
-        await _maybe_await(
-            memory_store.queue_pending_write(
-                name=name,
+        outcome = await _maybe_await(
+            memory_store.propose_pending(
+                name,
                 title=m.body[:80],
                 body=m.body,
                 type="project",
@@ -173,6 +173,11 @@ async def _queue_decision_for_review(
             "Decision %s from %s NOT queued (store error); recorded queue-error", m.id[:8], sender
         )
         _record(msg_store, m, "queue-error")
+        return
+    # v2.3.16: the sink returns a structured outcome — a refusal is recorded, never read as queued.
+    if not outcome.queued:
+        _record(msg_store, m, "queue-refused-open")
+        logger.warning("Decision %s from %s NOT queued: %s", m.id[:8], sender, outcome.reason)
         return
     _record(msg_store, m, "queued-for-review")
     logger.info("Decision %s from %s queued for review as %s", m.id[:8], sender, name)

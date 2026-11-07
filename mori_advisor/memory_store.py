@@ -21,8 +21,21 @@ import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 
+from mori_advisor.canon_authority import (
+    CHAIN_CAP,
+    REQUEST_ACTORS,
+    SUPERSEDED_STATUS,
+    CanonAuthority,
+    ProposalOutcome,
+    has_canon_authority,
+    normalise_tier,
+    open_cap_for,
+    proposal_key,
+    proposer_for,
+    target_state_digest,
+)
 from mori_advisor.metrics import record_classifier_verdict, record_write_rejection
 from mori_advisor.names import confined_export_path, invalid_name_reason
 from mori_advisor.policy import protected_by, protected_rollback_message, protection_bypass
@@ -32,7 +45,6 @@ from mori_advisor.provenance import (
     anatomy_enforce_mode,
     authorize_tier,
     content_hash,
-    tier_decision,
     validate_provenance,
 )
 from mori_advisor.utils import classifier_reasoning_effort, parse_one_word_verdict
@@ -846,6 +858,205 @@ class MemoryStore:
         """
         validate_provenance(provenance, name, logger)
 
+    # ── The proposal sink (v2.3.16, the canon lock) ────────────────────────────────────────
+    # ONE sink for every queued change: the canon rule, the protection lane, the anatomy-enforce
+    # downgrade and queue_pending_write. Proposals are immutable (hybrid supersede, consult C3):
+    # a same-proposer re-proposal closes the open row and inserts a new one pointing back at it; a
+    # different proposer is refused with the open id (and audited); a content-equal re-proposal is
+    # a no-op. Runs on the CALLER's connection and never commits — the caller owns the transaction.
+
+    def _active_target(self, conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
+        cur = conn.execute(
+            "SELECT id, title, description, type, body, tags, tier, protected, deleted_at, "
+            f"superseded_by FROM memories WHERE name = ? AND {_ACTIVE}",
+            (name,),
+        )
+        row = cur.fetchone()
+        return dict(zip([d[0] for d in cur.description], row)) if row else None
+
+    def _open_proposal(self, conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
+        cur = conn.execute(
+            "SELECT * FROM pending_writes WHERE memory_name = ? AND status = 'pending'", (name,)
+        )
+        row = cur.fetchone()
+        return dict(zip([d[0] for d in cur.description], row)) if row else None
+
+    def _chain_depth(self, conn: sqlite3.Connection, pending_id: int) -> int:
+        depth, seen = 0, set[Any]()
+        current: Any = pending_id
+        while current is not None and current not in seen and depth <= CHAIN_CAP + 1:
+            seen.add(current)
+            depth += 1
+            row = conn.execute(
+                "SELECT replaces_id FROM pending_writes WHERE id = ?", (current,)
+            ).fetchone()
+            current = row[0] if row else None
+        return depth
+
+    def _propose(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        name: str,
+        proposer: str,
+        operation: str = "write",
+        title: str = "",
+        description: str = "",
+        type: str = "project",
+        body: str = "",
+        tags: Any = None,
+        tier: str = "",
+        origin_session_ids: Any = None,
+        origin_clients: Any = None,
+        source: str = "",
+        provenance_json: str | None = None,
+        confidence: float | None = None,
+        focus_mode: str = "",
+        target_version_id: int | None = None,
+        cap: int | None = None,
+    ) -> ProposalOutcome:
+        import sqlite3
+
+        tags_json = self._format_tags(_coerce_tags(tags))
+        tier_n = normalise_tier(tier)
+        fields = {
+            "operation": operation,
+            "tier": tier_n,
+            "title": title,
+            "description": description,
+            "type": type,
+            "body": body,
+            "tags": tags_json,
+            "target_version_id": target_version_id,
+        }
+        open_row = self._open_proposal(conn, name)
+        if open_row:
+            if proposal_key(open_row) == proposal_key(fields):
+                return ProposalOutcome(
+                    "noop",
+                    open_row["id"],
+                    f"Memory '{name}': an identical proposal is already open "
+                    f"(pending id {open_row['id']}).",
+                )
+            if (open_row.get("proposed_by") or "") != proposer:
+                _audit_sqlite(
+                    conn,
+                    "propose_refused",
+                    proposer,
+                    name,
+                    detail=f"open proposal #{open_row['id']} belongs to another proposer",
+                )
+                return ProposalOutcome(
+                    "refused",
+                    open_row["id"],
+                    f"refused: proposal #{open_row['id']} for '{name}' is open by another proposer "
+                    "and must be reviewed first.",
+                )
+            if self._chain_depth(conn, open_row["id"]) >= CHAIN_CAP:
+                return ProposalOutcome(
+                    "chain-capped",
+                    open_row["id"],
+                    f"refused: the supersede chain for '{name}' has reached its cap ({CHAIN_CAP}); "
+                    f"proposal #{open_row['id']} must be reviewed first.",
+                )
+        elif cap is not None:
+            n_open = conn.execute(
+                "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending' AND proposed_by = ?",
+                (proposer,),
+            ).fetchone()[0]
+            if n_open >= cap:
+                return ProposalOutcome(
+                    "capped",
+                    None,
+                    f"refused: '{proposer}' has reached its open-proposal cap ({cap}); "
+                    "proposals must be reviewed first.",
+                )
+
+        target = self._active_target(conn, name)
+        if open_row:
+            conn.execute(
+                "UPDATE pending_writes SET status = ?, reviewed_at = datetime('now'), "
+                "review_note = ? WHERE id = ? AND status = 'pending'",
+                (SUPERSEDED_STATUS, "superseded by a later proposal", open_row["id"]),
+            )
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO pending_writes
+                    (memory_name, title, description, type, body, tags, origin_session_ids,
+                     origin_clients, proposed_by, source, provenance, confidence, focus_mode,
+                     existing_body, tier, operation, target_version_id, target_state, replaces_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (
+                    name,
+                    title,
+                    description,
+                    type,
+                    body,
+                    tags_json,
+                    json.dumps(origin_session_ids or []),
+                    json.dumps(origin_clients or []),
+                    proposer,
+                    source or "",
+                    provenance_json,
+                    confidence,
+                    focus_mode or "",
+                    target["body"] if target else None,
+                    tier_n,
+                    operation,
+                    target_version_id,
+                    target_state_digest(target),
+                    open_row["id"] if open_row else None,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            winner = self._open_proposal(conn, name)
+            return ProposalOutcome(
+                "refused",
+                winner["id"] if winner else None,
+                f"refused: another proposal for '{name}' was queued at the same moment.",
+            )
+        new_id = cur.fetchone()[0]
+        if open_row:
+            conn.execute(
+                "UPDATE pending_writes SET superseded_by_id = ? WHERE id = ?",
+                (new_id, open_row["id"]),
+            )
+            return ProposalOutcome(
+                "superseded",
+                new_id,
+                f"Memory '{name}': queued as a proposal (pending id {new_id}), replacing your "
+                f"proposal #{open_row['id']}; dreamer review required.",
+            )
+        return ProposalOutcome(
+            "inserted",
+            new_id,
+            f"Memory '{name}': queued as a proposal (pending id {new_id}); dreamer review "
+            "required (review.html or POST /api/memories/{name}/approve).",
+        )
+
+    @staticmethod
+    def _outcome_result(name: str, intended_tier: str, outcome: ProposalOutcome) -> WriteResult:
+        if outcome.queued:
+            return WriteResult(
+                memory_name=name,
+                intended_tier=intended_tier,
+                stored_tier="pending",
+                disposition=Disposition.DOWNGRADED_TO_PENDING,
+                pending_id=outcome.pending_id,
+                reason=outcome.reason,
+            )
+        return WriteResult(
+            memory_name=name,
+            intended_tier=intended_tier,
+            stored_tier="",
+            disposition=Disposition.REJECTED,
+            pending_id=outcome.pending_id if outcome.kind != "capped" else None,
+            reason=outcome.reason,
+        )
+
     def _downgrade_to_pending(
         self,
         conn,
@@ -859,55 +1070,40 @@ class MemoryStore:
         tags_json: str,
         origin_session_ids,
         origin_clients,
-        client,
+        provenance: Provenance,
         intended_tier: str,
         reason: str,
     ) -> WriteResult:
-        """The pending SINK (split from the gate; never re-enters store.write). Used by BOTH the
-        protection lane and the step-6 anatomy-enforce downgrade — one insert, one disposition."""
-        # #76: upsert the open pending row for the name (latest candidate wins), as Postgres does —
-        # a plain INSERT hit the partial unique index idx_pending_writes_name_pending.
-        _pcur = conn.execute(
-            """
-            INSERT INTO pending_writes
-                (memory_name, title, description, type, body, tags,
-                 origin_session_ids, origin_clients, proposed_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(memory_name) WHERE status = 'pending' DO UPDATE SET
-                title              = excluded.title,
-                description        = excluded.description,
-                type               = excluded.type,
-                body               = excluded.body,
-                tags               = excluded.tags,
-                origin_session_ids = excluded.origin_session_ids,
-                origin_clients     = excluded.origin_clients,
-                proposed_by        = excluded.proposed_by,
-                proposed_at        = datetime('now')
-            RETURNING id
-            """,
-            (
-                name,
-                title,
-                description,
-                type,
-                body,
-                tags_json,
-                json.dumps(origin_session_ids or []),
-                json.dumps(origin_clients or []),
-                client or "unknown",
-            ),
+        """The protection lane and the anatomy-enforce downgrade, through the one proposal sink."""
+        is_request = provenance.actor in REQUEST_ACTORS
+        proposer = proposer_for(provenance)
+        outcome = self._propose(
+            conn,
+            name=name,
+            proposer=proposer,
+            title=title,
+            description=description,
+            type=type,
+            body=body,
+            tags=tags_json,
+            tier=intended_tier,
+            origin_session_ids=origin_session_ids,
+            origin_clients=origin_clients,
+            cap=open_cap_for(proposer, is_request),
         )
-        pending_id = _pcur.fetchone()[0]
         if close_conn:
             conn.commit()
-        return WriteResult(
-            memory_name=name,
-            intended_tier=intended_tier,
-            stored_tier="pending",
-            disposition=Disposition.DOWNGRADED_TO_PENDING,
-            pending_id=pending_id,
-            reason=reason,
-        )
+        result = self._outcome_result(name, intended_tier, outcome)
+        if outcome.queued:
+            return WriteResult(
+                memory_name=name,
+                intended_tier=intended_tier,
+                stored_tier="pending",
+                disposition=Disposition.DOWNGRADED_TO_PENDING,
+                pending_id=outcome.pending_id,
+                reason=f"{reason} (pending id {outcome.pending_id})",
+            )
+        return result
 
     def _authorize_tier(self, provenance: Provenance, intended_tier: str) -> tuple[bool, str]:
         """Phase 2 pipeline stage 2 — tier-target authorization (``may_target``).
@@ -937,9 +1133,16 @@ class MemoryStore:
         _conn: sqlite3.Connection | None = None,
         _version_note: str = "updated",
         _anatomy_bypass: str | None = None,
+        _canon_authority: CanonAuthority | None = None,
     ) -> WriteResult:
         """Create or update a memory entry (upsert by name). Returns a WriteResult — the
         chokepoint outcome. The public ``write()`` adapter formats the legacy message string.
+
+        v2.3.16 (the canon lock): a write that would create a canonical row or alter an existing
+        one applies only with canon authority (``_canon_authority`` or a dreamer-role request —
+        :func:`mori_advisor.canon_authority.has_canon_authority`). Otherwise it is stored as a
+        proposal and the row is unchanged. ``_skip_protection`` skips the protection flag only,
+        never this rule.
 
         ``_version_note`` labels the snapshot of the prior state. ``_anatomy_bypass`` is honoured
         ONLY for ``provenance.op == "rollback"`` (board amendment, v2.3.11); ``rollback`` checks
@@ -971,7 +1174,8 @@ class MemoryStore:
                 effective_name = f"memory-{int(time.time())}"
 
             effective_type = self._ensure_type(type)
-            effective_tier = self._ensure_tier(tier)
+            # There is no 'standard' tier: it means canonical and never falls through to working.
+            effective_tier = self._ensure_tier(normalise_tier(tier) or tier)
 
             # v2.3.12 (D7): a name is a single plain path segment, or the write is refused.
             name_problem = invalid_name_reason(effective_name)
@@ -994,33 +1198,60 @@ class MemoryStore:
             tags_list = _coerce_tags(tags)
             tags_json = self._format_tags(tags_list)
 
-            # Phase 2 authorization pipeline: stage 1 validate provenance, stage 2 tier-target
-            # decision (snapshot ONCE here — never re-read mid-write; GLM). audit-mode logs a
-            # would-block and proceeds; enforce-mode HARD-REJECTS (R2 — both backends, no pending).
             from mori_advisor.metrics import record_tier_decision
 
             self._validate_provenance(provenance, effective_name)
-            _reject, _decision, _mode, tier_reason = tier_decision(provenance, effective_tier)
-            record_tier_decision(provenance.actor, effective_tier, _decision, _mode)
-            if _decision != "allowed":
-                logger.warning(
-                    "TIER-%s name=%s actor=%s op=%s src=%s mode=%s: %s",
-                    _decision.upper(),
+
+            # Read the existing ACTIVE row first: the canon rule must judge it before any other
+            # sink runs (consult C1, P3-3: before the anatomy downgrade).
+            try:
+                existing_cur = conn.execute(
+                    f"SELECT * FROM memories WHERE name = ? AND {_ACTIVE}",
+                    (effective_name,),
+                )
+                existing_row = existing_cur.fetchone()
+                existing_cols = [d[0] for d in existing_cur.description]
+            except sqlite3.Error:
+                existing_row, existing_cols = None, []
+            existing_tier_val = (
+                dict(zip(existing_cols, existing_row)).get("tier") if existing_row else None
+            )
+
+            # v2.3.16 THE CANON LOCK — one rule, judged on the requested tier AND the stored one
+            # (the tier gate it replaces judged only the requested tier, so a 'working' write to a
+            # canonical name replaced its body). Retires MORI_TIER_ENFORCE.
+            canon_target = effective_tier == "canonical" or existing_tier_val == "canonical"
+            if canon_target and not has_canon_authority(provenance, _canon_authority):
+                record_tier_decision(provenance.actor, "canonical", "queued", "canon-lock")
+                proposer = proposer_for(provenance)
+                outcome = self._propose(
+                    conn,
+                    name=effective_name,
+                    proposer=proposer,
+                    title=title,
+                    description=description,
+                    type=effective_type,
+                    body=body,
+                    tags=tags_json,
+                    tier="canonical",
+                    origin_session_ids=origin_session_ids,
+                    origin_clients=origin_clients,
+                    cap=open_cap_for(proposer, provenance.actor in REQUEST_ACTORS),
+                )
+                if close_conn:
+                    conn.commit()
+                logger.info(
+                    "CANON-LOCK name=%s actor=%s op=%s -> %s (pending id %s)",
                     effective_name,
-                    provenance.actor,
+                    provenance.ledger_actor,
                     provenance.op,
-                    provenance.source,
-                    _mode,
-                    tier_reason,
+                    outcome.kind,
+                    outcome.pending_id,
                 )
-            if _reject:
-                return WriteResult(
-                    memory_name=effective_name,
-                    intended_tier=effective_tier,
-                    stored_tier="",
-                    disposition=Disposition.REJECTED,
-                    reason=tier_reason,
-                )
+                return self._outcome_result(effective_name, "canonical", outcome)
+            record_tier_decision(
+                provenance.actor, effective_tier, "applied", "canon-lock" if canon_target else "-"
+            )
 
             # Completeness/anatomy chokepoint. audit_completeness logs a COMPLETENESS-AUDIT line
             # for a non-conforming verdict; step 6 makes that verdict ACT behind MORI_ANATOMY_ENFORCE
@@ -1059,20 +1290,10 @@ class MemoryStore:
                         tags_json=tags_json,
                         origin_session_ids=origin_session_ids,
                         origin_clients=origin_clients,
-                        client=client,
+                        provenance=provenance,
                         intended_tier=effective_tier,
                         reason=f"incomplete anatomy ({verdict['reason']}) — queued for review",
                     )
-
-            # Check if existing memory exists and is protected
-            try:
-                existing_cur = conn.execute(
-                    f"SELECT * FROM memories WHERE name = ? AND {_ACTIVE}",
-                    (effective_name,),
-                )
-                existing_row = existing_cur.fetchone()
-            except sqlite3.Error:
-                existing_row = None
 
             # Board amendment, made unable-not-to-fire: an anatomy bypass stands only if the
             # content equals a stored version of THIS (active) incarnation exactly.
@@ -1089,7 +1310,11 @@ class MemoryStore:
 
             # Step 6: the `_skip_protection` trapdoor is honoured ONLY in anatomy-audit mode;
             # under MORI_ANATOMY_ENFORCE the bypass closes so protection bites the dreamer too.
-            effective_skip = _skip_protection and anatomy_mode != "enforce"
+            # v2.3.16: canon authority (an approval, the standards import) implies protection
+            # authority — an approved change to a protected canonical row must not loop back.
+            effective_skip = (_skip_protection and anatomy_mode != "enforce") or isinstance(
+                _canon_authority, CanonAuthority
+            )
             if not effective_skip and self._is_protected(effective_name, tags_list, existing_row):
                 if not protection_bypass(client, provenance, self._trusted_clients()):
                     # Queue as pending write instead (shared sink).
@@ -1104,7 +1329,7 @@ class MemoryStore:
                         tags_json=tags_json,
                         origin_session_ids=origin_session_ids,
                         origin_clients=origin_clients,
-                        client=client,
+                        provenance=provenance,
                         intended_tier=effective_tier,
                         reason=(
                             f"Memory '{effective_name}' is protected — "
@@ -1214,7 +1439,8 @@ class MemoryStore:
                         raise  # pre-migration schema (tests) → skip; real errors propagate
                 if close_conn:
                     conn.commit()
-                return accepted(effective_name, effective_tier)
+                # Report the tier actually stored (a canonical row stays canonical).
+                return accepted(effective_name, existing_tier)
             except sqlite3.Error as e:
                 return WriteResult(
                     memory_name=effective_name,
@@ -1243,6 +1469,7 @@ class MemoryStore:
         provenance: Provenance = LEGACY,
         _skip_protection: bool = False,
         _conn: sqlite3.Connection | None = None,
+        _canon_authority: CanonAuthority | None = None,
     ) -> str:
         """Legacy string-returning adapter over :meth:`_write` (behaviour-preserving).
 
@@ -1266,6 +1493,7 @@ class MemoryStore:
             provenance=provenance,
             _skip_protection=_skip_protection,
             _conn=_conn,
+            _canon_authority=_canon_authority,
         )
         if r.disposition is Disposition.ACCEPTED:
             return f"Memory '{r.memory_name}' written."
@@ -1606,17 +1834,59 @@ class MemoryStore:
         """Soft-delete a memory (sets deleted_at).  Use hard_delete() for permanent removal."""
         return self.soft_delete(name)
 
-    def soft_delete(self, name: str, *, actor: str = "system") -> str:
+    def soft_delete(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
+    ) -> str:
         """Soft-delete: set deleted_at = now on the active row with this name.
 
         The row remains in the database; restore_memory() reverses it.
         Does nothing if the name is already tombstoned or does not exist.
         v2.3.11: audited in the same transaction.
+
+        v2.3.16 (the canon lock): deleting a CANONICAL row without canon authority stores a
+        ``delete`` proposal instead, and the row is unchanged. The tier is read inside the same
+        locked transaction as the delete.
         """
         import sqlite3
 
         conn = self._get_conn()
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            target = self._active_target(conn, name)
+            if (
+                target is not None
+                and target.get("tier") == "canonical"
+                and not has_canon_authority(provenance, _canon_authority)
+            ):
+                proposer = proposer_for(provenance) if provenance is not None else actor
+                outcome = self._propose(
+                    conn,
+                    name=name,
+                    proposer=proposer,
+                    operation="delete",
+                    title=target.get("title") or "",
+                    description=target.get("description") or "",
+                    type=target.get("type") or "project",
+                    body=target.get("body") or "",
+                    tags=target.get("tags"),
+                    tier="canonical",
+                    cap=open_cap_for(
+                        proposer, provenance is not None and provenance.actor in REQUEST_ACTORS
+                    ),
+                )
+                conn.commit()
+                if outcome.queued:
+                    return (
+                        f"Memory '{name}' is canonical — the delete was queued as a proposal "
+                        f"(pending id {outcome.pending_id}); the memory is unchanged until a "
+                        "dreamer approves it."
+                    )
+                return f"Memory '{name}' NOT deleted — {outcome.reason}"
             cur = conn.execute(
                 f"UPDATE memories SET deleted_at = datetime('now'), updated_at = datetime('now') "
                 f"WHERE name = ? AND {_ACTIVE}",
@@ -1634,16 +1904,36 @@ class MemoryStore:
         finally:
             conn.close()
 
-    def hard_delete(self, name: str, *, actor: str = "system") -> str:
+    def hard_delete(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
+    ) -> str:
         """Permanently remove a memory row (active or tombstoned) and its versions.
 
         memory_versions FK was dropped by migration 9 (partial indexes cannot be FK
         targets). Versions are cleaned up here to prevent orphans. Audited in-transaction.
+
+        v2.3.16: REFUSED for any canonical row of this name (active or tombstoned) without canon
+        authority — there is no proposal for a permanent delete.
         """
         import sqlite3
 
         conn = self._get_conn()
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            canon = conn.execute(
+                "SELECT 1 FROM memories WHERE name = ? AND tier = 'canonical' LIMIT 1", (name,)
+            ).fetchone()
+            if canon and not has_canon_authority(provenance, _canon_authority):
+                conn.rollback()
+                return (
+                    f"Memory '{name}' is canonical — a permanent delete needs canon authority "
+                    "(a dreamer key). Not deleted."
+                )
             conn.execute("DELETE FROM memory_versions WHERE memory_name = ?", (name,))
             cur = conn.execute("DELETE FROM memories WHERE name = ?", (name,))
             if cur.rowcount == 0:
@@ -1658,7 +1948,14 @@ class MemoryStore:
         finally:
             conn.close()
 
-    def restore_memory(self, name: str, *, actor: str = "system") -> tuple[str, str]:
+    def restore_memory(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
+    ) -> tuple[str, str]:
         """Restore a soft-deleted memory.
 
         If an active memory already holds ``name``, the restored row is renamed
@@ -1675,15 +1972,24 @@ class MemoryStore:
 
         conn = self._get_conn()
         try:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT id, created_at, deleted_at, superseded_by FROM memories "
+                "SELECT id, created_at, deleted_at, superseded_by, tier FROM memories "
                 "WHERE name = ? AND deleted_at IS NOT NULL "
                 "ORDER BY deleted_at DESC LIMIT 1",
                 (name,),
             ).fetchone()
             if not row:
+                conn.rollback()
                 return name, f"Memory '{name}' not found or not deleted."
-            row_id, created_at, deleted_at, superseded_by = row
+            row_id, created_at, deleted_at, superseded_by, row_tier = row
+            # v2.3.16: restoring a canonical row brings canon back — it needs canon authority.
+            if row_tier == "canonical" and not has_canon_authority(provenance, _canon_authority):
+                conn.rollback()
+                return name, (
+                    f"Memory '{name}' is canonical — restoring it needs canon authority "
+                    "(a dreamer key). Not restored."
+                )
             collision = conn.execute(
                 f"SELECT 1 FROM memories WHERE name = ? AND {_ACTIVE}", (name,)
             ).fetchone()
@@ -1939,16 +2245,38 @@ class MemoryStore:
             )
             if why:
                 return protected_rollback_message(name, why)
-            # R6: canonical rollback needs the dreamer role, keyed off the row read here.
-            if active_tier == "canonical" and not caller_is_dreamer:
-                return (
-                    f"Memory '{name}' is canonical — rolling it back requires the dreamer role. "
-                    "Not rolled back."
+            # v2.3.16 (the canon lock): a canonical rollback without canon authority becomes a
+            # `rollback` proposal naming the target version; the memory is unchanged. (It was
+            # refused in api mode and applied in host mode before.)
+            authorised = has_canon_authority(prov)
+            if active_tier == "canonical" and not authorised:
+                proposer = proposer_for(prov)
+                outcome = self._propose(
+                    conn,
+                    name=name,
+                    proposer=proposer,
+                    operation="rollback",
+                    title=version[0] or "",
+                    description=version[1] or "",
+                    type=version[2] or "project",
+                    body=version[3] or "",
+                    tags=version[4],
+                    tier="canonical",
+                    target_version_id=version_id,
+                    cap=open_cap_for(proposer, prov.actor in REQUEST_ACTORS),
                 )
+                conn.commit()
+                if outcome.queued:
+                    return (
+                        f"Memory '{name}' is canonical — the rollback to version {version_id} was "
+                        f"queued as a proposal (pending id {outcome.pending_id}); the memory is "
+                        "unchanged until a dreamer approves it."
+                    )
+                return f"Memory '{name}' NOT rolled back — {outcome.reason}"
             # Content-only: canonical is kept by _write's don't-downgrade guard (see Postgres twin).
             tier = "working" if active_tier == "canonical" else active_tier
             bypass = None
-            if caller_is_dreamer and version[5] == active_id:
+            if (caller_is_dreamer or authorised) and version[5] == active_id:
                 bypass = f"dreamer rollback to stored version {version_id}"
             result = self._write(
                 name=name,
@@ -2449,109 +2777,123 @@ class MemoryStore:
         confidence: float | None = None,
         focus_mode: str = "",
         tier: str = "",
+        request: Provenance | None = None,
     ) -> str:
-        """Insert or update a pending write proposal for an existing memory.
+        """Queue a proposal; returns the outcome as text. See :meth:`propose_pending`."""
+        return self.propose_pending(
+            name,
+            title=title,
+            description=description,
+            type=type,
+            body=body,
+            tags=tags,
+            origin_clients=origin_clients,
+            proposed_by=proposed_by,
+            source=source,
+            provenance=provenance,
+            confidence=confidence,
+            focus_mode=focus_mode,
+            tier=tier,
+            request=request,
+        ).reason
 
-        For canonical/standard memories that must be reviewed before committing.
-        On a second proposal for the same name (while a pending row still exists),
-        the existing pending row is UPDATED so the latest candidate wins — no
-        duplicate-pending pileup (idempotent via INSERT OR REPLACE on the
-        partial unique index idx_pending_writes_name_pending).
+    def propose_pending(
+        self,
+        name: str,
+        title: str = "",
+        description: str = "",
+        type: str = "project",
+        body: str = "",
+        tags: List[str] | None = None,
+        origin_clients: List[str] | None = None,
+        proposed_by: str = "api",
+        source: str = "",
+        provenance: str | None = None,
+        confidence: float | None = None,
+        focus_mode: str = "",
+        tier: str = "",
+        request: Provenance | None = None,
+        operation: str = "write",
+        target_version_id: int | None = None,
+    ) -> ProposalOutcome:
+        """Queue a proposal through the one sink (v2.3.16) and return its structured outcome.
 
-        Captures existing_body at enqueue time so the review UI can diff.
-
-        Returns a human-readable string describing the outcome.
+        ``proposed_by`` names an INTERNAL producer (``ingestion``, ``msg:<sender>``,
+        ``intake-assessor``). A request path passes ``request`` instead: its proposer is then the
+        authenticated key, never a string argument. A ``standard`` tier is normalised to
+        canonical. Immutable proposals, hybrid supersede, caps: see ``_propose``.
         """
         import sqlite3
 
-        tags_json = self._format_tags(tags or [])
+        proposer = proposer_for(request) if request is not None else (proposed_by or "api")
+        is_request = request is not None and request.actor in REQUEST_ACTORS
         provenance_json = (
             provenance
             if isinstance(provenance, str)
             else (json.dumps(provenance) if provenance else None)
         )
-
-        # Capture the current body of any existing memory with this name for diff.
-        existing_body: str | None = None
-        try:
-            conn_read = self._get_conn()
-            try:
-                row = conn_read.execute(
-                    "SELECT body FROM memories WHERE name = ?", (name,)
-                ).fetchone()
-                if row:
-                    existing_body = row[0]
-            finally:
-                conn_read.close()
-        except Exception:
-            pass  # non-fatal; diff just won't be available
-
         conn = self._get_conn()
         try:
-            # INSERT OR REPLACE uses the partial unique index
-            # idx_pending_writes_name_pending (WHERE status='pending') so
-            # a second proposal for the same name replaces the pending row.
-            # Rows with status='approved'/'rejected' are unaffected.
-            conn.execute(
-                """
-                INSERT INTO pending_writes
-                    (memory_name, title, description, type, body, tags,
-                     origin_session_ids, origin_clients, proposed_by,
-                     source, provenance, confidence, focus_mode, existing_body, tier)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(memory_name) WHERE status = 'pending' DO UPDATE SET
-                    title          = excluded.title,
-                    description    = excluded.description,
-                    type           = excluded.type,
-                    body           = excluded.body,
-                    tags           = excluded.tags,
-                    origin_clients = excluded.origin_clients,
-                    proposed_by    = excluded.proposed_by,
-                    source         = excluded.source,
-                    provenance     = excluded.provenance,
-                    confidence     = excluded.confidence,
-                    focus_mode     = excluded.focus_mode,
-                    existing_body  = excluded.existing_body,
-                    tier           = excluded.tier,
-                    proposed_at    = datetime('now'),
-                    status         = 'pending'
-                """,
-                (
-                    name,
-                    title,
-                    description,
-                    type,
-                    body,
-                    tags_json,
-                    "[]",
-                    self._format_tags(origin_clients or []),
-                    proposed_by,
-                    source or "",
-                    provenance_json,
-                    confidence,
-                    focus_mode or "",
-                    existing_body,
-                    tier or "",
-                ),
+            conn.execute("BEGIN IMMEDIATE")
+            outcome = self._propose(
+                conn,
+                name=name,
+                proposer=proposer,
+                operation=operation,
+                title=title,
+                description=description,
+                type=type,
+                body=body,
+                tags=tags or [],
+                tier=tier,
+                origin_clients=origin_clients,
+                source=source,
+                provenance_json=provenance_json,
+                confidence=confidence,
+                focus_mode=focus_mode,
+                target_version_id=target_version_id,
+                cap=open_cap_for(proposer, is_request),
             )
             conn.commit()
-            return (
-                f"Memory '{name}' queued as pending write "
-                "(dreamer review required via review.html or POST /api/memories/{name}/approve)."
-            )
-        except sqlite3.Error as e:
-            return f"Database error queuing pending write: {e}"
+            return outcome
+        except sqlite3.Error:
+            conn.rollback()
+            raise
         finally:
             conn.close()
+
+    def _proposal_chain(self, conn: sqlite3.Connection, replaces_id: Any) -> List[dict[str, Any]]:
+        """The closed proposals an open one replaced, oldest first."""
+        chain: List[dict[str, Any]] = []
+        seen: set[Any] = set()
+        current = replaces_id
+        while current is not None and current not in seen and len(chain) < 50:
+            seen.add(current)
+            cur = conn.execute(
+                "SELECT id, proposed_by, proposed_at, operation, status, replaces_id "
+                "FROM pending_writes WHERE id = ?",
+                (current,),
+            )
+            row = cur.fetchone()
+            if not row:
+                break
+            d = dict(zip([c[0] for c in cur.description], row))
+            chain.append(d)
+            current = d.get("replaces_id")
+        return list(reversed(chain))
 
     def pending_list_json(
         self,
         status: str = "pending",
         proposed_by: str = "",
-    ) -> list[dict]:
+        _raw_provenance: bool = False,
+    ) -> List[dict[str, Any]]:
         """Return pending writes as a list of dicts (structured, for review UI).
 
-        Each dict contains all enrichment fields added in #15.
+        Each dict contains all enrichment fields added in #15, and (v2.3.16, R3) the proposal's
+        ``operation``, a server-computed ``diff`` against the memory as it is now, its supersede
+        ``chain`` and ``proposer_changed`` (see ``mori_advisor.proposal_view``). Ordered by the
+        chain root's ``proposed_at``, so superseding never moves a proposal to the back.
 
         Args:
             status:      Filter to this status value.  Pass ``""`` or ``None`` to
@@ -2560,6 +2902,8 @@ class MemoryStore:
                          ``proposed_by`` matches exactly (used by #16 agent endpoint).
         """
         import sqlite3
+
+        from mori_advisor.proposal_view import review_fields
 
         # Build WHERE clause dynamically so both the dreamer review path
         # (single status, all proposers) and the agent self-view path
@@ -2584,101 +2928,167 @@ class MemoryStore:
                 SELECT id, memory_name, title, description, type, body, tags,
                        proposed_at, proposed_by, status,
                        source, provenance, confidence, focus_mode, existing_body,
-                       tier, created_at
+                       tier, created_at, operation, target_version_id, replaces_id
                 FROM pending_writes
                 {where}
-                ORDER BY proposed_at ASC
+                ORDER BY proposed_at ASC, id ASC
                 """,
                 params,
             )
-            rows = cur.fetchall()
+            cols = [c[0] for c in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            result: List[dict[str, Any]] = []
+            for r in rows:
+                tags = self._parse_tags(r["tags"]) if r["tags"] else []
+                try:
+                    provenance = json.loads(r["provenance"]) if r["provenance"] else None
+                except (json.JSONDecodeError, TypeError):
+                    provenance = r["provenance"]
+                item = {
+                    "id": r["id"],
+                    "name": r["memory_name"],
+                    "title": r["title"],
+                    "description": r["description"],
+                    "type": r["type"],
+                    "body": r["body"] or "",
+                    "tags": tags,
+                    "source": r["source"] or "",
+                    "provenance": provenance,
+                    "confidence": r["confidence"],
+                    "focus_mode": r["focus_mode"] or "",
+                    "existing_body": r["existing_body"],
+                    "tier": r["tier"] or "",
+                    "proposed_at": r["proposed_at"],
+                    "proposed_by": r["proposed_by"],
+                    "status": r["status"],
+                    "created_at": r["created_at"] or r["proposed_at"],
+                    "target_version_id": r["target_version_id"],
+                    "replaces_id": r["replaces_id"],
+                }
+                chain = self._proposal_chain(conn, r["replaces_id"])
+                item.update(
+                    review_fields(
+                        {**item, "operation": r["operation"]},
+                        self._active_target(conn, r["memory_name"]),
+                        chain,
+                    )
+                )
+                item["_root_at"] = str(chain[0]["proposed_at"]) if chain else str(r["proposed_at"])
+                if _raw_provenance:
+                    item["_provenance_raw"] = r["provenance"]
+                result.append(item)
         except sqlite3.Error:
             return []
         finally:
             conn.close()
-
-        result = []
-        for row in rows:
-            (
-                wid,
-                memory_name,
-                title,
-                description,
-                mtype,
-                body,
-                tags_raw,
-                proposed_at,
-                proposed_by,
-                row_status,
-                source,
-                provenance_raw,
-                confidence,
-                focus_mode,
-                existing_body,
-                tier,
-                created_at,
-            ) = row
-            tags = self._parse_tags(tags_raw) if tags_raw else []
-            try:
-                provenance = json.loads(provenance_raw) if provenance_raw else None
-            except (json.JSONDecodeError, TypeError):
-                provenance = provenance_raw
-            result.append(
-                {
-                    "id": wid,
-                    "name": memory_name,
-                    "title": title,
-                    "description": description,
-                    "type": mtype,
-                    "body": body or "",
-                    "tags": tags,
-                    "source": source or "",
-                    "provenance": provenance,
-                    "confidence": confidence,
-                    "focus_mode": focus_mode or "",
-                    "existing_body": existing_body,
-                    "tier": tier or "",
-                    "proposed_at": proposed_at,
-                    "proposed_by": proposed_by,
-                    "status": row_status,
-                    "created_at": created_at or proposed_at,
-                }
-            )
+        result.sort(key=lambda i: (i.pop("_root_at"), i["id"]))
         return result
 
     def pending_list(self, status: str = "pending") -> str:
-        """List pending writes awaiting approval."""
-        import sqlite3
+        """List pending writes awaiting approval — v2.3.16: with each proposal's operation and a
+        diff against the memory as it is now (``mori_advisor.proposal_view``)."""
+        from mori_advisor.proposal_view import text_lines
 
-        conn = self._get_conn()
-        try:
-            cur = conn.execute(
-                """
-                SELECT id, memory_name, title, type, proposed_at, proposed_by, status, source, provenance
-                FROM pending_writes
-                WHERE status = ?
-                ORDER BY proposed_at ASC
-                """,
-                (status,),
-            )
-            rows = cur.fetchall()
-        except sqlite3.Error as e:
-            return f"Database error: {e}"
-        finally:
-            conn.close()
-
-        if not rows:
+        items = self.pending_list_json(status=status, _raw_provenance=True)
+        if not items:
             return "No pending writes."
 
         lines = [f"# Pending Writes ({status})"]
-        for row in rows:
-            wid, mname, title, mtype, proposed_at, proposed_by, _status, source, provenance = row
+        for it in items:
             lines.append(
-                f"  {wid}. **{mname}**: {title} ({mtype}) — "
-                f"proposed by {proposed_by} at {proposed_at}" + _msg_review_line(source, provenance)
+                f"  {it['id']}. **{it['name']}**: {it['title']} ({it['type']}) — "
+                f"proposed by {it['proposed_by']} at {it['proposed_at']}"
+                + _msg_review_line(it["source"], it["_provenance_raw"])
             )
-        lines.append(f"\nTotal: {len(rows)} pending")
+            lines.extend(text_lines(it, it))
+        lines.append(f"\nTotal: {len(items)} pending")
         return "\n".join(lines)
+
+    def pending_name(self, write_id: int) -> str | None:
+        """The memory a proposal targets (any status), or None — for route-level checks."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT memory_name FROM pending_writes WHERE id = ?", (write_id,)
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+    def _stale_reason(self, conn: sqlite3.Connection, rowd: dict[str, Any]) -> str | None:
+        """Why the target no longer matches the proposal, or None. A proposal queued since
+        v2.3.16 carries a digest of the target's state; a legacy one is checked against its
+        body snapshot, and one with neither is stale if the memory now exists."""
+        target = self._active_target(conn, rowd["memory_name"])
+        recorded = rowd.get("target_state")
+        if recorded:
+            if target_state_digest(target) != recorded:
+                return "the memory changed after this proposal was made"
+            return None
+        snapshot = rowd.get("existing_body")
+        if snapshot is not None:
+            if target is None or (target.get("body") or "") != snapshot:
+                return "the memory changed after this (pre-v2.3.16) proposal was queued"
+            return None
+        if target is not None:
+            return "the memory exists but this (pre-v2.3.16) proposal recorded no prior state"
+        return None
+
+    def _apply_operation(
+        self,
+        conn: sqlite3.Connection,
+        rowd: dict[str, Any],
+        operation: str,
+        reviewer: str,
+        token: CanonAuthority,
+    ) -> WriteResult:
+        """Apply an approved rollback or delete on the caller's transaction, with the token."""
+        name = rowd["memory_name"]
+        target = self._active_target(conn, name)
+        if target is None:
+            return WriteResult(name, "", "", Disposition.REJECTED, reason="not active")
+        if operation == "delete":
+            conn.execute(
+                "UPDATE memories SET deleted_at = datetime('now'), updated_at = datetime('now') "
+                f"WHERE id = ? AND {_ACTIVE}",
+                (target["id"],),
+            )
+            _audit_sqlite(
+                conn,
+                "soft_delete",
+                reviewer or "local",
+                name,
+                detail=f"approved proposal #{rowd['id']}",
+            )
+            return accepted(name, target["tier"])
+        version = conn.execute(
+            "SELECT title, description, type, body, tags, memory_id FROM memory_versions "
+            "WHERE version_id = ? AND memory_name = ?",
+            (rowd.get("target_version_id"), name),
+        ).fetchone()
+        if not version:
+            return WriteResult(name, "", "", Disposition.REJECTED, reason="version not found")
+        if version[5] is not None and version[5] != target["id"]:
+            return WriteResult(
+                name, "", "", Disposition.REJECTED, reason="version is from an earlier incarnation"
+            )
+        return self._write(
+            name=name,
+            title=version[0],
+            description=version[1],
+            type=version[2],
+            tier=target["tier"],
+            body=version[3],
+            tags=version[4],
+            client=reviewer or "local",
+            provenance=_approval_provenance(rowd, reviewer, []),
+            _skip_protection=True,
+            _conn=conn,
+            _version_note=(
+                f"before rollback to v{rowd.get('target_version_id')} (approved #{rowd['id']})"
+            ),
+            _canon_authority=token,
+        )
 
     def approve(
         self,
@@ -2719,7 +3129,15 @@ class MemoryStore:
             )
             row = cur.fetchone()
             if not row:
+                closed = conn.execute(
+                    "SELECT status, superseded_by_id FROM pending_writes WHERE id = ?", (write_id,)
+                ).fetchone()
                 conn.rollback()
+                if closed and closed[0] == SUPERSEDED_STATUS:
+                    return (
+                        f"Pending write #{write_id} was superseded by #{closed[1]} — review that "
+                        "one instead. Nothing changed."
+                    )
                 return f"Pending write #{write_id} not found or already processed."
 
             # Read by column name — the extra governance columns (source, …) are
@@ -2753,6 +3171,40 @@ class MemoryStore:
                     "bridge finalizer (GOV-002 re-check, then canon write with lineage)."
                 )
 
+            # v2.3.16: approval applies exactly what was proposed, to the state it was proposed
+            # against — or nothing (stale-proposal; the row stays pending).
+            stale = self._stale_reason(conn, rowd)
+            if stale:
+                conn.rollback()
+                return (
+                    f"Pending write #{write_id} NOT approved — stale-proposal: {stale}. "
+                    "Nothing changed; reject it, or have it proposed again."
+                )
+            operation = rowd.get("operation") or "write"
+            token = CanonAuthority(f"approve #{write_id} by {reviewer or 'local'}")
+            if operation in ("rollback", "delete"):
+                result = self._apply_operation(conn, rowd, operation, reviewer, token)
+                if result.disposition is not Disposition.ACCEPTED:
+                    conn.rollback()
+                    return (
+                        f"Pending write #{write_id} NOT approved — the {operation} was "
+                        f"{result.disposition.value}: {result.reason}. It stays pending."
+                    )
+                conn.execute(
+                    """
+                    UPDATE pending_writes
+                    SET status = 'approved', reviewed_at = datetime('now'),
+                        reviewed_by = ?, review_note = ?
+                    WHERE id = ?
+                    """,
+                    (reviewer or "local", note, write_id),
+                )
+                conn.commit()
+                return (
+                    f"Pending write #{write_id} approved. Memory '{rowd['memory_name']}': "
+                    f"{operation} applied."
+                )
+
             queued_tags = self._parse_tags(rowd["tags"])
             merged_tags = merge_approval_tags(queued_tags, tags)
             added_tags = [t for t in merged_tags if t not in queued_tags]
@@ -2782,15 +3234,17 @@ class MemoryStore:
                 title=pw["title"],
                 description=pw["description"],
                 type=pw["type"],
-                tier=(rowd.get("tier") or "working"),
+                # 'standard' is canonical; an empty legacy tier is working (as before).
+                tier=(normalise_tier(rowd.get("tier")) or "working"),
                 body=pw["body"],
                 tags=pw["tags"],
                 origin_session_ids=pw["origin_session_ids"],
                 origin_clients=pw["origin_clients"],
-                client=reviewer or "trusted-dreamer",
+                client=reviewer or "local",
                 provenance=_approval_provenance(rowd, reviewer, added_tags),
                 _skip_protection=True,
                 _conn=conn,
+                _canon_authority=token,
             )
             if result.disposition is not Disposition.ACCEPTED:
                 # A downgrade wrote (or refreshed) the open pending row inside this transaction;
@@ -2809,7 +3263,7 @@ class MemoryStore:
                     reviewed_by = ?, review_note = ?
                 WHERE id = ?
                 """,
-                (reviewer or "trusted-dreamer", note, write_id),
+                (reviewer or "local", note, write_id),
             )
             conn.commit()
             return f"Pending write #{write_id} approved. Memory '{result.memory_name}' written."
@@ -2867,7 +3321,10 @@ class MemoryStore:
             )
             conn.commit()
         except sqlite3.Error as e:
+            # v2.3.16: raise — a swallowed unique-index violation here is exactly the error the
+            # partial index on open proposals exists to surface (consult C3, P2-2).
             logger.error("set_pending_status(#%s → %s) failed: %s", write_id, status, e)
+            raise
         finally:
             conn.close()
 
@@ -3109,9 +3566,12 @@ class MemoryStore:
             if not dry_run:
                 write_conn = self._get_conn()
                 try:
+                    # v2.3.16: one OPEN orphan proposal per memory (repeat scans used to duplicate).
                     write_conn.execute(
-                        "INSERT INTO eviction_queue (memory_name, reason, detail) VALUES (?, 'orphan', ?)",
-                        (name, f"Not retrieved in {days} days. Last: {last_retrieved}"),
+                        "INSERT INTO eviction_queue (memory_name, reason, detail) "
+                        "SELECT ?, 'orphan', ? WHERE NOT EXISTS (SELECT 1 FROM eviction_queue "
+                        "WHERE memory_name = ? AND reason = 'orphan' AND resolved = 0)",
+                        (name, f"Not retrieved in {days} days. Last: {last_retrieved}", name),
                     )
                     write_conn.commit()
                 finally:

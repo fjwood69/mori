@@ -32,6 +32,7 @@ import pytest
 from mori_advisor import bifrost_client as bc
 from mori_advisor import metrics as mx
 from mori_advisor import utils as ut
+from tests._canon import CANON_SEED
 
 PG_URL = os.environ.get("MORI_TEST_DATABASE_URL", "")
 REPO = Path(__file__).resolve().parent.parent
@@ -119,9 +120,9 @@ def _supersessions(mode: str, result: str) -> float:
 
 @pytest.fixture(autouse=True)
 def _supersession_write_mode(monkeypatch):
-    """These v2.3.9 tests pin WRITE-mode supersession (superseded_by is written). v2.3.11 makes
-    report-only the default (board S1), so they opt in explicitly; report-only is covered by
-    tests/test_supersession_review.py."""
+    """These tests once pinned WRITE-mode supersession. v2.3.16 (the canon lock) retires write mode:
+    the scan only PROPOSES, so each property is now asserted on the proposal row, and
+    superseded_by is never written by the scan. Setting write mode must change nothing."""
     monkeypatch.setenv("MORI_SUPERSESSION_MODE", "write")
 
 
@@ -178,11 +179,12 @@ class _Backend:
                 body=body,
                 tags=["infrastructure"],
                 _skip_protection=True,
+                _canon_authority=CANON_SEED,  # v2.3.16: seeding canon needs the token
             )
         )
 
     def soft_delete(self, suffix: str):
-        self.run(self.store.soft_delete(self.name(suffix)))
+        self.run(self.store.soft_delete(self.name(suffix), _canon_authority=CANON_SEED))
 
     def rows(self, suffix: str) -> list[dict]:
         cols = ("id", "freshness_status", "freshness_checked_at", "superseded_by", "deleted_at")
@@ -569,17 +571,18 @@ def test_scan_non_answer_writes_nothing_then_supersedes_writes(backend, monkeypa
     unparseable = _verdicts("contradiction", "unparseable")
 
     with caplog.at_level(logging.WARNING):
-        assert backend.scan(client, ["new"]).applied == 0
+        assert backend.scan(client, ["new"]).proposed == 0
 
     assert backend.active("old")["superseded_by"] is None
     assert backend.evictions("old") == 0
     assert _verdicts("contradiction", "unparseable") == unparseable + 1
     assert any("unparseable verdict" in r.getMessage() for r in caplog.records)
 
-    # Positive control: an exact SUPERSEDES writes.
+    # Positive control: an exact SUPERSEDES proposes (v2.3.16: never applies).
     engine.answer = "SUPERSEDES"
-    assert backend.scan(client, ["new"]).applied == 1
-    assert backend.active("old")["superseded_by"] == backend.name("new")
+    out = backend.scan(client, ["new"])
+    assert (out.proposed, out.applied) == (1, 0)
+    assert backend.active("old")["superseded_by"] is None
     assert backend.evictions("old") == 1
 
 
@@ -590,10 +593,11 @@ def test_scan_never_supersedes_the_memory_with_itself(backend, monkeypatch):
     engine = _Engine("SUPERSEDES")
     client = _client_over(monkeypatch, engine)
 
-    assert backend.scan(client, ["self"]).applied == 1
+    assert backend.scan(client, ["self"]).proposed == 1
 
     assert backend.active("self")["superseded_by"] is None
-    assert backend.active("other")["superseded_by"] == backend.name("self")
+    assert backend.evictions("self") == 0, "never paired with itself"
+    assert backend.evictions("other") == 1
     assert not any(u.endswith(f"existing: {backend.name('self')}") for u in engine.users())
 
 
@@ -605,14 +609,14 @@ def test_scan_never_touches_a_soft_deleted_namesake(backend, monkeypatch):
     backend.write("newer", tier="working")
     client = _client_over(monkeypatch, _Engine("SUPERSEDES"))
 
-    assert backend.scan(client, ["newer"]).applied == 1
+    assert backend.scan(client, ["newer"]).proposed == 1
 
     rows = backend.rows("dup")
     deleted = [r for r in rows if r["deleted_at"] is not None]
     active = [r for r in rows if r["deleted_at"] is None]
     assert len(deleted) == 1 and len(active) == 1
-    assert active[0]["superseded_by"] == backend.name("newer")
-    assert deleted[0]["superseded_by"] is None
+    assert active[0]["superseded_by"] is None and deleted[0]["superseded_by"] is None
+    assert backend.evictions("dup") == 1
 
 
 def test_scan_call_error_is_a_warning_and_writes_nothing(backend, monkeypatch, caplog):
@@ -623,14 +627,14 @@ def test_scan_call_error_is_a_warning_and_writes_nothing(backend, monkeypatch, c
     errors = _verdicts("contradiction", "error")
 
     with caplog.at_level(logging.WARNING):
-        assert backend.scan(client, ["new"]).applied == 0
+        assert backend.scan(client, ["new"]).proposed == 0
 
     assert backend.active("old")["superseded_by"] is None
     assert _verdicts("contradiction", "error") == errors + 1
     assert any("Contradiction check failed" in r.getMessage() for r in caplog.records)
 
     engine.status = 200  # positive control
-    assert backend.scan(client, ["new"]).applied == 1
+    assert backend.scan(client, ["new"]).proposed == 1
 
 
 def test_a_failed_supersession_write_is_atomic_and_does_not_poison_the_rest(
@@ -648,19 +652,19 @@ def test_a_failed_supersession_write_is_atomic_and_does_not_poison_the_rest(
     backend.fail_eviction_insert_for("a-first")
     client = _client_over(monkeypatch, _Engine("SUPERSEDES"))
     errors = _verdicts("contradiction", "error")
-    failed = _supersessions("write", "failed")
+    failed = _supersessions("report_only", "failed")
 
     with caplog.at_level(logging.WARNING):
-        assert backend.scan(client, ["new"]).applied == 1
+        assert backend.scan(client, ["new"]).proposed == 1
 
     assert backend.active("a-first")["superseded_by"] is None
     assert backend.evictions("a-first") == 0
-    assert backend.active("b-second")["superseded_by"] == backend.name("new")
+    assert backend.active("b-second")["superseded_by"] is None
     assert backend.evictions("b-second") == 1
     # v2.3.11 (M8): a failed WRITE is not a classifier error — the classifier answered. It is
     # counted as a failed supersession instead.
     assert _verdicts("contradiction", "error") == errors
-    assert _supersessions("write", "failed") == failed + 1
+    assert _supersessions("report_only", "failed") == failed + 1
     assert any("supersession write failed" in r.getMessage() for r in caplog.records)
 
 
@@ -677,9 +681,13 @@ def test_a_failed_candidate_query_does_not_poison_later_memories(backend, monkey
     from mori_advisor.dream import DreamPipeline
 
     owner = SimpleNamespace(client=client, db_path=None, store=backend.store)
-    assert backend.run(DreamPipeline._contradiction_scan(owner, [bad, good])).applied == 1
-    assert backend.active("old")["superseded_by"] is not None
-    assert backend.evictions("old") == 1
+    out = backend.run(DreamPipeline._contradiction_scan(owner, [bad, good]))
+    # Postgres rejects the bad name (its query fails, the savepoint holds): the good memory still
+    # proposes. SQLite stores it, so both memories propose their own pair against "old".
+    expected = 2 if backend.kind == "sqlite" else 1
+    assert out.proposed == expected
+    assert backend.active("old")["superseded_by"] is None
+    assert backend.evictions("old") == expected
 
 
 @pytest.mark.parametrize("pipeline", ["dream", "ingestion"])
@@ -690,7 +698,7 @@ def test_both_scan_wrappers_pass_reasoning_effort_through(backend, monkeypatch, 
     engine = _Engine("SUPERSEDES")
     client = _client_over(monkeypatch, engine)
 
-    assert backend.scan(client, ["new"], pipeline=pipeline).applied == 1
+    assert backend.scan(client, ["new"], pipeline=pipeline).proposed == 1
     assert engine.requests and all(r.get("reasoning_effort") == "none" for r in engine.requests)
     assert all(r["max_tokens"] == 16 for r in engine.requests)
 

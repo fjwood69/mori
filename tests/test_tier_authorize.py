@@ -63,15 +63,14 @@ def test_authorize_tier_permits_governed_promotion_to_canonical(tmp_path):
 # --- audit-mode: the decision is OBSERVED, never enforced (step 2) ------------
 
 
-def test_audit_mode_unauthorized_canonical_still_accepted(tmp_path):
-    # The #5 seam is still OPEN in audit mode by design: an mcp actor targeting
-    # canonical is a would-block, but step 2 only logs it — the write is ACCEPTED
-    # and stored as canonical. Step 3's MORI_TIER_ENFORCE is what downgrades it.
+def test_unauthorized_canonical_is_queued(tmp_path):
+    # v2.3.16 (the canon lock) closes the #5 seam: an mcp actor without canon authority targeting
+    # canonical is stored as a proposal, in every mode — nothing reaches canon.
     s = _store(tmp_path)
     mcp = Provenance(actor="mcp", actor_detail="dev-host", source="main:memory_write")
     r = s._write(name="seam1", title="t", body="b", tier="canonical", provenance=mcp)
-    assert r.disposition is Disposition.ACCEPTED
-    assert r.stored_tier == "canonical"
+    assert r.disposition is Disposition.DOWNGRADED_TO_PENDING and r.pending_id
+    assert s.get_memory("seam1") is None
 
 
 def test_validate_provenance_legacy_does_not_block(tmp_path):
@@ -94,22 +93,22 @@ def test_authorized_write_unchanged(tmp_path):
 
 
 @requires_pg
-def test_pg_audit_mode_unauthorized_canonical_still_accepted():
+def test_pg_unauthorized_canonical_is_queued():
     from mori_advisor.store.postgres_store import PostgresStore
 
     async def run():
         s = PostgresStore(PG_URL)
         await s.bootstrap()
         async with s.pool.acquire() as conn:
-            await conn.execute("TRUNCATE memories CASCADE")
+            await conn.execute("TRUNCATE memories, pending_writes CASCADE")
         try:
             mcp = Provenance(actor="mcp", actor_detail="dev-host", source="main:memory_write")
             r = await s._write(
                 name="pg-seam1", title="t", body="b", tier="canonical", provenance=mcp
             )
-            # audit-mode: would-block is logged, but the write is ACCEPTED as canonical.
-            assert r.disposition is Disposition.ACCEPTED
-            assert r.stored_tier == "canonical"
+            # v2.3.16: queued as a proposal; nothing reaches canon.
+            assert r.disposition is Disposition.DOWNGRADED_TO_PENDING and r.pending_id
+            assert await s.get_memory("pg-seam1") is None
         finally:
             if s.pool:
                 await s.pool.close()

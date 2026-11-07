@@ -17,12 +17,25 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, List, TypeVar
 
+from mori_advisor.canon_authority import (
+    CHAIN_CAP,
+    REQUEST_ACTORS,
+    SUPERSEDED_STATUS,
+    CanonAuthority,
+    ProposalOutcome,
+    has_canon_authority,
+    normalise_tier,
+    open_cap_for,
+    proposal_key,
+    proposer_for,
+    target_state_digest,
+)
 from mori_advisor.memory_store import (
     _FRESHNESS_CACHE_TTL,
     _IN_FLIGHT_SENTINEL,
@@ -50,7 +63,6 @@ from mori_advisor.provenance import (
     Provenance,
     anatomy_enforce_mode,
     content_hash,
-    tier_decision,
     validate_provenance,
 )
 from mori_advisor.utils import SUPERSEDED_DETAIL, classifier_reasoning_effort
@@ -59,6 +71,7 @@ from mori_advisor.write_result import Disposition, WriteResult, accepted
 from .base import BaseStore
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 _RETRY_SERIALIZATION = 3
 _RETRY_DELAY_BASE = 0.1  # seconds
@@ -186,7 +199,7 @@ def _coerce_msg_row(row) -> dict:
 _RETRYABLE_SQLSTATES = frozenset({"40001", "40P01"})
 
 
-async def _retry(coro_fn, *args, **kwargs):
+async def _retry(coro_fn: Callable[..., Awaitable[_T]], *args: Any, **kwargs: Any) -> _T:
     """Run coro_fn(*args, **kwargs), retrying on serialization errors."""
     last_exc = None
     for attempt in range(_RETRY_SERIALIZATION):
@@ -499,13 +512,19 @@ class PostgresStore(BaseStore):
         _conn=None,
         _version_note: str = "updated",
         _anatomy_bypass: str | None = None,
+        _canon_authority: CanonAuthority | None = None,
     ) -> WriteResult:
         """The Postgres write chokepoint. Every write runs in ONE transaction (a savepoint on a
         caller's transaction): version snapshot, upsert and audit row commit together or not at
         all (v2.3.11). ``_version_note`` labels the snapshot of the prior state. ``_anatomy_bypass``
         is honoured ONLY for ``provenance.op == "rollback"`` (board amendment: a dreamer restoring
         an exact stored version is not downgraded for content that predates the anatomy gate); the
-        caller (``rollback``) establishes the other conditions and passes the audited reason."""
+        caller (``rollback``) establishes the other conditions and passes the audited reason.
+
+        v2.3.16 (the canon lock): a write that would create a canonical row or alter an existing
+        one applies only with canon authority (see ``mori_advisor.canon_authority``); otherwise it
+        is stored as a proposal and the row is unchanged. ``_skip_protection`` skips the protection
+        flag only, never this rule."""
         self._ensure_pool()
         from mori_advisor.memory_store import _slugify
 
@@ -534,6 +553,65 @@ class PostgresStore(BaseStore):
                 disposition=Disposition.REJECTED,
                 reason=name_problem,
             )
+
+        # There is no 'standard' tier: it means canonical and never falls through to working.
+        # Coerce once, BEFORE any decision, so the tier judged is the tier persisted.
+        tier = normalise_tier(tier) or tier
+        tier = tier if tier in VALID_TIERS else "working"
+        from mori_advisor.metrics import record_tier_decision
+
+        validate_provenance(provenance, name, logger)
+        authorised = has_canon_authority(provenance, _canon_authority)
+
+        async def _propose_canon(conn: Any) -> ProposalOutcome:
+            proposer = proposer_for(provenance)
+            return await _pg_propose(
+                conn,
+                name=name,
+                proposer=proposer,
+                title=title,
+                description=description,
+                type=type,
+                body=body,
+                tags=as_tag_list(tags),
+                tier="canonical",
+                origin_session_ids=origin_session_ids,
+                origin_clients=origin_clients or ([client] if client else []),
+                cap=open_cap_for(proposer, provenance.actor in REQUEST_ACTORS),
+            )
+
+        # v2.3.16 THE CANON LOCK — judged on the requested tier AND the stored one, before any
+        # other sink (consult C1, P3-3). Re-checked inside the upsert's transaction below.
+        if not authorised:
+
+            async def _canon_gate(conn: Any) -> ProposalOutcome | None:
+                async with conn.transaction():
+                    stored = await conn.fetchval(
+                        "SELECT tier FROM memories WHERE name = $1 AND deleted_at IS NULL "
+                        "FOR UPDATE",
+                        name,
+                    )
+                    if tier == "canonical" or stored == "canonical":
+                        return await _propose_canon(conn)
+                    return None
+
+            if _conn:
+                outcome = await _retry(_canon_gate, _conn)
+            else:
+                async with self.pool.acquire() as gconn:
+                    outcome = await _retry(_canon_gate, gconn)
+            if outcome is not None:
+                record_tier_decision(provenance.actor, "canonical", "queued", "canon-lock")
+                logger.info(
+                    "CANON-LOCK name=%s actor=%s op=%s -> %s (pending id %s)",
+                    name,
+                    provenance.ledger_actor,
+                    provenance.op,
+                    outcome.kind,
+                    outcome.pending_id,
+                )
+                return _pg_outcome_result(name, "canonical", outcome)
+        record_tier_decision(provenance.actor, tier, "applied", "canon-lock" if authorised else "-")
 
         # Completeness/anatomy chokepoint. Mirrors the SQLite seam: audit (default) logs +
         # counts the failed verdict and proceeds; enforce (MORI_ANATOMY_ENFORCE) DOWNGRADES to
@@ -566,53 +644,24 @@ class PostgresStore(BaseStore):
                     body=body,
                     tags=tags,
                     origin_clients=origin_clients,
-                    proposed_by=provenance.ledger_actor,
+                    tier=tier,
+                    request=provenance,
                     _conn=_conn,
                 )
                 return WriteResult(
                     memory_name=name,
-                    intended_tier=tier if tier in VALID_TIERS else "working",
+                    intended_tier=tier,
                     stored_tier="pending",
                     disposition=Disposition.DOWNGRADED_TO_PENDING,
                     reason=f"incomplete anatomy ({verdict['reason']}) — queued for review",
                 )
 
         # Step 6: the `_skip_protection` trapdoor is honoured ONLY in anatomy-audit mode; under
-        # MORI_ANATOMY_ENFORCE the bypass closes so protection bites the dreamer too.
-        effective_skip = _skip_protection and anatomy_mode != "enforce"
-
-        # Defensive coalesce: mirror SQLite's _ensure_tier — a None or unrecognised tier must
-        # never reach the DB as NULL (violates NOT NULL). Done BEFORE the decision so the tier
-        # judged is the tier persisted.
-        tier = tier if tier in VALID_TIERS else "working"
-
-        # Phase 2 authorization pipeline: stage 1 validate provenance, stage 2 tier-target
-        # decision (snapshot ONCE here — never re-read mid-write; GLM). audit-mode logs a
-        # would-block and proceeds; enforce-mode HARD-REJECTS (R2 — both backends, no pending).
-        from mori_advisor.metrics import record_tier_decision
-
-        validate_provenance(provenance, name, logger)
-        _reject, _decision, _mode, _tier_reason = tier_decision(provenance, tier)
-        record_tier_decision(provenance.actor, tier, _decision, _mode)
-        if _decision != "allowed":
-            logger.warning(
-                "TIER-%s name=%s actor=%s op=%s src=%s mode=%s: %s",
-                _decision.upper(),
-                name,
-                provenance.actor,
-                provenance.op,
-                provenance.source,
-                _mode,
-                _tier_reason,
-            )
-        if _reject:
-            return WriteResult(
-                memory_name=name,
-                intended_tier=tier,
-                stored_tier="",
-                disposition=Disposition.REJECTED,
-                reason=_tier_reason,
-            )
+        # MORI_ANATOMY_ENFORCE the bypass closes so protection bites the dreamer too. v2.3.16: canon
+        # authority (an approval, the standards import) implies protection authority.
+        effective_skip = (_skip_protection and anatomy_mode != "enforce") or isinstance(
+            _canon_authority, CanonAuthority
+        )
 
         tags_v = _tags_json(tags)
         sess_ids = _tags_json(origin_session_ids)
@@ -650,6 +699,11 @@ class PostgresStore(BaseStore):
                 "FROM memories WHERE name = $1 AND deleted_at IS NULL",
                 name,
             )
+            # The canon lock, re-checked on the row this transaction will upsert (closes the
+            # window between the gate above and this read).
+            if not authorised and existing and existing.get("tier") == "canonical":
+                outcome = await _propose_canon(conn)
+                return _pg_outcome_result(name, "canonical", outcome)
             if existing and existing["protected"] and not effective_skip:
                 return WriteResult(
                     memory_name=name,
@@ -667,8 +721,8 @@ class PostgresStore(BaseStore):
                     body=body,
                     tags=json.loads(tags_v),
                     origin_clients=json.loads(clients),
-                    proposed_by=provenance.ledger_actor,
                     tier=tier,
+                    request=provenance,
                     _conn=conn,
                 )
                 return WriteResult(
@@ -854,6 +908,7 @@ class PostgresStore(BaseStore):
         provenance: Provenance = LEGACY,
         _skip_protection=False,
         _conn=None,
+        _canon_authority=None,
     ) -> str:
         """Legacy string-returning adapter over :meth:`_write` (behaviour-preserving) — the
         same status message as before the split. Callers needing the structured outcome call
@@ -873,6 +928,7 @@ class PostgresStore(BaseStore):
             provenance=provenance,
             _skip_protection=_skip_protection,
             _conn=_conn,
+            _canon_authority=_canon_authority,
         )
         if r.disposition is Disposition.ACCEPTED:
             return f"Memory '{r.memory_name}' written"
@@ -1136,14 +1192,55 @@ class PostgresStore(BaseStore):
         """Soft-delete a memory.  Use hard_delete() for permanent removal."""
         return await self.soft_delete(name)
 
-    async def soft_delete(self, name: str, *, actor: str = "system") -> str:
+    async def soft_delete(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
+    ) -> str:
         """Set deleted_at = now on the active row.  Idempotent if already deleted.
 
         v2.3.11: the audit row is written in the same transaction (a stated exception to the
-        write chokepoint — no content changes)."""
+        write chokepoint — no content changes).
+
+        v2.3.16 (the canon lock): deleting a CANONICAL row without canon authority stores a
+        ``delete`` proposal instead; the row is unchanged. The tier is read FOR UPDATE in the same
+        transaction."""
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                target = await _pg_active_target(conn, name, lock=True)
+                if (
+                    target is not None
+                    and target.get("tier") == "canonical"
+                    and not has_canon_authority(provenance, _canon_authority)
+                ):
+                    proposer = proposer_for(provenance) if provenance is not None else actor
+                    outcome = await _pg_propose(
+                        conn,
+                        name=name,
+                        proposer=proposer,
+                        operation="delete",
+                        title=target.get("title") or "",
+                        description=target.get("description") or "",
+                        type=target.get("type") or "project",
+                        body=target.get("body") or "",
+                        tags=as_tag_list(target.get("tags")),
+                        tier="canonical",
+                        cap=open_cap_for(
+                            proposer,
+                            provenance is not None and provenance.actor in REQUEST_ACTORS,
+                        ),
+                    )
+                    if outcome.queued:
+                        return (
+                            f"Memory '{name}' is canonical — the delete was queued as a proposal "
+                            f"(pending id {outcome.pending_id}); the memory is unchanged until a "
+                            "dreamer approves it."
+                        )
+                    return f"Memory '{name}' NOT deleted — {outcome.reason}"
                 result = await conn.execute(
                     "UPDATE memories SET deleted_at = NOW(), updated_at = NOW() "
                     "WHERE name = $1 AND deleted_at IS NULL",
@@ -1154,15 +1251,35 @@ class PostgresStore(BaseStore):
                     await _audit_in_txn(conn, "soft_delete", actor, name)
         return f"Memory '{name}' soft-deleted." if updated else f"Memory '{name}' not found."
 
-    async def hard_delete(self, name: str, *, actor: str = "system") -> str:
+    async def hard_delete(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
+    ) -> str:
         """Permanently remove a memory row (active or tombstoned) and its versions.
 
         memory_versions FK was dropped by migration 9 (partial indexes cannot be FK
         targets). Versions are cleaned up here to prevent orphans. Audited in-transaction.
+
+        v2.3.16: REFUSED for any canonical row of this name (active or tombstoned) without canon
+        authority — there is no proposal for a permanent delete.
         """
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                canon = await conn.fetchval(
+                    "SELECT 1 FROM memories WHERE name = $1 AND tier = 'canonical' LIMIT 1 "
+                    "FOR UPDATE",
+                    name,
+                )
+                if canon and not has_canon_authority(provenance, _canon_authority):
+                    return (
+                        f"Memory '{name}' is canonical — a permanent delete needs canon authority "
+                        "(a dreamer key). Not deleted."
+                    )
                 await conn.execute("DELETE FROM memory_versions WHERE memory_name = $1", name)
                 result = await conn.execute("DELETE FROM memories WHERE name = $1", name)
                 deleted = int(result.split()[-1])
@@ -1170,7 +1287,14 @@ class PostgresStore(BaseStore):
                     await _audit_in_txn(conn, "hard_delete", actor, name)
         return f"Memory '{name}' permanently deleted." if deleted else f"Memory '{name}' not found."
 
-    async def restore_memory(self, name: str, *, actor: str = "system") -> tuple[str, str]:
+    async def restore_memory(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
+    ) -> tuple[str, str]:
         """Restore a soft-deleted memory; rename to {name}_restored_{ts} on collision.
 
         v2.3.11, one transaction: undelete (or rename), re-point the incarnation's version history
@@ -1183,24 +1307,40 @@ class PostgresStore(BaseStore):
         import asyncpg
 
         try:
-            return await self._restore_memory_txn(name, actor, datetime, timezone)
+            return await self._restore_memory_txn(
+                name, actor, datetime, timezone, provenance, _canon_authority
+            )
         except asyncpg.exceptions.UniqueViolationError:
             # Raised out of the transaction (it rolled back) — never swallowed inside it.
             return name, "Restore failed: name collision could not be resolved."
 
     async def _restore_memory_txn(
-        self, name: str, actor: str, datetime: Any, timezone: Any
+        self,
+        name: str,
+        actor: str,
+        datetime: Any,
+        timezone: Any,
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
     ) -> tuple[str, str]:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
-                    "SELECT id, created_at, deleted_at, superseded_by FROM memories "
+                    "SELECT id, created_at, deleted_at, superseded_by, tier FROM memories "
                     "WHERE name = $1 AND deleted_at IS NOT NULL "
-                    "ORDER BY deleted_at DESC LIMIT 1",
+                    "ORDER BY deleted_at DESC LIMIT 1 FOR UPDATE",
                     name,
                 )
                 if not row:
                     return name, f"Memory '{name}' not found or not deleted."
+                # v2.3.16: restoring a canonical row brings canon back — it needs canon authority.
+                if row["tier"] == "canonical" and not has_canon_authority(
+                    provenance, _canon_authority
+                ):
+                    return name, (
+                        f"Memory '{name}' is canonical — restoring it needs canon authority "
+                        "(a dreamer key). Not restored."
+                    )
                 collision = await conn.fetchval(
                     "SELECT 1 FROM memories WHERE name = $1 AND deleted_at IS NULL", name
                 )
@@ -1801,177 +1941,139 @@ class PostgresStore(BaseStore):
         confidence: float | None = None,
         focus_mode: str = "",
         tier: str = "",
+        request: Provenance | None = None,
         _conn: Any = None,
     ) -> str:
-        """Insert or update a pending write proposal for an existing memory.
+        """Queue a proposal; returns the outcome as text. See :meth:`propose_pending`."""
+        outcome = await self.propose_pending(
+            name,
+            title=title,
+            description=description,
+            type=type,
+            body=body,
+            tags=tags,
+            origin_clients=origin_clients,
+            proposed_by=proposed_by,
+            source=source,
+            provenance=provenance,
+            confidence=confidence,
+            focus_mode=focus_mode,
+            tier=tier,
+            request=request,
+            _conn=_conn,
+        )
+        return outcome.reason
 
-        On a second proposal for the same name (while a pending row exists),
-        the existing pending row is UPDATED — latest candidate wins, no duplicate
-        pileup. Uses INSERT … ON CONFLICT DO UPDATE on the unique constraint
-        uq_pending_writes_name_pending (memory_name, status='pending').
+    async def propose_pending(
+        self,
+        name: str,
+        title: str = "",
+        description: str = "",
+        type: str = "project",
+        body: str = "",
+        tags: List[str] | None = None,
+        origin_clients: List[str] | None = None,
+        proposed_by: str = "api",
+        source: str = "",
+        provenance: str | None = None,
+        confidence: float | None = None,
+        focus_mode: str = "",
+        tier: str = "",
+        request: Provenance | None = None,
+        operation: str = "write",
+        target_version_id: int | None = None,
+        _conn: Any = None,
+    ) -> ProposalOutcome:
+        """Queue a proposal through the one sink (v2.3.16) and return its structured outcome.
 
-        Captures existing_body at enqueue time so the review UI can diff.
+        ``proposed_by`` names an INTERNAL producer (``ingestion``, ``msg:<sender>``,
+        ``intake-assessor``); a request path passes ``request`` and its proposer is then the
+        authenticated key. On a caller's connection it runs IN the caller's transaction (v2.3.11,
+        A-F-A2: a second pooled connection would block on the caller's own row lock); otherwise in
+        its own. Nothing is swallowed.
         """
         self._ensure_pool()
-        tags_v = _tags_json(tags)
-        clients_v = _tags_json(origin_clients)
-        now = _now_utc()
-
-        # Serialise provenance to JSON string if it's a dict/list.
+        proposer = proposer_for(request) if request is not None else (proposed_by or "api")
+        is_request = request is not None and request.actor in REQUEST_ACTORS
         if provenance is not None and not isinstance(provenance, str):
             provenance_str = json.dumps(provenance)
         else:
             provenance_str = provenance
 
-        # v2.3.11 (A-F-A2): on a caller's connection, run IN its transaction. A second pooled
-        # connection would block on the caller's own row lock (approve holds FOR UPDATE on this
-        # pending row) — an indefinite self-hang — and would commit outside the caller's
-        # transaction. On the caller's connection nothing may be swallowed: an error inside a
-        # transaction aborts it, and a swallowed one turns the caller's COMMIT into a silent ROLLBACK.
+        async def _run(conn: Any) -> ProposalOutcome:
+            async with conn.transaction():
+                return await _pg_propose(
+                    conn,
+                    name=name,
+                    proposer=proposer,
+                    operation=operation,
+                    title=title,
+                    description=description,
+                    type=type,
+                    body=body,
+                    tags=tags or [],
+                    tier=tier,
+                    origin_clients=origin_clients,
+                    source=source,
+                    provenance_str=provenance_str,
+                    confidence=confidence,
+                    focus_mode=focus_mode,
+                    target_version_id=target_version_id,
+                    cap=open_cap_for(proposer, is_request),
+                )
+
         if _conn is not None:
-            return await self._queue_pending_write_on(
-                _conn,
-                name,
-                title,
-                description,
-                type,
-                body,
-                tags_v,
-                clients_v,
-                proposed_by,
-                now,
-                source,
-                provenance_str,
-                confidence,
-                focus_mode,
-                tier,
-                swallow_existing_read=False,
-            )
+            return await _run(_conn)
         async with self.pool.acquire() as conn:
-            return await self._queue_pending_write_on(
-                conn,
-                name,
-                title,
-                description,
-                type,
-                body,
-                tags_v,
-                clients_v,
-                proposed_by,
-                now,
-                source,
-                provenance_str,
-                confidence,
-                focus_mode,
-                tier,
-                swallow_existing_read=True,
-            )
-
-    async def _queue_pending_write_on(
-        self,
-        conn: Any,
-        name: str,
-        title: str,
-        description: str,
-        type: str,
-        body: str,
-        tags_v: str,
-        clients_v: str,
-        proposed_by: str,
-        now: Any,
-        source: str,
-        provenance_str: str | None,
-        confidence: float | None,
-        focus_mode: str,
-        tier: str,
-        *,
-        swallow_existing_read: bool,
-    ) -> str:
-        # Capture existing_body for diff (non-fatal only on our own autocommit connection).
-        existing_body: str | None = None
-        existing_sql = "SELECT body FROM memories WHERE name = $1 AND deleted_at IS NULL"
-        if swallow_existing_read:
-            try:
-                row = await conn.fetchrow(existing_sql, name)
-                if row:
-                    existing_body = row["body"]
-            except Exception:
-                pass  # non-fatal on an autocommit connection
-        else:
-            row = await conn.fetchrow(existing_sql, name)
-            if row:
-                existing_body = row["body"]
-
-        await conn.execute(
-            """
-            INSERT INTO pending_writes
-                (memory_name, title, description, type, body, tags,
-                 origin_session_ids, origin_clients, proposed_by, proposed_at,
-                 source, provenance, confidence, focus_mode, existing_body, tier)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10,
-                    $11, $12, $13, $14, $15, $16)
-            ON CONFLICT (memory_name) WHERE status = 'pending'
-            DO UPDATE SET
-                title          = EXCLUDED.title,
-                description    = EXCLUDED.description,
-                type           = EXCLUDED.type,
-                body           = EXCLUDED.body,
-                tags           = EXCLUDED.tags,
-                origin_clients = EXCLUDED.origin_clients,
-                proposed_by    = EXCLUDED.proposed_by,
-                proposed_at    = EXCLUDED.proposed_at,
-                source         = EXCLUDED.source,
-                provenance     = EXCLUDED.provenance,
-                confidence     = EXCLUDED.confidence,
-                focus_mode     = EXCLUDED.focus_mode,
-                existing_body  = EXCLUDED.existing_body,
-                tier           = EXCLUDED.tier
-            """,
-            name,
-            title,
-            description,
-            type,
-            body,
-            tags_v,
-            "[]",
-            clients_v,
-            proposed_by,
-            now,
-            source or "",
-            provenance_str,
-            confidence,
-            focus_mode or "",
-            existing_body,
-            tier or "",
-        )
-        return (
-            f"Memory '{name}' queued as pending write "
-            "(dreamer review required via review.html or POST /api/memories/{name}/approve)."
-        )
+            return await _run(conn)
 
     async def pending_list(self, status: str = "pending") -> str:
-        self._ensure_pool()
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT id, memory_name, title, proposed_by, proposed_at, status, source, provenance "
-                "FROM pending_writes WHERE status = $1 ORDER BY proposed_at DESC",
-                status,
+        """List proposals — v2.3.16: the same layout as SQLite, with each proposal's operation and a
+        diff against the memory as it is now (``mori_advisor.proposal_view``)."""
+        from mori_advisor.proposal_view import text_lines
+
+        items = await self.pending_list_json(status=status, _raw_provenance=True)
+        if not items:
+            return "No pending writes."
+        lines = [f"# Pending Writes ({status})"]
+        for it in items:
+            lines.append(
+                f"  {it['id']}. **{it['name'] or '(new)'}**: {it['title']} ({it['type']}) — "
+                f"proposed by {it['proposed_by']} at {it['proposed_at']}"
+                + _msg_review_line(it["source"], it["_provenance_raw"])
             )
-        if not rows:
-            return f"No {status} writes."
-        lines = [
-            f"[{r['id']}] {r['memory_name'] or '(new)'} — {r['title']} (by {r['proposed_by']})"
-            + _msg_review_line(r["source"], r["provenance"])
-            for r in rows
-        ]
+            lines.extend(text_lines(it, it))
+        lines.append(f"\nTotal: {len(items)} pending")
         return "\n".join(lines)
+
+    async def _pg_proposal_chain(self, conn: Any, replaces_id: Any) -> List[dict[str, Any]]:
+        chain: List[dict[str, Any]] = []
+        seen: set[Any] = set()
+        current = replaces_id
+        while current is not None and current not in seen and len(chain) < 50:
+            seen.add(current)
+            row = await conn.fetchrow(
+                "SELECT id, proposed_by, proposed_at, operation, status, replaces_id "
+                "FROM pending_writes WHERE id = $1",
+                current,
+            )
+            if not row:
+                break
+            chain.append(dict(row))
+            current = row["replaces_id"]
+        return list(reversed(chain))
 
     async def pending_list_json(
         self,
         status: str = "pending",
         proposed_by: str = "",
-    ) -> list[dict]:
+        _raw_provenance: bool = False,
+    ) -> List[dict[str, Any]]:
         """Return pending writes as a list of dicts (structured, for review UI).
+
+        v2.3.16 (R3): each item also carries ``operation``, a server-computed ``diff``, its
+        supersede ``chain`` and ``proposer_changed``; ordered by the chain root's ``proposed_at``
+        (the same on both backends).
 
         Args:
             status:      Filter to this status value.  Pass ``""`` or ``None`` to
@@ -1979,6 +2081,8 @@ class PostgresStore(BaseStore):
             proposed_by: When non-empty, restrict results to rows where
                          ``proposed_by`` matches exactly (used by #16 agent endpoint).
         """
+        from mori_advisor.proposal_view import review_fields
+
         self._ensure_pool()
 
         # Build WHERE clause and positional-parameter list dynamically so the
@@ -1999,30 +2103,29 @@ class PostgresStore(BaseStore):
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
+        result = []
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 f"""
                 SELECT id, memory_name, title, description, type, body, tags,
                        proposed_at, proposed_by, status,
                        source, provenance, confidence, focus_mode, existing_body,
-                       tier, created_at
+                       tier, created_at, operation, target_version_id, replaces_id
                 FROM pending_writes
                 {where}
-                ORDER BY proposed_at ASC
+                ORDER BY proposed_at ASC, id ASC
                 """,
                 *params,
             )
-        result = []
-        for r in rows:
-            tags = json.loads(r["tags"]) if r["tags"] else []
-            prov = r["provenance"]
-            if isinstance(prov, str):
-                try:
-                    prov = json.loads(prov)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            result.append(
-                {
+            for r in rows:
+                tags = json.loads(r["tags"]) if r["tags"] else []
+                prov = r["provenance"]
+                if isinstance(prov, str):
+                    try:
+                        prov = json.loads(prov)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                item = {
                     "id": r["id"],
                     "name": r["memory_name"],
                     "title": r["title"],
@@ -2044,8 +2147,20 @@ class PostgresStore(BaseStore):
                         if r["created_at"]
                         else (r["proposed_at"].isoformat() if r["proposed_at"] else None)
                     ),
+                    "target_version_id": r["target_version_id"],
+                    "replaces_id": r["replaces_id"],
                 }
-            )
+                chain = await self._pg_proposal_chain(conn, r["replaces_id"])
+                target = (
+                    await _pg_active_target(conn, r["memory_name"]) if r["memory_name"] else None
+                )
+                item.update(review_fields({**item, "operation": r["operation"]}, target, chain))
+                root = chain[0]["proposed_at"] if chain else r["proposed_at"]
+                item["_root_at"] = root.isoformat() if root else ""
+                if _raw_provenance:
+                    item["_provenance_raw"] = r["provenance"]
+                result.append(item)
+        result.sort(key=lambda i: (i.pop("_root_at"), i["id"]))
         return result
 
     async def approve(
@@ -2062,86 +2177,192 @@ class PostgresStore(BaseStore):
         recorded as a **vote** (``status='human_approved'``) rather than written
         to canon here — the bridge finalizer re-runs GOV-002 against the trusted
         intake ticket before promoting.  All other sources apply on approve.
+
+        v2.3.16: applies exactly what was proposed (``write``/``rollback``/``delete``), with the
+        canon-authority token, to the state it was proposed against — or nothing
+        (``stale-proposal``). A refused apply ROLLS BACK (it used to commit by returning inside the
+        transaction block).
         """
         try:
             merge_approval_tags([], tags)  # validate up front: a bad argument writes nothing
         except ValueError as e:
             return f"Pending write #{write_id} NOT approved — {e}."
         self._ensure_pool()
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                # Lock the row so a concurrent approve cannot race past this check.
-                row = await conn.fetchrow(
-                    "SELECT * FROM pending_writes WHERE id = $1 AND status = 'pending' FOR UPDATE",
-                    write_id,
-                )
-                if not row:
-                    return f"Pending write {write_id} not found or already processed."
 
-                if (row.get("source") or "").strip() == "agent-intake":
-                    if tags:
-                        # Parity with SQLite: the finalizer writes canon from the intake ticket, so tags passed
-                        # here would be silently dropped. Refuse (nothing has been written; the lock is released).
-                        return (
-                            f"Pending write {write_id} NOT approved — tags cannot be added to an agent-intake "
-                            "row (the bridge finalizer writes canon from the intake ticket). Approve without tags."
+        class _NotApplied(Exception):
+            pass
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    # Lock the row so a concurrent approve cannot race past this check.
+                    rec = await conn.fetchrow(
+                        "SELECT * FROM pending_writes WHERE id = $1 AND status = 'pending' "
+                        "FOR UPDATE",
+                        write_id,
+                    )
+                    if not rec:
+                        closed = await conn.fetchrow(
+                            "SELECT status, superseded_by_id FROM pending_writes WHERE id = $1",
+                            write_id,
                         )
-                    # VOTE ONLY — defer the canon write to the bridge finalizer.
+                        if closed and closed["status"] == SUPERSEDED_STATUS:
+                            return (
+                                f"Pending write #{write_id} was superseded by "
+                                f"#{closed['superseded_by_id']} — review that one instead. "
+                                "Nothing changed."
+                            )
+                        return f"Pending write {write_id} not found or already processed."
+                    row = dict(rec)
+
+                    if (row.get("source") or "").strip() == "agent-intake":
+                        if tags:
+                            # Parity with SQLite: the finalizer writes canon from the intake
+                            # ticket, so tags passed here would be silently dropped. Refuse.
+                            return (
+                                f"Pending write {write_id} NOT approved — tags cannot be added to "
+                                "an agent-intake row (the bridge finalizer writes canon from the "
+                                "intake ticket). Approve without tags."
+                            )
+                        # VOTE ONLY — defer the canon write to the bridge finalizer.
+                        await conn.execute(
+                            "UPDATE pending_writes SET status='human_approved', "
+                            "review_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
+                            write_id,
+                            note,
+                            reviewer or "local",
+                            _now_utc(),
+                        )
+                        return (
+                            f"Pending write {write_id} (agent-intake) approved — queued for the "
+                            "bridge finalizer (GOV-002 re-check, then canon write with lineage)."
+                        )
+
+                    stale = await _pg_stale_reason(conn, row)
+                    if stale:
+                        raise _NotApplied(
+                            f"Pending write #{write_id} NOT approved — stale-proposal: {stale}. "
+                            "Nothing changed; reject it, or have it proposed again."
+                        )
+                    operation = row.get("operation") or "write"
+                    token = CanonAuthority(f"approve #{write_id} by {reviewer or 'local'}")
+                    if operation == "delete":
+                        target = await _pg_active_target(conn, row["memory_name"], lock=True)
+                        if target is None:
+                            raise _NotApplied(
+                                f"Pending write #{write_id} NOT approved — the memory is not "
+                                "active. It stays pending."
+                            )
+                        await conn.execute(
+                            "UPDATE memories SET deleted_at = NOW(), updated_at = NOW() "
+                            "WHERE id = $1 AND deleted_at IS NULL",
+                            target["id"],
+                        )
+                        await _audit_in_txn(
+                            conn,
+                            "soft_delete",
+                            reviewer or "local",
+                            row["memory_name"],
+                            detail=f"approved proposal #{write_id}",
+                        )
+                        r = accepted(row["memory_name"], target["tier"])
+                    elif operation == "rollback":
+                        r = await self._apply_rollback(conn, row, reviewer, token)
+                    else:
+                        queued_tags = as_tag_list(row["tags"])
+                        merged_tags = merge_approval_tags(queued_tags, tags)
+                        added_tags = [t for t in merged_tags if t not in queued_tags]
+                        r = await self._write(
+                            name=row["memory_name"],
+                            title=row["title"],
+                            description=row["description"],
+                            type=row["type"],
+                            # 'standard' is canonical; an empty legacy tier is working.
+                            tier=normalise_tier(row.get("tier")) or "working",
+                            body=row["body"],
+                            tags=merged_tags,
+                            provenance=_approval_provenance(row, reviewer, added_tags),
+                            _skip_protection=True,
+                            _conn=conn,
+                            _canon_authority=token,
+                        )
+                    # Mark approved ONLY when canon actually took the change (v2.3.10); otherwise
+                    # roll the whole transaction back so the reviewed row stays exactly as it was.
+                    if r.disposition is not Disposition.ACCEPTED:
+                        raise _NotApplied(
+                            f"Pending write {write_id} NOT approved — the {operation} was "
+                            f"{r.disposition.value}: {r.reason}. It stays pending."
+                        )
                     await conn.execute(
-                        "UPDATE pending_writes SET status='human_approved', "
-                        "review_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
+                        "UPDATE pending_writes SET status='approved', review_note=$2, "
+                        "reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
                         write_id,
                         note,
-                        reviewer,
+                        reviewer or "local",
                         _now_utc(),
                     )
-                    return (
-                        f"Pending write {write_id} (agent-intake) approved — queued for the "
-                        "bridge finalizer (GOV-002 re-check, then canon write with lineage)."
-                    )
-
-                queued_tags = as_tag_list(row["tags"])
-                merged_tags = merge_approval_tags(queued_tags, tags)
-                added_tags = [t for t in merged_tags if t not in queued_tags]
-                r = await self._write(
-                    name=row["memory_name"],
-                    title=row["title"],
-                    description=row["description"],
-                    type=row["type"],
-                    tier=row.get("tier", "working"),
-                    body=row["body"],
-                    tags=merged_tags,
-                    provenance=_approval_provenance(dict(row), reviewer, added_tags),
-                    _skip_protection=True,
-                    _conn=conn,
-                )
-                # Mark approved ONLY when canon actually took the write (v2.3.10). A REJECTED or
-                # downgraded write leaves the pending row pending, so queue state cannot diverge
-                # from canon. (_write returns REJECTED, e.g., for a malformed stored value.)
-                if r.disposition is not Disposition.ACCEPTED:
-                    return (
-                        f"Pending write {write_id} NOT approved — the canon write was "
-                        f"{r.disposition.value}: {r.reason}"
-                    )
-                await conn.execute(
-                    "UPDATE pending_writes SET status='approved', review_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
-                    write_id,
-                    note,
-                    reviewer,
-                    _now_utc(),
-                )
+        except _NotApplied as e:
+            return str(e)
         return f"Pending write {write_id} approved and committed."
 
+    async def pending_name(self, write_id: int) -> str | None:
+        """The memory a proposal targets (any status), or None — for route-level checks."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            name = await conn.fetchval(
+                "SELECT memory_name FROM pending_writes WHERE id = $1", write_id
+            )
+        return str(name) if name is not None else None
+
+    async def _apply_rollback(
+        self, conn: Any, row: dict[str, Any], reviewer: str, token: CanonAuthority
+    ) -> WriteResult:
+        """Apply an approved rollback proposal on the caller's transaction, with the token."""
+        name = row["memory_name"]
+        target = await _pg_active_target(conn, name, lock=True)
+        version = await conn.fetchrow(
+            "SELECT * FROM memory_versions WHERE version_id = $1 AND memory_name = $2",
+            row.get("target_version_id"),
+            name,
+        )
+        if target is None or version is None:
+            return WriteResult(name, "", "", Disposition.REJECTED, reason="memory or version gone")
+        if version["memory_id"] is not None and version["memory_id"] != target["id"]:
+            return WriteResult(
+                name, "", "", Disposition.REJECTED, reason="version is from an earlier incarnation"
+            )
+        return await self._write(
+            name=name,
+            title=version["title"],
+            description=version["description"],
+            type=version["type"],
+            tier=target["tier"],
+            body=version["body"],
+            tags=_jsonb_array(version["tags"], column="tags", memory_name=name),
+            provenance=_approval_provenance(row, reviewer, []),
+            _skip_protection=True,
+            _conn=conn,
+            _version_note=(
+                f"before rollback to v{row.get('target_version_id')} (approved #{row['id']})"
+            ),
+            _canon_authority=token,
+        )
+
     async def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str:
+        """Reject an OPEN proposal (v2.3.16: guarded on status='pending' with a rowcount check —
+        it used to flip any row, approved ones included, and report success for any id)."""
         self._ensure_pool()
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE pending_writes SET status='rejected', review_note=$2, reviewed_by=$3, reviewed_at=$4 WHERE id=$1",
+            result = await conn.execute(
+                "UPDATE pending_writes SET status='rejected', review_note=$2, reviewed_by=$3, "
+                "reviewed_at=$4 WHERE id=$1 AND status='pending'",
                 write_id,
                 note,
-                reviewer,
+                reviewer or "local",
                 _now_utc(),
             )
+        if int(result.split()[-1]) == 0:
+            return f"Pending write {write_id} not found or already processed."
         return f"Pending write {write_id} rejected."
 
     async def set_pending_status(
@@ -2382,9 +2603,12 @@ class PostgresStore(BaseStore):
             if not dry_run:
                 async with conn.transaction():
                     for r in rows:
+                        # v2.3.16: one OPEN orphan proposal per memory (repeat scans duplicated).
                         await conn.execute(
                             "INSERT INTO eviction_queue (memory_name, reason, detail) "
-                            "VALUES ($1, 'orphan', $2)",
+                            "SELECT $1, 'orphan', $2 WHERE NOT EXISTS (SELECT 1 FROM "
+                            "eviction_queue WHERE memory_name = $1 AND reason = 'orphan' "
+                            "AND NOT resolved)",
                             r["name"],
                             f"Not retrieved in {days} days. Last: {r['last_retrieved_at']}",
                         )
@@ -3259,17 +3483,37 @@ async def _rollback_via_chokepoint(
     caller_is_dreamer: bool,
 ) -> str:
     """Postgres rollback body, inside the caller's transaction (see PostgresStore.rollback)."""
-    # R6: rolling back a canonical row needs the dreamer role — keyed off the row read in this
-    # transaction, independent of MORI_TIER_ENFORCE.
-    if active["tier"] == "canonical" and not caller_is_dreamer:
-        return (
-            f"Memory '{name}' is canonical — rolling it back requires the dreamer role. "
-            "Not rolled back."
-        )
     try:
         tags = _jsonb_array(version["tags"], column="tags", memory_name=name)
     except ValueError as e:
         return f"Version {version_id} of '{name}' has a malformed stored value — {e}"
+    # v2.3.16 (the canon lock): a canonical rollback without canon authority becomes a `rollback`
+    # proposal naming the target version; the memory is unchanged. (Refused in api mode and
+    # applied in host mode before.)
+    authorised = has_canon_authority(prov)
+    if active["tier"] == "canonical" and not authorised:
+        proposer = proposer_for(prov)
+        outcome = await _pg_propose(
+            conn,
+            name=name,
+            proposer=proposer,
+            operation="rollback",
+            title=version["title"] or "",
+            description=version["description"] or "",
+            type=version["type"] or "project",
+            body=version["body"] or "",
+            tags=tags,
+            tier="canonical",
+            target_version_id=version_id,
+            cap=open_cap_for(proposer, prov.actor in REQUEST_ACTORS),
+        )
+        if outcome.queued:
+            return (
+                f"Memory '{name}' is canonical — the rollback to version {version_id} was queued "
+                f"as a proposal (pending id {outcome.pending_id}); the memory is unchanged until "
+                "a dreamer approves it."
+            )
+        return f"Memory '{name}' NOT rolled back — {outcome.reason}"
     # Rollback is content-only: the tier never changes. A canonical row is passed as "working"
     # and kept canonical by _write's don't-downgrade guard, so the tier gate judges no transition
     # that is not happening (R6 above is the canonical authority).
@@ -3277,7 +3521,7 @@ async def _rollback_via_chokepoint(
     # Board amendment: the anatomy downgrade is bypassed only for a dreamer restoring EXACT
     # stored content of THIS incarnation (memory_id matches; legacy name-keyed rows never qualify).
     bypass = None
-    if caller_is_dreamer and version["memory_id"] == active["id"]:
+    if (caller_is_dreamer or authorised) and version["memory_id"] == active["id"]:
         bypass = f"dreamer rollback to stored version {version_id}"
     result = await store._write(
         name=name,
@@ -3298,6 +3542,223 @@ async def _rollback_via_chokepoint(
     if active["superseded_by"]:
         msg += f" Note: it is still superseded by '{active['superseded_by']}'."
     return msg
+
+
+async def _pg_active_target(conn: Any, name: str, *, lock: bool = False) -> dict[str, Any] | None:
+    """The ACTIVE row's reviewable state (v2.3.16 target-state digest)."""
+    row = await conn.fetchrow(
+        "SELECT id, title, description, type, body, tags, tier, protected, deleted_at, "
+        "superseded_by FROM memories WHERE name = $1 AND deleted_at IS NULL"
+        + (" FOR UPDATE" if lock else ""),
+        name,
+    )
+    return dict(row) if row else None
+
+
+async def _pg_chain_depth(conn: Any, pending_id: int) -> int:
+    depth, seen = 0, set[Any]()
+    current: Any = pending_id
+    while current is not None and current not in seen and depth <= CHAIN_CAP + 1:
+        seen.add(current)
+        depth += 1
+        current = await conn.fetchval(
+            "SELECT replaces_id FROM pending_writes WHERE id = $1", current
+        )
+    return depth
+
+
+async def _pg_propose(
+    conn: Any,
+    *,
+    name: str,
+    proposer: str,
+    operation: str = "write",
+    title: str = "",
+    description: str = "",
+    type: str = "project",
+    body: str = "",
+    tags: Any = None,
+    tier: str = "",
+    origin_session_ids: Any = None,
+    origin_clients: Any = None,
+    source: str = "",
+    provenance_str: str | None = None,
+    confidence: float | None = None,
+    focus_mode: str = "",
+    target_version_id: int | None = None,
+    cap: int | None = None,
+) -> ProposalOutcome:
+    """The Postgres proposal sink (v2.3.16) — the twin of ``MemoryStore._propose``. MUST run inside
+    the caller's transaction: the open row is locked FOR UPDATE, and nothing is swallowed."""
+    import asyncpg
+
+    tags_list = as_tag_list(tags) if not isinstance(tags, str) else as_tag_list(json.loads(tags))
+    tier_n = normalise_tier(tier)
+    fields = {
+        "operation": operation,
+        "tier": tier_n,
+        "title": title,
+        "description": description,
+        "type": type,
+        "body": body,
+        "tags": tags_list,
+        "target_version_id": target_version_id,
+    }
+    open_rec = await conn.fetchrow(
+        "SELECT * FROM pending_writes WHERE memory_name = $1 AND status = 'pending' FOR UPDATE",
+        name,
+    )
+    open_row = dict(open_rec) if open_rec else None
+    if open_row:
+        if proposal_key(open_row) == proposal_key(fields):
+            return ProposalOutcome(
+                "noop",
+                open_row["id"],
+                f"Memory '{name}': an identical proposal is already open "
+                f"(pending id {open_row['id']}).",
+            )
+        if (open_row.get("proposed_by") or "") != proposer:
+            await _audit_in_txn(
+                conn,
+                "propose_refused",
+                proposer,
+                name,
+                detail=f"open proposal #{open_row['id']} belongs to another proposer",
+            )
+            return ProposalOutcome(
+                "refused",
+                open_row["id"],
+                f"refused: proposal #{open_row['id']} for '{name}' is open by another proposer "
+                "and must be reviewed first.",
+            )
+        if await _pg_chain_depth(conn, open_row["id"]) >= CHAIN_CAP:
+            return ProposalOutcome(
+                "chain-capped",
+                open_row["id"],
+                f"refused: the supersede chain for '{name}' has reached its cap ({CHAIN_CAP}); "
+                f"proposal #{open_row['id']} must be reviewed first.",
+            )
+    elif cap is not None:
+        n_open = await conn.fetchval(
+            "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending' AND proposed_by = $1",
+            proposer,
+        )
+        if n_open >= cap:
+            return ProposalOutcome(
+                "capped",
+                None,
+                f"refused: '{proposer}' has reached its open-proposal cap ({cap}); "
+                "proposals must be reviewed first.",
+            )
+
+    target = await _pg_active_target(conn, name)
+    now = _now_utc()
+    if open_row:
+        await conn.execute(
+            "UPDATE pending_writes SET status = $2, reviewed_at = $3, review_note = $4 "
+            "WHERE id = $1 AND status = 'pending'",
+            open_row["id"],
+            SUPERSEDED_STATUS,
+            now,
+            "superseded by a later proposal",
+        )
+    try:
+        async with conn.transaction():  # a savepoint: a lost race must not abort the caller
+            new_id = await conn.fetchval(
+                """
+                INSERT INTO pending_writes
+                    (memory_name, title, description, type, body, tags, origin_session_ids,
+                     origin_clients, proposed_by, proposed_at, source, provenance, confidence,
+                     focus_mode, existing_body, tier, operation, target_version_id, target_state,
+                     replaces_id)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12,
+                        $13, $14, $15, $16, $17, $18, $19, $20)
+                RETURNING id
+                """,
+                name,
+                title,
+                description,
+                type,
+                body,
+                json.dumps(tags_list),
+                _tags_json(origin_session_ids),
+                _tags_json(origin_clients),
+                proposer,
+                now,
+                source or "",
+                provenance_str,
+                confidence,
+                focus_mode or "",
+                target["body"] if target else None,
+                tier_n,
+                operation,
+                target_version_id,
+                target_state_digest(target),
+                open_row["id"] if open_row else None,
+            )
+    except asyncpg.exceptions.UniqueViolationError:
+        winner = await conn.fetchval(
+            "SELECT id FROM pending_writes WHERE memory_name = $1 AND status = 'pending'", name
+        )
+        return ProposalOutcome(
+            "refused",
+            winner,
+            f"refused: another proposal for '{name}' was queued at the same moment.",
+        )
+    if open_row:
+        await conn.execute(
+            "UPDATE pending_writes SET superseded_by_id = $2 WHERE id = $1", open_row["id"], new_id
+        )
+        return ProposalOutcome(
+            "superseded",
+            new_id,
+            f"Memory '{name}': queued as a proposal (pending id {new_id}), replacing your "
+            f"proposal #{open_row['id']}; dreamer review required.",
+        )
+    return ProposalOutcome(
+        "inserted",
+        new_id,
+        f"Memory '{name}': queued as a proposal (pending id {new_id}); dreamer review required "
+        "(review.html or POST /api/memories/{name}/approve).",
+    )
+
+
+def _pg_outcome_result(name: str, intended_tier: str, outcome: ProposalOutcome) -> WriteResult:
+    if outcome.queued:
+        return WriteResult(
+            memory_name=name,
+            intended_tier=intended_tier,
+            stored_tier="pending",
+            disposition=Disposition.DOWNGRADED_TO_PENDING,
+            pending_id=outcome.pending_id,
+            reason=outcome.reason,
+        )
+    return WriteResult(
+        memory_name=name,
+        intended_tier=intended_tier,
+        stored_tier="",
+        disposition=Disposition.REJECTED,
+        pending_id=outcome.pending_id if outcome.kind != "capped" else None,
+        reason=outcome.reason,
+    )
+
+
+async def _pg_stale_reason(conn: Any, row: dict[str, Any]) -> str | None:
+    """Twin of MemoryStore._stale_reason (see there)."""
+    target = await _pg_active_target(conn, row["memory_name"], lock=True)
+    recorded = row.get("target_state")
+    if recorded:
+        if target_state_digest(target) != recorded:
+            return "the memory changed after this proposal was made"
+        return None
+    snapshot = row.get("existing_body")
+    if snapshot is not None:
+        if target is None or (target.get("body") or "") != snapshot:
+            return "the memory changed after this (pre-v2.3.16) proposal was queued"
+        return None
+    if target is not None:
+        return "the memory exists but this (pre-v2.3.16) proposal recorded no prior state"
+    return None
 
 
 async def _audit_in_txn(conn: Any, op: str, actor: str, name: str, *, detail: str = "") -> None:

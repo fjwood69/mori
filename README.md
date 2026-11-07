@@ -259,6 +259,15 @@ to canon. A **trusted dreamer** — a human — reviews candidates and promotes 
 load-bearing ones; every promotion is versioned and `write_audit`-logged. Agents
 *read* canon; they never silently write it.
 
+**The canon lock (v2.3.16).** In api mode, a canonical row changes only when a dreamer key
+writes it or approves a proposal. Everything else that would create, change, roll back or delete
+canon — another key, the dream pipeline, ingestion, an import — is stored as a proposal, with a
+diff, and the row is unchanged until a person approves it. The exceptions: operator tooling run
+directly against the database, `MORI_LOCAL_FULL_ACCESS=true`, and the standards import. Host mode
+(`MORI_TD_MODE` unset) is for **one user on one machine**: changes are still queued, but with role
+checks off any local caller can approve, so it is not the same lock — and a server with API keys
+configured refuses to start in host mode.
+
 Underneath, **every** write — the dreamer's included — passes one audited authorization
 chokepoint: a structured provenance lands a `write_audit` row in the same transaction as the
 write, and tier-capability + anatomy enforcement gate *who* may write *what* (both ship

@@ -29,6 +29,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests._canon import CANON_SEED
+
 # ── Backend parametrisation ────────────────────────────────────────────────────
 
 PG_URL = os.environ.get("MORI_TEST_DATABASE_URL", "")
@@ -213,8 +215,9 @@ def test_working_candidate_writes_direct(backend, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-def test_mori_curate_false_canonical_writes_direct(backend, tmp_path, monkeypatch):
-    """MORI_CURATE=false must bypass the review queue for canonical candidates."""
+def test_mori_curate_false_canonical_is_still_a_proposal(backend, tmp_path, monkeypatch):
+    """MORI_CURATE=false skips CURATION, not the canon lock: a canonical candidate is a proposal
+    (v2.3.16 — before, this path wrote canon directly with no review)."""
     monkeypatch.setenv("MORI_CURATE", "false")
 
     async def run(store):
@@ -235,16 +238,14 @@ def test_mori_curate_false_canonical_writes_direct(backend, tmp_path, monkeypatc
             memories, tier="canonical", tags=[], source_uri="test.md", focus_mode="all"
         )
 
-        # Must be in the memory store, not pending
+        # v2.3.16 (the canon lock): MORI_CURATE=false no longer writes canon directly — the
+        # ingestion actor holds no canon authority, so the canonical candidate is a proposal.
         mem_store = store._mem if hasattr(store, "_mem") else store
-        result = await _a(mem_store.read("canon-direct"))
-        assert "canon-direct" in result or "Direct Canonical" in result, (
-            f"MORI_CURATE=false: should be in store: {result}"
-        )
+        assert await _a(mem_store.get_memory("canon-direct")) is None, "canon must not be written"
 
         items = await _a(store.pending_list_json(status="pending"))
-        names = [i["name"] for i in items]
-        assert "canon-direct" not in names
+        assert [i["name"] for i in items] == ["canon-direct"]
+        assert items[0]["tier"] == "canonical"
 
     _run_with_backend(backend, tmp_path, run)
 
@@ -267,6 +268,7 @@ def test_pending_list_json_enriched_fields(backend, tmp_path, monkeypatch):
                 description="Already in store",
                 body="The original body content.",
                 tier="canonical",
+                _canon_authority=CANON_SEED,
             )
         )
 

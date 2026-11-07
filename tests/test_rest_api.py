@@ -12,6 +12,8 @@ import os
 
 import pytest
 
+from tests._canon import CANON_SEED
+
 PG_URL = os.environ.get("MORI_TEST_DATABASE_URL", "")
 requires_pg = pytest.mark.skipif(not PG_URL, reason="MORI_TEST_DATABASE_URL not set")
 
@@ -186,6 +188,7 @@ def test_pg_retrieval_count_bumps_on_recall():
             type="project",
             tier="canonical",
             tags=["project:demo"],
+            _canon_authority=CANON_SEED,
         )
         await store.search(query="reboot")  # recall 1
         await store.list()  # recall 2

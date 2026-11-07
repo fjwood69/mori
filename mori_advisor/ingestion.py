@@ -856,7 +856,7 @@ class IngestionPipeline:
                 if focus_mode:
                     provenance["focus"] = focus_mode
 
-                await _a(
+                queued = await _a(
                     self._store.queue_pending_write(
                         name=name,
                         title=mem.get("title", name),
@@ -872,12 +872,17 @@ class IngestionPipeline:
                         tier=effective_tier,
                     )
                 )
-                logger.info(
-                    "TD review queue: %s tier=%s confidence=%.2f (curate=true)",
-                    name,
-                    effective_tier,
-                    confidence or 0.0,
-                )
+                # v2.3.16: a refusal (another proposer's open proposal, or the cap of 50) is said
+                # so — it is not logged as queued.
+                if str(queued).startswith("refused"):
+                    logger.warning("TD review queue: %s NOT queued — %s", name, queued)
+                else:
+                    logger.info(
+                        "TD review queue: %s tier=%s confidence=%.2f (curate=true)",
+                        name,
+                        effective_tier,
+                        confidence or 0.0,
+                    )
             else:
                 # working tier (or curate=false): direct write through the chokepoint.
                 result = await _a(

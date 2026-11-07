@@ -422,8 +422,9 @@ def test_export_all_tool_is_dreamer_only_and_uses_the_fixed_directory(
 def test_import_attributes_the_caller_and_cannot_smuggle_canon(
     backend, tmp_path, monkeypatch, api_mode
 ):
-    """The audit names the CALLER (not 'import'); with tier enforcement on, a canonical
-    frontmatter tier is refused for an mcp caller instead of landing as canon."""
+    """The audit names the CALLER (not 'import'); a canonical frontmatter tier never lands as
+    canon — since v2.3.16 it becomes a proposal, even for a dreamer key (an import is bulk,
+    unreviewed content and holds no canon authority)."""
     import mori_advisor.main as m
 
     async def t(h):
@@ -444,6 +445,10 @@ def test_import_attributes_the_caller_and_cannot_smuggle_canon(
             await m.memory_import()
         assert (await h.row("imp-working")) is not None
         assert (await h.row("imp-canon")) is None, "a canonical import must not land as canon"
+        pend = await h.q(
+            "SELECT tier, proposed_by FROM pending_writes WHERE memory_name = $1", "imp-canon"
+        )
+        assert pend == [{"tier": "canonical", "proposed_by": DREAM_KEY}], pend
         audit = await h.q(
             "SELECT actor_key_name, op FROM write_audit WHERE memory_name = $1", "imp-working"
         )
@@ -647,12 +652,11 @@ def test_approve_of_a_protected_memory_applies_instead_of_looping(backend, tmp_p
         await h.write("prot", "OLD")
         await _a(h.mem.protect("prot", actor=DREAM_KEY))
         body = "NEW body with a reason given for its existence and enough substance."
-        await h.q(
-            "INSERT INTO pending_writes (memory_name, title, description, type, body, tags, "
-            "origin_session_ids, origin_clients, proposed_by, status) "
-            "VALUES ('prot', 't', $1, 'project', $2, '[]', '[]', '[]', 'x', 'pending')",
-            GOOD_DESC,
-            body,
+        # v2.3.16: through the real sink, so the proposal records the target's state.
+        await _a(
+            h.mem.queue_pending_write(
+                name="prot", title="t", description=GOOD_DESC, body=body, proposed_by="x"
+            )
         )
         wid = (await h.q("SELECT id FROM pending_writes"))[0]["id"]
         msg = await _a(h.mem.approve(wid, reviewer=DREAM_KEY))
@@ -664,8 +668,31 @@ def test_approve_of_a_protected_memory_applies_instead_of_looping(backend, tmp_p
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-def test_second_downgrade_for_a_name_upserts_the_open_pending_row(backend, tmp_path, monkeypatch):
-    """#76: SQLite raised IntegrityError on the second open pending row; Postgres upserted."""
+def test_a_legacy_proposal_without_recorded_state_is_refused_as_stale(backend, tmp_path):
+    """v2.3.16: a proposal queued before this release with neither a target-state digest nor a body
+    snapshot cannot be shown unchanged, so approval refuses it as stale when the memory exists."""
+
+    async def t(h):
+        await h.write("leg", "OLD")
+        await h.q(
+            "INSERT INTO pending_writes (memory_name, title, description, type, body, tags, "
+            "origin_session_ids, origin_clients, proposed_by, status) "
+            "VALUES ('leg', 't', $1, 'project', 'NEW', '[]', '[]', '[]', 'x', 'pending')",
+            GOOD_DESC,
+        )
+        wid = (await h.q("SELECT id FROM pending_writes"))[0]["id"]
+        msg = await _a(h.mem.approve(wid, reviewer=DREAM_KEY))
+        assert "stale-proposal" in msg, msg
+        assert (await h.row("leg"))["body"] == "OLD"
+        assert [r["status"] for r in await h.q("SELECT status FROM pending_writes")] == ["pending"]
+
+    run(backend, tmp_path, t)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_second_downgrade_for_a_name_supersedes_the_open_proposal(backend, tmp_path, monkeypatch):
+    """#76 then v2.3.16: the second downgrade from the SAME proposer supersedes the open proposal —
+    the first stays, closed and immutable, and the new row points back at it."""
     monkeypatch.setenv("MORI_ANATOMY_ENFORCE", "enforce")
 
     async def t(h):
@@ -675,8 +702,15 @@ def test_second_downgrade_for_a_name_upserts_the_open_pending_row(backend, tmp_p
                 h.mem._write(name="dup", title="t", description="", body=body, provenance=prov)
             )
             assert r.disposition is Disposition.DOWNGRADED_TO_PENDING
-        rows = await h.q("SELECT body, status FROM pending_writes WHERE memory_name = 'dup'")
-        assert rows == [{"body": "second", "status": "pending"}], rows
+        rows = await h.q(
+            "SELECT id, body, status, replaces_id FROM pending_writes WHERE memory_name = 'dup' "
+            "ORDER BY id"
+        )
+        assert [(r["body"], r["status"]) for r in rows] == [
+            ("first", "superseded-by-proposal"),
+            ("second", "pending"),
+        ], rows
+        assert rows[1]["replaces_id"] == rows[0]["id"]
 
     run(backend, tmp_path, t)
 

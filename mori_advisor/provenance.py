@@ -108,7 +108,11 @@ class Provenance:
 
 # Convenience constants for the common internal singleton writers (actor_detail falls back
 # to actor in the ledger — GP's "may equal actor for singletons" invariant).
-DREAMER = Provenance(actor="dreamer", source="dream.py:_write_memory")
+# v2.3.16: the pipeline names itself "dream-pipeline" in the ledger and as a proposer — "dreamer" is
+# also the REVIEW ROLE, and an audit row reading "proposed by dreamer" confused the two.
+DREAMER = Provenance(
+    actor="dreamer", actor_detail="dream-pipeline", source="dream.py:_write_memory"
+)
 GOVERNED_PROMOTION = Provenance(actor="governed-promotion", source="canon_writer")
 INIT = Provenance(actor="init", source="import_standards", op="import")
 SYSTEM = Provenance(actor="system", source="internal")
@@ -128,7 +132,14 @@ def request_provenance(
     actor_name:  the resolved specific key (``current_actor.key_name``) for the ledger (WHO).
     op:          the caller's disposition (``write``/``propose_new``/``update_working``/…).
     """
-    cls = actor_class if actor_class in KNOWN_ACTORS else "mcp"
+    # v2.3.16 (consult C1, P2-2): only the two request classes are minted here. The internal
+    # classes (init, governed-promotion, dreamer, …) have their own constants and never pass
+    # through the request boundary.
+    if actor_class not in ("mcp", "rest"):
+        raise ValueError(
+            f"request_provenance: actor_class must be 'mcp' or 'rest', not {actor_class!r}"
+        )
+    cls = actor_class
     name = (actor_name or "").strip()
     return Provenance(
         actor=cls, actor_detail=name or cls, source=source, op=op, request_id=request_id
@@ -160,8 +171,9 @@ def authorize_tier(provenance: Provenance, intended_tier: str) -> tuple[bool, st
     """Stage 2 — tier-target authorization. Returns ``(authorized, reason)``.
 
     The cap is inferred from the *actor* (``may_target``), never trusting a handler-supplied
-    tier blindly (GLM#4) — the #5 fix. Callers in AUDIT-MODE log the reason but do not act;
-    enforcement lands behind ``MORI_TIER_ENFORCE`` (step 3).
+    tier blindly (GLM#4) — the #5 fix. Informational since v2.3.16: the canon lock
+    (``mori_advisor.canon_authority``) decides whether a change to canon applies, and
+    ``MORI_TIER_ENFORCE`` is retired.
     """
     if provenance.may_target(intended_tier):
         return True, ""
@@ -188,15 +200,6 @@ def _resolve_enforce_mode(raw: str, actor: str) -> str:
     return "audit"
 
 
-def tier_enforce_mode(actor: str) -> str:
-    """Tier-enforcement mode for *actor* from ``$MORI_TIER_ENFORCE``.
-
-    unset/``audit`` (default, zero behaviour change) | ``enforce`` (all) | ``enforce:mcp,rest``
-    (per-actor flip — mcp/rest first, ingestion later).
-    """
-    return _resolve_enforce_mode(os.environ.get("MORI_TIER_ENFORCE", ""), actor)
-
-
 def anatomy_enforce_mode(actor: str) -> str:
     """Anatomy/completeness + protection-bypass enforcement mode from ``$MORI_ANATOMY_ENFORCE``.
 
@@ -206,24 +209,3 @@ def anatomy_enforce_mode(actor: str) -> str:
     Flip only after the audit soak shows the would-fail rate (dominated by ``empty-warrant``).
     """
     return _resolve_enforce_mode(os.environ.get("MORI_ANATOMY_ENFORCE", ""), actor)
-
-
-def tier_decision(provenance: Provenance, intended_tier: str) -> tuple[bool, str, str, str]:
-    """The full tier-authorization decision, snapshot once at ``store.write`` txn-start.
-
-    Returns ``(reject, decision, mode, reason)``:
-      reject:   ``True`` -> the store MUST reject (enforce mode + unauthorized tier); persists nothing.
-      decision: ``allowed`` | ``would_block`` (unauthorized but audit-mode) | ``rejected`` — metric cut.
-      mode:     ``audit`` | ``enforce`` for this actor.
-      reason:   the would-block reason (``""`` when allowed).
-
-    R2 (board-ratified): an unauthorized tier target is HARD-REJECTED on both backends — no
-    downgrade-to-pending (that lane is for the name/tag protection path only).
-    """
-    ok, reason = authorize_tier(provenance, intended_tier)
-    mode = tier_enforce_mode(provenance.actor)
-    if ok:
-        return False, "allowed", mode, ""
-    if mode == "enforce":
-        return True, "rejected", mode, reason
-    return False, "would_block", mode, reason

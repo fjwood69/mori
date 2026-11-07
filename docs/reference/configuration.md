@@ -22,10 +22,10 @@
 | `MORI_API_KEYS` | — | Named API keys: `name:secret,name:secret,...` — see [Authentication](#authentication) |
 | `MORI_ADVISOR_API_KEY` | — | Legacy single key (backward compat — prefer `MORI_API_KEYS`) |
 | `MORI_API_KEY_ROLES` | — | Capability roles per key: `name:role,name:role,...` — roles: `read`, `write`, `dreamer`. Names absent from this list default to `read` (fail closed). Only consulted when `MORI_TD_MODE=api`. See [Capability roles](#capability-roles). |
-| `MORI_TD_MODE` | `host` | Trusted-dreamer mode switch. `host` (default): existing hostname-based trust, no key-role enforcement — existing deployments unchanged. `api`: API key role is the sole authority for write/approve operations. |
+| `MORI_TD_MODE` | `host` | Trusted-dreamer mode switch. `api`: the API key's role is the authority for write/approve operations. `host`: no key-role checks — **one user on one machine** only. Since v2.3.16 a server with API keys configured **refuses to start** unless this is `api`. |
 | `MORI_LOCAL_FULL_ACCESS` | `false` | When `true`, a missing actor (e.g. stdio transport without an ASGI request) is treated as having dreamer access. Only set on fully-trusted single-user deployments. |
 | `MORI_TRUSTED_DREAMERS` | — | Comma-separated hostnames for write approval bypass (host mode only) |
-| `MORI_TIER_ENFORCE` | `audit` | Tier-capability enforcement at `store.write`. `audit` (default): log + count would-blocks, never block. `enforce`: reject a write to a tier the actor isn't authorised for (e.g. a direct agent write to `canonical`). `enforce:mcp,rest`: per-actor allow-list. See [Write chokepoint](#write-chokepoint--audit--tieranatomy-enforcement). |
+| `MORI_TIER_ENFORCE` | — | **Retired in v2.3.16** (set, it logs a deprecation and is ignored). The canon lock replaces it — see [The canon lock](#the-canon-lock). |
 | `MORI_ANATOMY_ENFORCE` | `audit` | Completeness/anatomy enforcement at `store.write`. `audit` (default): log + count incomplete writes (empty body / missing warrant). `enforce`: route incomplete writes to the pending review queue. Same `audit \| enforce \| enforce:actor` grammar. |
 | `MORI_STANDARDS_DIR` | — | Path to team standards .md directory |
 | `MORI_SKILLS_DIR` | — | Path to slash command skill files (for /update) |
@@ -181,25 +181,28 @@ Every write — agent, REST, the dreamer, imports — lands a row in the `write_
 **same transaction** as the write: who (actor class + the specific key), what (`op`), the memory
 name, a content hash, and the source. Nothing reaches memory unaudited. Read it via `GET /api/audit`.
 
-### Tier-capability enforcement — `MORI_TIER_ENFORCE`
+### The canon lock
 
-Roles (`read`/`write`/`dreamer`) govern *which operations* a key may call. Tier caps govern *which
-tier* an actor may write — a separate axis. The `canonical` tier is reserved for the trusted
-promotion path:
+Since v2.3.16 a change that would create or alter a **canonical** row — a write (including a
+`working` write to a canonical name), a rollback, a soft delete — applies only with **canon
+authority**: a request whose authenticated key has the `dreamer` role in api mode, or an approval of
+a proposal. Anything else is stored as a proposal (`pending_writes`, with its operation and a digest
+of the target's state) and the row is unchanged. A hard delete or a restore of a canonical row
+without authority is refused.
 
-| Actor class | May target |
-|-------------|-----------|
-| `governed-promotion`, `init`, `import`, `system` | `working`, `canonical`, `ephemeral` |
-| `dreamer`, `mcp`, `rest`, `ingestion`, `msg`, `legacy` | `working`, `ephemeral` |
-| (unknown actor) | nothing — fail-closed |
-
-- `MORI_TIER_ENFORCE=audit` (default) — a write to a tier the actor can't target is **logged and
-  counted** (`mori_tier_decisions_total{...,decision="would_block",mode="audit"}`) but still
-  proceeds. Run this for a soak to see what *would* be blocked before flipping.
-- `MORI_TIER_ENFORCE=enforce` — those writes are **rejected** (e.g. a direct MCP/REST write to
-  `canonical` by an agent → the agent must use the governed intake/promotion path instead).
-- `MORI_TIER_ENFORCE=enforce:mcp,rest` — enforce only for the listed actor classes (flip the riskiest
-  paths first). Unrecognised values fail safe to `audit`.
+- **Review:** `/review`, `memory_pending_list` (dreamer role) and `GET /api/pending/json` show each
+  proposal's operation and a server-computed diff. Approval applies exactly what was proposed; if the
+  memory changed after the proposal was made, approval fails with `stale-proposal` and changes
+  nothing.
+- **Proposals are immutable.** A second proposal from the same proposer supersedes the open one (the
+  old one is kept, linked); a proposal from a different proposer is refused while one is open, and
+  the refusal is audited. Caps: 20 open proposals per key, 50 for ingestion, 10 links in a chain.
+- **Audit:** every approve, reject, supersession decision, unsupersede and protect records the
+  authenticated key name; a `reviewer` argument is kept only as a note.
+- **Exceptions:** operator tooling run directly against the database, `MORI_LOCAL_FULL_ACCESS=true`,
+  and the standards import (`MORI_STANDARDS_DIR`, idempotent).
+- **Retired:** `MORI_TIER_ENFORCE` and `MORI_SUPERSESSION_MODE=write` (the contradiction scan now only
+  proposes supersessions; applying one is a dreamer's decision). Set, each logs a deprecation.
 
 ### Anatomy/completeness enforcement — `MORI_ANATOMY_ENFORCE`
 

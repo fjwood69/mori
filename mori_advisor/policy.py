@@ -86,6 +86,28 @@ _LOCAL_FULL_ACCESS: bool = os.environ.get("MORI_LOCAL_FULL_ACCESS", "false").low
 
 _ROLES: dict[str, str] = {}
 
+# Names the server uses for an UNauthenticated caller, and the internal producers' own identities
+# (v2.3.16: a key with one of these names would share that producer's proposals and cap, or read
+# as the review role in the audit) — never valid key names for a role.
+RESERVED_KEY_NAMES = frozenset(
+    {
+        "anonymous",
+        "local",
+        "mcp",
+        "rest",
+        "unknown",
+        "legacy",
+        "dreamer",
+        "dream-pipeline",
+        "ingestion",
+        "system",
+        "init",
+        "governed-promotion",
+        "intake-assessor",
+        "import",
+    }
+)
+
 
 def _load_roles() -> dict[str, str]:
     """Parse ``MORI_API_KEY_ROLES=name:role,...`` into a name→role dict.
@@ -113,6 +135,13 @@ def _load_roles() -> dict[str, str]:
         if not name:
             logger.error("MORI_API_KEY_ROLES entry %r has an empty name — skipped", entry)
             continue
+        if name in RESERVED_KEY_NAMES:
+            # v2.3.16 (consult C1, P3-2): these are fallback actor names for an UNauthenticated
+            # caller; a role on one would hand authority to every caller that falls back to it.
+            logger.error(
+                "MORI_API_KEY_ROLES entry %r uses the reserved name %r — skipped", entry, name
+            )
+            continue
         if role not in VALID_ROLES:
             logger.error(
                 "MORI_API_KEY_ROLES entry %r has unknown role %r "
@@ -139,6 +168,35 @@ def init_policy() -> None:
     if _ROLES:
         for name, role in _ROLES.items():
             logger.debug("  role: %s → %s", name, role)
+
+
+def assert_mode_fail_closed(keys_configured: bool) -> None:
+    """R5 (v2.3.16): refuse to start when API keys are configured but role checks are off.
+
+    Keys configured and ``MORI_TD_MODE`` unset or ``host`` → log CRITICAL naming the variable and
+    exit. Host mode with no keys starts (one user, one machine) with a warning that role checks are
+    off; api mode with no keys starts with a warning that every caller is read-only. Called from
+    ``main.py``'s ``__main__`` only — the intake process checks roles itself in both modes.
+    """
+    raw = os.environ.get("MORI_TD_MODE")
+    if keys_configured and _TD_MODE != "api":
+        how = "unset" if raw is None or not raw.strip() else f"'{raw.strip()}'"
+        logger.critical(
+            "Refusing to start: API keys are configured but MORI_TD_MODE is %s, so role checks "
+            "would be OFF (host mode). Set MORI_TD_MODE=api (and MORI_API_KEY_ROLES), or remove "
+            "the keys for a single-user, single-machine install.",
+            how,
+        )
+        raise SystemExit(
+            f"MORI_TD_MODE is {how} while API keys are configured — set MORI_TD_MODE=api."
+        )
+    if not keys_configured and _TD_MODE == "host":
+        logger.warning(
+            "Host mode with no API keys: role checks are OFF — any local caller can approve. "
+            "Host mode is for one user on one machine."
+        )
+    elif not keys_configured:
+        logger.warning("api mode with no API keys: every caller is read-only.")
 
 
 def role_for(key_name: str) -> str:

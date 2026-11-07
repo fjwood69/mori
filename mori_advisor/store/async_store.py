@@ -21,6 +21,7 @@ issue-#59 design history.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import inspect
 import threading
@@ -86,7 +87,11 @@ class AsyncStore:
             _assert_off_loop()
             return fn(*args, **kwargs)
 
-        return await loop.run_in_executor(self._exec(), _guarded)
+        # v2.3.16: run in a COPY of the caller's context (as asyncio.to_thread does), so the
+        # authenticated actor reaches the store thread — the canon lock reads it there. A bare
+        # run_in_executor drops ContextVars, which would queue a dreamer key's own change.
+        ctx = contextvars.copy_context()
+        return await loop.run_in_executor(self._exec(), ctx.run, _guarded)
 
     async def run_in_txn(self, work):
         """Run a whole transaction as ONE unit on the executor thread.

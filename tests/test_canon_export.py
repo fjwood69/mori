@@ -6,6 +6,7 @@ import json
 import re
 
 from mori_advisor import canon_export
+from tests._canon import CANON_SEED
 
 SAMPLE = [
     {
@@ -147,8 +148,11 @@ def test_export_rows_schema_contract(tmp_path):
         type="decision",
         tier="canonical",
         tags=["architecture"],
+        _canon_authority=CANON_SEED,
     )
-    store.write(name="b-untyped", title="B", body="y", tier="canonical")  # default type, no tags
+    store.write(  # default type, no tags
+        name="b-untyped", title="B", body="y", tier="canonical", _canon_authority=CANON_SEED
+    )
     store.write(name="c-working", title="C", body="z", tier="working")  # excluded by tier filter
 
     rows = store._mem.export_rows(tiers=("canonical",), limit=50)
