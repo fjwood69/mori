@@ -1,5 +1,65 @@
 # Changelog
 
+## v2.3.16 — The canon lock: only a reviewed decision changes canon
+
+> **Errata.** Canonical memory was meant to change only through review. It didn't:
+> - **The write-key path.** A key with only the `write` role could create canon, rewrite the body of any unprotected
+>   canonical memory (a `working` write to a canonical name kept the row canonical and replaced its body), and delete
+>   it. In host mode, the default, every role check was off.
+> - **The dream path.** The dream pipeline writes at the working tier with protection skipped; when the name it chose
+>   was an existing canonical memory, the row stayed canonical and its body was replaced, with no review. The name
+>   comes from session transcripts, so it could be steered.
+>
+> **The back-audit found neither path used.** Since the write audit began (June 2026), every recorded change to canon
+> came from a dreamer key or an approval; no other key rolled back or deleted canon; and no dream, ingestion or system
+> write reached a canonical row. No canonical row's version history shows a dream rewrite. Canon written before the
+> audit began cannot be attributed by actor.
+>
+> Since this release, those changes go to the review queue instead. **In api mode, a canonical row changes only when a
+> dreamer key writes it or approves a proposal.** The exceptions are operator tooling run directly against the
+> database, `MORI_LOCAL_FULL_ACCESS=true`, and the standards import.
+
+> **Before upgrading:** a server with API keys configured now **refuses to start** unless `MORI_TD_MODE=api` (with
+> `MORI_API_KEY_ROLES`). Host mode with no keys still starts, for one user on one machine.
+
+**Changes**
+
+- **The canon lock** (both backends): one rule at the write chokepoint, and the same rule in soft delete, hard delete
+  and restore. A change that would create or alter a canonical row applies only with canon authority — an approval,
+  the standards import, or an mcp/rest request whose authenticated key has the `dreamer` role in api mode. Anything
+  else is stored as a proposal and the row is unchanged: writes and soft deletes are queued, a rollback of canon is
+  queued (it was refused in api mode, applied in host mode), and a hard delete or restore of canon is refused. Dream's
+  protection skip still skips the protection flag, but not this rule. An import never lands canon (frontmatter tiers
+  are file content). There is no `standard` tier: a `standard` tier string means canonical.
+- **Proposals** (`pending_writes`, migration 18): each records its operation (`write`, `rollback`, `delete`), the
+  rollback's target version and a digest of the target's state. Approval applies exactly what was proposed, with
+  canon authority; if the memory changed after the proposal was made, approval fails with `stale-proposal` and
+  changes nothing. Proposals are immutable: the same proposer's re-proposal supersedes the open one (both kept, linked),
+  a different proposer is refused while one is open (audited), and a content-equal re-proposal is a no-op. Caps: 20
+  open proposals per key, 50 for ingestion, 10 links in a chain. A proposal queued before this release that recorded no
+  prior state is refused as stale if the memory exists: reject it, or propose it again.
+- **Review:** `/review`, `memory_pending_list` and `GET /api/pending/json` show each proposal's operation, a
+  server-computed diff (for a delete, the full body), its history and a warning when the proposer changed.
+  `memory_pending_list` now needs the `dreamer` role; proposers keep `GET /api/pending/mine`. REST approve/reject check
+  that the path names the proposal's memory (404) and answer a stale proposal with 409.
+- **Audit:** approve, reject, supersession decisions, unsupersede and protect record the **authenticated key**; a
+  `reviewer` argument is kept only as a note, and an action that changed nothing writes no success row.
+- **Retired:** `MORI_TIER_ENFORCE` (the canon lock replaces it) and `MORI_SUPERSESSION_MODE=write` (the contradiction
+  scan now only proposes; applying a supersession is a dreamer's decision). Set, each logs a deprecation and is ignored.
+- **The standards import** runs at startup again (the call was never awaited) and is idempotent: an unchanged standard
+  is not rewritten. `import_standards(dry_run=True)` lists what an import would create or change.
+- **`memory_review(dry_run=False)`** (proposing evictions) needs the `write` role; open orphan proposals no longer
+  duplicate.
+- **The ingestion server** checks the same API keys and roles as the main server: uploads and status need the `write`
+  role (health and ready stay open), and it refuses to start without keys, or in host mode with keys. The `/ingest`
+  skill already sends the device's key.
+- **Fixes on the approval path:** Postgres `reject` touched rows that were no longer pending and reported success for
+  an id that didn't exist; Postgres `approve` committed after a refused write; REST approve returned 200 for an approval
+  that didn't happen.
+
+**Not in this release:** which tiers `/brief` injects (working-tier rows are listed as name and title; the global lane
+has no tier filter) — the next release's first item; the `human_approved` window of agent-intake proposals.
+
 ## v2.3.15 — `/req list`: requirements listed under the brief's scope rules
 
 > **Deliberate behaviour change: `/req` with no project no longer lists every project's requirements.** It now lists

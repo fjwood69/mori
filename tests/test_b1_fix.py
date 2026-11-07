@@ -617,16 +617,16 @@ def test_a_store_error_fails_closed_and_is_retried_on_redelivery(backend, tmp_pa
 
     async def run(store):
         msg = _decision("adopt rule V", msg_id=str(uuid.uuid4()))
-        real = store.queue_pending_write
+        real = store.propose_pending  # v2.3.16: the daemon queues through the structured sink
 
         def boom(*a, **k):
             raise RuntimeError("db down")
 
-        monkeypatch.setattr(store, "queue_pending_write", boom, raising=False)
+        monkeypatch.setattr(store, "propose_pending", boom, raising=False)
         ms = await _dispatch(store, msg, tmp_path, monkeypatch)
         assert _msg_status(ms, msg["id"]) == "queue-error"
         assert not await _pending_rows(store)
-        monkeypatch.setattr(store, "queue_pending_write", real, raising=False)
+        monkeypatch.setattr(store, "propose_pending", real, raising=False)
         ms = await _dispatch(store, msg, tmp_path, monkeypatch)
         assert _msg_status(ms, msg["id"]) == "queued-for-review"
         assert len([r for r in await _pending_rows(store) if r["status"] == "pending"]) == 1

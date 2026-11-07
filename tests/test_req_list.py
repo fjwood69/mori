@@ -312,6 +312,7 @@ def test_memory_req_source_has_no_write_call():
         "reject",
         "delete",
         "queue_pending_write",
+        "propose_pending",
         "execute",
         "executemany",
         "soft_delete",

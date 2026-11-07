@@ -582,6 +582,20 @@ async def _run_llm(fn, **kwargs):
         llm_slot_state(_llm_active, _llm_queued)
 
 
+def _log_retired_settings() -> None:
+    """v2.3.16: settings retired by the canon lock — set means one deprecation line, then ignored."""
+    if os.environ.get("MORI_TIER_ENFORCE", "").strip():
+        logger.warning(
+            "DEPRECATED: MORI_TIER_ENFORCE is retired and ignored (v2.3.16). The canon lock "
+            "replaces it: a change to canon without canon authority is stored as a proposal."
+        )
+    if os.environ.get("MORI_SUPERSESSION_MODE", "").strip().lower() == "write":
+        logger.warning(
+            "DEPRECATED: MORI_SUPERSESSION_MODE=write is retired and ignored (v2.3.16) — "
+            "supersessions are proposed for review (report_only); applying them needs a dreamer."
+        )
+
+
 @asynccontextmanager
 async def _lifespan(server):
     """Bootstrap the store on startup (async-safe for both SQLite and Postgres)."""
@@ -611,6 +625,15 @@ async def _lifespan(server):
             "in production to restrict file-read access.",
             Path.cwd(),
         )
+    _log_retired_settings()
+    if STANDARDS_DIR:
+        # v2.3.16: AWAITED, on the server's own loop after bootstrap (the Postgres pool exists only
+        # from here). Before this release the startup call created a coroutine and never ran it.
+        # Idempotent: unchanged standards are not rewritten.
+        try:
+            logger.info(await import_standards())
+        except Exception:
+            logger.exception("Startup standards import FAILED — canon standards were not imported")
     cleanup_task = asyncio.create_task(_throttle_cleanup_loop())
     orphan_task = asyncio.create_task(_orphan_scan_loop())
     try:
@@ -1566,8 +1589,85 @@ async def consult_status(job_id: str) -> str:
 # ── Standards ingestion ──────────────────────────────────────────────────
 
 
-async def import_standards(standards_dir: str | None = None) -> str:
-    """Import all .md files from a standards directory as protected memories.
+def _standards_files(src_path: Path) -> list[dict[str, Any]]:
+    """The standards a directory defines: one entry per .md file (name, title, tags, body)."""
+    entries: list[dict[str, Any]] = []
+    for file_path in sorted(src_path.rglob("*.md")):
+        if not file_path.is_file():
+            continue
+        resolved_file = file_path.resolve()
+        # Defence in depth: skip any file that resolves to a sensitive path
+        # (e.g. a symlink inside the standards dir pointing to .ssh/config).
+        if _is_sensitive_path(resolved_file):
+            logger.warning("import_standards: skipping sensitive path: %s", resolved_file)
+            entries.append({"error": f"sensitive path skipped: {file_path.name}"})
+            continue
+        # Derive kebab name from relative path
+        rel = file_path.relative_to(src_path)
+        name = normalise_name(str(rel.with_suffix("")).replace("/", "-").replace("_", "-"))
+        # Tag: always "standard" + parent directory name
+        category = rel.parent.name if rel.parent.name != "." else "general"
+        try:
+            body = file_path.read_text(encoding="utf-8").strip()
+        except OSError as e:
+            entries.append({"error": f"{name}: {e}"})
+            continue
+        entries.append(
+            {
+                "name": name,
+                "title": str(rel.with_suffix("")),
+                "tags": ["standard", category],
+                "body": body,
+            }
+        )
+    return entries
+
+
+async def plan_standards(standards_dir: str | None = None) -> tuple[str, list[dict[str, Any]]]:
+    """What an import WOULD do, writing nothing: each standard is ``create`` (no active row),
+    ``change`` (the active row differs in title, type, tier, tags or body) or ``unchanged``.
+
+    v2.3.16 (board ruling): the import is idempotent — an unchanged standard is never rewritten —
+    and this plan is the dry run listed against production before the first awaited import.
+    Returns ``(error_or_empty, entries)``.
+    """
+    src = standards_dir or STANDARDS_DIR
+    if not src:
+        return "No standards directory configured (set MORI_STANDARDS_DIR).", []
+    src_path = Path(src).resolve()
+    if not _is_within_standards_roots(src_path):
+        logger.warning("import_standards: rejected standards_dir outside allowed roots: %s", src)
+        return (
+            f"Access denied: standards directory '{src}' is outside the allowed standards roots. "
+            f"Set MORI_STANDARDS_ROOTS or MORI_STANDARDS_DIR to an appropriate path."
+        ), []
+    if not src_path.is_dir():
+        return f"Standards directory not found: {src}", []
+    planned: list[dict[str, Any]] = []
+    for entry in _standards_files(src_path):
+        if "error" in entry:
+            planned.append({**entry, "action": "error"})
+            continue
+        reader: Any = memory_store  # MemoryStore (SQLite) or PostgresStore; both have get_memory
+        current = await _a(reader.get_memory(entry["name"]))
+        if current is None:
+            action = "create"
+        elif (
+            (current.get("title") or "") == entry["title"]
+            and (current.get("type") or "") == "standard"
+            and (current.get("tier") or "") == "canonical"
+            and sorted(current.get("tags") or []) == sorted(entry["tags"])
+            and (current.get("body") or "").strip() == entry["body"]
+        ):
+            action = "unchanged"
+        else:
+            action = "change"
+        planned.append({**entry, "action": action})
+    return "", planned
+
+
+async def import_standards(standards_dir: str | None = None, *, dry_run: bool = False) -> str:
+    """Import all .md files from a standards directory as protected canonical memories.
 
     Each file is tagged with 'standard' and the name of its immediate
     parent directory (e.g. security/baseline.md → tags: ["standard", "security"]).
@@ -1577,66 +1677,62 @@ async def import_standards(standards_dir: str | None = None) -> str:
     MORI_CONSULT_FILE_ROOTS).  Passing an external ``standards_dir`` that
     resolves outside these roots is rejected.  Each rglob'd file is additionally
     checked against _is_sensitive_path() as defence in depth.
+
+    v2.3.16 (the canon lock): this is one of the two places that hold the canon-authority token
+    (the other is ``approve()``); it is reachable only through the dreamer-gated
+    ``standards_reload`` and the server's own startup. It is idempotent: an unchanged standard is
+    not rewritten. ``dry_run`` returns the plan (create / change / unchanged) and writes nothing.
     """
+    from mori_advisor.canon_authority import CanonAuthority
+
+    problem, planned = await plan_standards(standards_dir)
+    if problem:
+        return problem
     src = standards_dir or STANDARDS_DIR
-    if not src:
-        return "No standards directory configured (set MORI_STANDARDS_DIR)."
+    if dry_run:
+        lines = [f"Standards import plan for {src} (dry run — nothing written):"]
+        for e in planned:
+            lines.append(f"- {e['action']}: {e.get('name') or e.get('error')}")
+        counts = {a: sum(1 for e in planned if e["action"] == a) for a in ("create", "change")}
+        lines.append(f"{counts['create']} to create, {counts['change']} to change.")
+        return "\n".join(lines)
 
-    src_path = Path(src).resolve()
-    if not _is_within_standards_roots(src_path):
-        logger.warning("import_standards: rejected standards_dir outside allowed roots: %s", src)
-        return (
-            f"Access denied: standards directory '{src}' is outside the allowed standards roots. "
-            f"Set MORI_STANDARDS_ROOTS or MORI_STANDARDS_DIR to an appropriate path."
-        )
-
-    if not src_path.is_dir():
-        return f"Standards directory not found: {src}"
-
-    imported = 0
-    errors = 0
-    for file_path in sorted(src_path.rglob("*.md")):
-        if not file_path.is_file():
-            continue
-
-        resolved_file = file_path.resolve()
-
-        # Defence in depth: skip any file that resolves to a sensitive path
-        # (e.g. a symlink inside the standards dir pointing to .ssh/config).
-        if _is_sensitive_path(resolved_file):
-            logger.warning("import_standards: skipping sensitive path: %s", resolved_file)
+    token = CanonAuthority("standards import")
+    imported = unchanged = errors = 0
+    for entry in planned:
+        if entry["action"] == "error":
             errors += 1
             continue
-
-        # Derive kebab name from relative path
-        rel = file_path.relative_to(src_path)
-        name = normalise_name(str(rel.with_suffix("")).replace("/", "-").replace("_", "-"))
-
-        # Tag: always "standard" + parent directory name
-        category = rel.parent.name if rel.parent.name != "." else "general"
-        tags = ["standard", category]
-
+        if entry["action"] == "unchanged":
+            unchanged += 1
+            continue
         try:
-            body = file_path.read_text(encoding="utf-8")
-            await _a(
+            result = await _a(
                 memory_store.write(
-                    name=name,
-                    title=str(rel.with_suffix("")),
+                    name=entry["name"],
+                    title=entry["title"],
                     type="standard",
                     tier="canonical",
-                    body=body.strip(),
-                    tags=tags,
+                    body=entry["body"],
+                    tags=entry["tags"],
                     client="init",
                     provenance=INIT,
                     _skip_protection=True,
+                    _canon_authority=token,
                 )
             )
-            imported += 1
+            if "written" in str(result):
+                imported += 1
+            else:
+                errors += 1
+                logger.warning("Standard %s not written: %s", entry["name"], result)
         except Exception as e:
             errors += 1
-            logger.warning("Failed to import standard %s: %s", name, e)
+            logger.warning("Failed to import standard %s: %s", entry["name"], e)
 
     msg = f"Imported {imported} standards from {src}"
+    if unchanged:
+        msg += f" ({unchanged} unchanged)"
     if errors:
         msg += f" ({errors} errors)"
     # Per-file writes are now audited at the store.write chokepoint (actor=init, op=import);
@@ -2708,8 +2804,16 @@ async def memory_delete(name: str) -> str:
     except PermissionDenied as exc:
         return str(exc)
     actor = current_actor.get()
+    actor_name = actor.key_name if actor else "mcp"
     # v2.3.11: the store audits the delete in the same transaction (previously unaudited here).
-    return await _a(store.soft_delete(name, actor=actor.key_name if actor else "mcp"))
+    # v2.3.16: deleting a canonical memory without canon authority queues a `delete` proposal.
+    return await _a(
+        store.soft_delete(
+            name,
+            actor=actor_name,
+            provenance=request_provenance("mcp", actor_name, "main.py:memory_delete", op="delete"),
+        )
+    )
 
 
 @mcp.tool()
@@ -2886,7 +2990,14 @@ async def memory_review(
     Args:
         orphan_days: Days since last retrieval to flag as orphan (default 30).
         dry_run: If True, show what would be flagged without writing to eviction_queue.
+            ``dry_run=False`` proposes evictions and needs the write role (v2.3.16, R7);
+            applying an eviction still needs the dreamer role.
     """
+    if not dry_run:
+        try:
+            require_role("write")
+        except PermissionDenied as exc:
+            return str(exc)
 
     parts = ["# Memory Review Dashboard\n"]
 
@@ -3017,8 +3128,15 @@ async def memory_import() -> str:
     return await _a(
         memory_store.import_memories(
             str(imports_dir),
-            provenance=request_provenance(
-                "mcp", actor.key_name if actor else "mcp", "main.py:memory_import", op="import"
+            provenance=Provenance(
+                # v2.3.16: an import is bulk, unreviewed file content (its frontmatter tier is just
+                # text), so it carries NO canon authority even for a dreamer key — a canonical row
+                # becomes a proposal (keeps v2.3.12's "an import cannot smuggle canon"). The audit
+                # still names the caller.
+                actor="import",
+                actor_detail=actor.key_name if actor else "import",
+                source="main.py:memory_import",
+                op="import",
             ),
         )
     )
@@ -3031,10 +3149,34 @@ async def memory_import() -> str:
 async def memory_pending_list(status: str = "pending") -> str:
     """List pending writes awaiting approval from a trusted dreamer.
 
+    v2.3.16: requires the dreamer role — the list now shows each proposal's operation and a diff.
+    A proposer sees its own proposals through ``GET /api/pending/mine``.
+
     Args:
         status: Filter by status: pending, approved, or rejected.
     """
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return str(exc)
     return await _a(memory_store.pending_list(status=status))
+
+
+def _reviewing_key() -> str:
+    """R4 (v2.3.16): the audit names the AUTHENTICATED key that reviewed — never a string the
+    caller passed. ``local`` only when no key was authenticated (host mode without keys, stdio)."""
+    actor = current_actor.get()
+    return actor.key_name if actor is not None else "local"
+
+
+def _review_detail(note: str, reviewer: str) -> str:
+    detail = f"note: {note}" if note else ""
+    if reviewer:
+        detail += (" | " if detail else "") + f"reviewer (self-stated): {reviewer}"
+    return detail
+
+
+_APPLIED_RE = re.compile(r"#?\d+ (?:\(agent-intake\) )?approved\b")
 
 
 @mcp.tool()
@@ -3050,7 +3192,8 @@ async def memory_approve(
     Args:
         write_id: ID of the pending write from memory_pending_list.
         note: Optional review note.
-        reviewer: Hostname of the reviewer (auto-detected if empty).
+        reviewer: Optional free-text note of who reviewed. The audit records the
+                  AUTHENTICATED key, never this string (v2.3.16, R4).
         reason: Optional TD decision code (too-granular|duplicate|stale|low-value|other)
                 for the measurement layer; omitted → not counted toward coverage.
         tags: Optional tags ADDED to the approved memory (the queued tags stay). Pass
@@ -3061,14 +3204,17 @@ async def memory_approve(
         require_role("dreamer")
     except PermissionDenied as exc:
         return str(exc)
-    result = await _a(memory_store.approve(write_id, note=note, reviewer=reviewer, tags=tags))
-    await _write_audit(
-        "approve",
-        reviewer or "unknown",
-        f"write:{write_id}",
-        note,
-        reason_code=_normalise_reason(reason),
-    )
+    who = _reviewing_key()
+    result = await _a(memory_store.approve(write_id, note=note, reviewer=who, tags=tags))
+    if _APPLIED_RE.search(result) and "NOT approved" not in result:
+        await _write_audit(
+            "approve",
+            who,
+            f"write:{write_id}",
+            note,
+            detail=_review_detail(note, reviewer),
+            reason_code=_normalise_reason(reason),
+        )
     return result
 
 
@@ -3079,7 +3225,8 @@ async def memory_reject(write_id: int, note: str = "", reviewer: str = "", reaso
     Args:
         write_id: ID of the pending write from memory_pending_list.
         note: Optional review note.
-        reviewer: Hostname of the reviewer (auto-detected if empty).
+        reviewer: Optional free-text note of who reviewed. The audit records the
+                  AUTHENTICATED key, never this string (v2.3.16, R4).
         reason: Optional TD decision code (too-granular|duplicate|stale|low-value|other)
                 for the measurement layer; omitted → not counted toward coverage.
     """
@@ -3087,14 +3234,17 @@ async def memory_reject(write_id: int, note: str = "", reviewer: str = "", reaso
         require_role("dreamer")
     except PermissionDenied as exc:
         return str(exc)
-    result = await _a(memory_store.reject(write_id, note=note, reviewer=reviewer))
-    await _write_audit(
-        "reject",
-        reviewer or "unknown",
-        f"write:{write_id}",
-        note,
-        reason_code=_normalise_reason(reason),
-    )
+    who = _reviewing_key()
+    result = await _a(memory_store.reject(write_id, note=note, reviewer=who))
+    if "rejected" in result and "not found" not in result.lower():
+        await _write_audit(
+            "reject",
+            who,
+            f"write:{write_id}",
+            note,
+            detail=_review_detail(note, reviewer),
+            reason_code=_normalise_reason(reason),
+        )
     return result
 
 
@@ -4071,6 +4221,58 @@ def _validate_write_payload(payload: dict) -> tuple[str | None, int]:
     return None, 0
 
 
+async def _propose_response(
+    name: str,
+    title: str,
+    description: str,
+    mem_type: str,
+    body: str,
+    tags: list[str],
+    origin_clients: list[str],
+    actor_name: str,
+    *,
+    tier: str = "",
+) -> JSONResponse:
+    """Queue a REST proposal through the one sink and answer from its STRUCTURED outcome
+    (v2.3.16): 202 with the pending id when queued; 409 with the open id when refused (another
+    proposer's open proposal, or a cap). The proposer is the authenticated key, taken inside the
+    sink; only a NEW proposal is audited."""
+    outcome = await _a(
+        memory_store.propose_pending(
+            name,
+            title=title,
+            description=description,
+            type=mem_type,
+            body=body,
+            tags=tags,
+            origin_clients=origin_clients,
+            tier=tier,
+            request=request_provenance("rest", actor_name, "main.py:rest_write", op="propose"),
+        )
+    )
+    if not outcome.queued:
+        return JSONResponse(
+            {
+                "status": "refused",
+                "name": name,
+                "pending_id": outcome.pending_id,
+                "detail": outcome.reason,
+            },
+            status_code=409,
+        )
+    if outcome.kind != "noop":
+        await _write_audit("propose_pending", actor_name, name, body)
+    return JSONResponse(
+        {
+            "status": "pending",
+            "name": name,
+            "pending_id": outcome.pending_id,
+            "detail": outcome.reason,
+        },
+        status_code=202,
+    )
+
+
 @mcp.custom_route("/api/memories", methods=["POST"])
 async def post_memory(request: Request) -> JSONResponse:
     """Propose or write a memory entry (governed, tier-aware).
@@ -4155,22 +4357,16 @@ async def post_memory(request: Request) -> JSONResponse:
                 # Propose a pending write — do NOT touch the canonical row.
                 # Use queue_pending_write to bypass write() which would overwrite
                 # canonical rows that are not flagged protected=1.
-                result = await _a(
-                    memory_store.queue_pending_write(
-                        name=name,
-                        title=title,
-                        description=description,
-                        type=mem_type,
-                        body=body,
-                        tags=tags,
-                        origin_clients=origin_clients,
-                        proposed_by=actor_name,
-                    )
-                )
-                await _write_audit("propose_pending", actor_name, name, body)
-                return JSONResponse(
-                    {"status": "pending", "name": name, "detail": result},
-                    status_code=202,
+                return await _propose_response(
+                    name,
+                    title,
+                    description,
+                    mem_type,
+                    body,
+                    tags,
+                    origin_clients,
+                    actor_name,
+                    tier="canonical" if existing_tier == "canonical" else tier,
                 )
 
             # Working, non-protected — idempotent update if same actor owns it.
@@ -4197,22 +4393,16 @@ async def post_memory(request: Request) -> JSONResponse:
                 return _write_response(r, ok_status="updated", ok_code=200, name=name)
 
             # Working memory owned by a different actor — queue as pending.
-            result = await _a(
-                memory_store.queue_pending_write(
-                    name=name,
-                    title=title,
-                    description=description,
-                    type=mem_type,
-                    body=body,
-                    tags=tags,
-                    origin_clients=origin_clients,
-                    proposed_by=actor_name,
-                )
-            )
-            await _write_audit("propose_pending", actor_name, name, body)
-            return JSONResponse(
-                {"status": "pending", "name": name, "detail": result},
-                status_code=202,
+            return await _propose_response(
+                name,
+                title,
+                description,
+                mem_type,
+                body,
+                tags,
+                origin_clients,
+                actor_name,
+                tier=tier,
             )
 
         except Exception as e:
@@ -4401,7 +4591,9 @@ async def approve_memory(request: Request) -> JSONResponse:
 
     write_id: int | None = payload.get("write_id")
     note: str = payload.get("note", "") or ""
-    reviewer: str = payload.get("reviewer", "") or actor_name
+    # R4 (v2.3.16): reviewed_by is the AUTHENTICATED key; a payload "reviewer" is only a note.
+    stated_reviewer: str = payload.get("reviewer", "") or ""
+    reviewer: str = actor_name
 
     if write_id is not None and not isinstance(write_id, int):
         return JSONResponse({"error": "'write_id' must be an integer"}, status_code=400)
@@ -4414,6 +4606,12 @@ async def approve_memory(request: Request) -> JSONResponse:
         )
 
     try:
+        # v2.3.16: the path names the memory; it must be the one this proposal targets.
+        if await _a(memory_store.pending_name(write_id)) != mem_name:
+            return JSONResponse(
+                {"error": f"Pending write #{write_id} does not target '{mem_name}'."},
+                status_code=404,
+            )
         result = await _a(
             memory_store.approve(
                 write_id=write_id,
@@ -4424,11 +4622,16 @@ async def approve_memory(request: Request) -> JSONResponse:
         )
         if "not found" in result.lower() or "already processed" in result.lower():
             return JSONResponse({"error": result}, status_code=404)
+        if "stale-proposal" in result:
+            return JSONResponse({"error": result, "reason": "stale-proposal"}, status_code=409)
+        if "NOT approved" in result or "superseded by #" in result:
+            return JSONResponse({"error": result}, status_code=422)
         await _write_audit(
             "approve",
             actor_name,
             mem_name,
             note,
+            detail=_review_detail(note, stated_reviewer),
             reason_code=_normalise_reason(payload.get("reason")),
         )
         return JSONResponse({"status": "approved", "name": mem_name, "detail": result})
@@ -4465,7 +4668,9 @@ async def reject_memory(request: Request) -> JSONResponse:
 
     write_id: int | None = payload.get("write_id")
     note: str = payload.get("note", "") or ""
-    reviewer: str = payload.get("reviewer", "") or actor_name
+    # R4 (v2.3.16): reviewed_by is the AUTHENTICATED key; a payload "reviewer" is only a note.
+    stated_reviewer: str = payload.get("reviewer", "") or ""
+    reviewer: str = actor_name
 
     if write_id is not None and not isinstance(write_id, int):
         return JSONResponse({"error": "'write_id' must be an integer"}, status_code=400)
@@ -4477,6 +4682,11 @@ async def reject_memory(request: Request) -> JSONResponse:
         )
 
     try:
+        if await _a(memory_store.pending_name(write_id)) != mem_name:
+            return JSONResponse(
+                {"error": f"Pending write #{write_id} does not target '{mem_name}'."},
+                status_code=404,
+            )
         result = await _a(
             memory_store.reject(
                 write_id=write_id,
@@ -4491,6 +4701,7 @@ async def reject_memory(request: Request) -> JSONResponse:
             actor_name,
             mem_name,
             note,
+            detail=_review_detail(note, stated_reviewer),
             reason_code=_normalise_reason(payload.get("reason")),
         )
         return JSONResponse({"status": "rejected", "name": mem_name, "detail": result})
@@ -4522,9 +4733,26 @@ async def delete_memory_rest(request: Request) -> JSONResponse:
     try:
         # v2.3.11: the store writes the audit row in the delete's own transaction.
         if hard:
-            result = await _a(store.hard_delete(mem_name, actor=actor_name))
+            # v2.3.16: the request provenance lets a dreamer key's authority reach the store.
+            result = await _a(
+                store.hard_delete(
+                    mem_name,
+                    actor=actor_name,
+                    provenance=request_provenance(
+                        "rest", actor_name, "main.py:delete_memory_rest", op="hard_delete"
+                    ),
+                )
+            )
         else:
-            result = await _a(store.soft_delete(mem_name, actor=actor_name))
+            result = await _a(
+                store.soft_delete(
+                    mem_name,
+                    actor=actor_name,
+                    provenance=request_provenance(
+                        "rest", actor_name, "main.py:delete_memory_rest", op="delete"
+                    ),
+                )
+            )
 
         if "not found" in result.lower():
             return JSONResponse({"error": "not found", "name": mem_name}, status_code=404)
@@ -4615,7 +4843,15 @@ async def restore_memory_rest(request: Request) -> JSONResponse:
 
     try:
         # v2.3.11: the store audits the restore in the same transaction.
-        final_name, msg = await _a(store.restore_memory(mem_name, actor=actor_name))
+        final_name, msg = await _a(
+            store.restore_memory(
+                mem_name,
+                actor=actor_name,
+                provenance=request_provenance(
+                    "rest", actor_name, "main.py:restore_memory_rest", op="restore"
+                ),
+            )
+        )
         if "not found" in msg.lower() or "not deleted" in msg.lower():
             return JSONResponse({"error": msg, "name": mem_name}, status_code=404)
         if "failed" in msg.lower():
@@ -4748,10 +4984,13 @@ if __name__ == "__main__":
         logging.basicConfig(level=logging.INFO)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if STANDARDS_DIR:
-        logger.info("Standards directory: %s", STANDARDS_DIR)
-        result = import_standards()
-        logger.info(result)
+        logger.info("Standards directory: %s (imported in the lifespan)", STANDARDS_DIR)
     init_auth()
+    # R5 (v2.3.16): keys configured + host mode (role checks off) refuses to start.
+    from mori_advisor import auth as _auth
+    from mori_advisor.policy import assert_mode_fail_closed
+
+    assert_mode_fail_closed(bool(_auth._KEYS))
     import uvicorn
     from starlette.middleware import Middleware
     from starlette.middleware.cors import CORSMiddleware

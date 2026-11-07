@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from mori_advisor.policy import Actor, PermissionDenied, current_actor
+from tests._canon import CANON_SEED
 
 # ── Backend parametrisation ───────────────────────────────────────────────────
 
@@ -391,6 +392,7 @@ def test_propose_over_canonical_creates_pending(backend, tmp_path, monkeypatch):
             body="original body",
             tier="canonical",
             tags=["scope:global"],
+            _canon_authority=CANON_SEED,
         )
         if inspect.isawaitable(r):
             await r

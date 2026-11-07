@@ -31,6 +31,7 @@ from mori_advisor.policy import Actor, current_actor
 from mori_advisor.store.migrations import JSONB_ARRAY_COLUMNS, _jsonb_arrays_postgres
 from mori_advisor.store.postgres_store import _jsonb_array
 from mori_advisor.write_result import Disposition, WriteResult
+from tests._canon import CANON_SEED
 
 PG_URL = os.environ.get("MORI_TEST_DATABASE_URL", "")
 requires_pg = pytest.mark.skipif(not PG_URL, reason="MORI_TEST_DATABASE_URL not set")
@@ -604,7 +605,14 @@ _ORPHAN_ROWS = {
 async def _seed_orphans(store, prefix: str, set_sql) -> None:
     for suffix, (tier, protected, days, _flag) in _ORPHAN_ROWS.items():
         name = f"{prefix}-{suffix}"
-        r = store.write(name=name, title=suffix, body="b", tier=tier, _skip_protection=True)
+        r = store.write(
+            name=name,
+            title=suffix,
+            body="b",
+            tier=tier,
+            _skip_protection=True,
+            _canon_authority=CANON_SEED,
+        )
         if inspect.isawaitable(r):
             await r
         if protected:

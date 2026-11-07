@@ -16,7 +16,7 @@ import sqlite3
 from collections.abc import Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 
 from mori_advisor.memory_store import _audit_sqlite
 from mori_advisor.provenance import LEGACY, Provenance
@@ -114,6 +114,7 @@ class SQLiteStore(BaseStore):
         provenance: Provenance = LEGACY,
         _skip_protection=False,
         _conn=None,
+        _canon_authority=None,
     ) -> str:
         # v2.3.11: `provenance` is passed through. Without it, the dream's
         # write(provenance=DREAMER) raised TypeError on SQLite, per memory, since v2.3.0 —
@@ -133,6 +134,7 @@ class SQLiteStore(BaseStore):
             provenance=provenance,
             _skip_protection=_skip_protection,
             _conn=_conn,
+            _canon_authority=_canon_authority,
         )
 
     def _write(self, **kwargs: Any) -> WriteResult:
@@ -158,14 +160,14 @@ class SQLiteStore(BaseStore):
     def delete(self, name: str) -> str:
         return self._mem.delete(name)
 
-    def soft_delete(self, name: str, *, actor: str = "system") -> str:
-        return self._mem.soft_delete(name, actor=actor)
+    def soft_delete(self, name: str, *, actor: str = "system", **kwargs: Any) -> str:
+        return self._mem.soft_delete(name, actor=actor, **kwargs)
 
-    def hard_delete(self, name: str, *, actor: str = "system") -> str:
-        return self._mem.hard_delete(name, actor=actor)
+    def hard_delete(self, name: str, *, actor: str = "system", **kwargs: Any) -> str:
+        return self._mem.hard_delete(name, actor=actor, **kwargs)
 
-    def restore_memory(self, name: str, *, actor: str = "system") -> tuple:
-        return self._mem.restore_memory(name, actor=actor)
+    def restore_memory(self, name: str, *, actor: str = "system", **kwargs: Any) -> tuple:
+        return self._mem.restore_memory(name, actor=actor, **kwargs)
 
     def insert_audit(
         self,
@@ -266,6 +268,7 @@ class SQLiteStore(BaseStore):
         confidence: float | None = None,
         focus_mode: str = "",
         tier: str = "",
+        request: Any = None,
         _conn: object = None,  # Postgres-only (A-F-A2); SQLite reuses its connection already
     ) -> str:
         return self._mem.queue_pending_write(
@@ -282,7 +285,52 @@ class SQLiteStore(BaseStore):
             confidence=confidence,
             focus_mode=focus_mode,
             tier=tier,
+            request=request,
         )
+
+    def propose_pending(
+        self,
+        name: str,
+        title: str = "",
+        description: str = "",
+        type: str = "project",
+        body: str = "",
+        tags: List[str] | None = None,
+        origin_clients: List[str] | None = None,
+        proposed_by: str = "api",
+        source: str = "",
+        provenance: str | None = None,
+        confidence: float | None = None,
+        focus_mode: str = "",
+        tier: str = "",
+        request: Any = None,
+        operation: str = "write",
+        target_version_id: int | None = None,
+        _conn: Any = None,
+    ) -> Any:
+        """The structured proposal sink (v2.3.16) — see MemoryStore.propose_pending. ``_conn`` is
+        Postgres-only; SQLite opens its own locked transaction."""
+        return self._mem.propose_pending(
+            name,
+            title=title,
+            description=description,
+            type=type,
+            body=body,
+            tags=tags,
+            origin_clients=origin_clients,
+            proposed_by=proposed_by,
+            source=source,
+            provenance=provenance,
+            confidence=confidence,
+            focus_mode=focus_mode,
+            tier=tier,
+            request=request,
+            operation=operation,
+            target_version_id=target_version_id,
+        )
+
+    def pending_name(self, write_id: int) -> str | None:
+        return self._mem.pending_name(write_id)
 
     def pending_list(self, status: str = "pending") -> str:
         return self._mem.pending_list(status=status)

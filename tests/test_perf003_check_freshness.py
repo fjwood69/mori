@@ -28,6 +28,8 @@ import time
 
 import pytest
 
+from tests._canon import CANON_SEED
+
 PG_URL = os.environ.get("MORI_TEST_DATABASE_URL", "")
 requires_pg = pytest.mark.skipif(not PG_URL, reason="MORI_TEST_DATABASE_URL not set")
 
@@ -66,6 +68,7 @@ def _insert_canonical_infra(store, name: str, title: str = "A canonical memory")
         body="Some infrastructure detail.",
         tags=["infrastructure"],
         _skip_protection=True,
+        _canon_authority=CANON_SEED,
     )
 
 
@@ -400,6 +403,7 @@ def test_pg_check_freshness_concurrency(tmp_path):
                     title=f"PG memory {i}",
                     type="project",
                     tier="canonical",
+                    _canon_authority=CANON_SEED,
                     body="detail",
                     tags=["infrastructure"],
                     _skip_protection=True,
@@ -450,6 +454,7 @@ def test_pg_cache_prevents_second_llm_call(tmp_path):
                 title="PG cache test memory",
                 type="project",
                 tier="canonical",
+                _canon_authority=CANON_SEED,
                 body="detail",
                 tags=["infrastructure"],
                 _skip_protection=True,

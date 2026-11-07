@@ -256,21 +256,30 @@ def test_rollback_of_a_protected_memory_follows_the_ratified_fork(backend, tmp_p
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-def test_canonical_rollback_requires_dreamer(backend, tmp_path, monkeypatch):
-    """R6: keyed off the active row's tier, independent of MORI_TIER_ENFORCE — so the dreamer's
-    rollback must succeed with tier enforcement ON (rollback is content-only; no tier transition)."""
+def test_canonical_rollback_needs_canon_authority(backend, tmp_path, monkeypatch):
+    """v2.3.16 (the canon lock): a canonical rollback without canon authority becomes a `rollback`
+    proposal and the body is unchanged; an AUTHENTICATED dreamer key in api mode applies it
+    directly (rollback is content-only; no tier transition). `caller_is_dreamer` confers nothing."""
+    import mori_advisor.policy as pol
+    from mori_advisor.policy import Actor, current_actor
 
     async def t(h):
         await h.write("cn", "ONE")
         await h.write("cn", "TWO")
         vid = await _version_id(h, "cn", "ONE")
         await h.q("UPDATE memories SET tier = 'canonical' WHERE name = $1", "cn")
-        monkeypatch.setenv("MORI_TIER_ENFORCE", "enforce")
-        refused = await _a(h.store.rollback("cn", vid, caller_is_dreamer=False))
-        assert "requires the dreamer role" in refused
+        monkeypatch.setenv("MORI_TIER_ENFORCE", "enforce")  # retired: must change nothing
+        queued = await _a(h.store.rollback("cn", vid, caller_is_dreamer=True))
+        assert "queued as a proposal" in queued, queued
         assert (await h.row("cn"))["body"] == "TWO"
+        monkeypatch.setattr(pol, "_TD_MODE", "api")
+        monkeypatch.setattr(pol, "_ROLES", {"td-key": "dreamer"})
         mcp = Provenance(actor="mcp", actor_detail="td-key", source="test", op="rollback")
-        ok = await _a(h.store.rollback("cn", vid, provenance=mcp, caller_is_dreamer=True))
+        token = current_actor.set(Actor("td-key", "dreamer"))
+        try:
+            ok = await _a(h.store.rollback("cn", vid, provenance=mcp, caller_is_dreamer=True))
+        finally:
+            current_actor.reset(token)
         assert ok.startswith("Memory 'cn' rolled back"), ok
         row = await h.row("cn")
         assert (row["body"], row["tier"]) == ("ONE", "canonical")

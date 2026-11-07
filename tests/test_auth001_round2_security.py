@@ -171,6 +171,11 @@ def test_standards_dir_inside_roots_allowed(monkeypatch, tmp_path):
     (standards / "baseline.md").write_text("# Baseline\nSome content.\n")
 
     _patch_standards_roots(monkeypatch, [standards])
+    # v2.3.16: the import now counts only writes that landed, so it needs a real store
+    # (before, any non-exception counted — including "no such table").
+    from tests.test_mcp_tools import _apply_store, _make_sqlite_store
+
+    _apply_store(monkeypatch, _make_sqlite_store(tmp_path))
 
     result = asyncio.run(m.import_standards(standards_dir=str(standards)))
     assert "Imported 1 standards" in result, f"Unexpected result: {result!r}"

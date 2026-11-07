@@ -143,11 +143,11 @@ PAIR_REASONS = ("superseded", "supersession_proposed")
 
 
 def supersession_mode() -> str:
-    """``write`` iff ``$MORI_SUPERSESSION_MODE`` is exactly ``write`` (strip + lower); anything
-    else — unset, ``report_only``, ``yes``, ``1``, ``true`` — is ``report_only`` (board S1/S4:
-    fail closed on ambiguous config). Read per scan run."""
-    raw = os.environ.get(SUPERSESSION_MODE_ENV, "")
-    return "write" if raw.strip().lower() == "write" else "report_only"
+    """Always ``report_only`` (v2.3.16, the canon lock). ``MORI_SUPERSESSION_MODE=write`` is retired:
+    it applied ``superseded_by`` to canonical rows from a model verdict, with no person involved —
+    a side door around the canon lock. Set, it logs a deprecation at startup and is ignored;
+    applying a supersession needs a dreamer (``memory_supersession_decide``)."""
+    return "report_only"
 
 
 @dataclass
@@ -293,41 +293,28 @@ async def run_contradiction_scan(
                     )
                     if verdict != "SUPERSEDES":
                         continue
-                    apply = mode == "write" and state == "open"
+                    # v2.3.16 (the canon lock): the scan only PROPOSES. Applying superseded_by to a
+                    # canonical row from a model verdict was a side door around the lock;
+                    # applying is a dreamer's decision (memory_supersession_decide).
+                    apply = False
                     inserted = True
                     try:
-                        # Savepoint per pair: UPDATE + queue row land together or not at all, and a
-                        # failure here does not abort the outer transaction.
+                        # Savepoint per pair: a failure here does not abort the outer transaction.
                         async with conn.transaction():
-                            if apply:
-                                await conn.execute(
-                                    "UPDATE memories SET superseded_by = $1, updated_at = NOW() WHERE id = $2",
-                                    name,
-                                    cand_id,
-                                )
-                                await conn.execute(
+                            inserted = (
+                                await conn.fetchval(
                                     "INSERT INTO eviction_queue "
                                     "(memory_name, reason, detail, counterpart) "
-                                    "VALUES ($1, 'superseded', $2, $3)",
+                                    "VALUES ($1, 'supersession_proposed', $2, $3) "
+                                    "ON CONFLICT (memory_name, counterpart) "
+                                    f"WHERE reason IN {pair_reasons_sql} AND resolved = FALSE "
+                                    "DO NOTHING RETURNING id",
                                     cand_name,
-                                    SUPERSEDED_DETAIL.format(name),
+                                    PROPOSED_DETAIL.format(name),
                                     name,
                                 )
-                            else:
-                                inserted = (
-                                    await conn.fetchval(
-                                        "INSERT INTO eviction_queue "
-                                        "(memory_name, reason, detail, counterpart) "
-                                        "VALUES ($1, 'supersession_proposed', $2, $3) "
-                                        "ON CONFLICT (memory_name, counterpart) "
-                                        f"WHERE reason IN {pair_reasons_sql} AND resolved = FALSE "
-                                        "DO NOTHING RETURNING id",
-                                        cand_name,
-                                        PROPOSED_DETAIL.format(name),
-                                        name,
-                                    )
-                                    is not None
-                                )
+                                is not None
+                            )
                     except Exception as e:
                         logger.warning(
                             "Contradiction scan: supersession write failed %s vs %s: %s",
@@ -425,28 +412,18 @@ async def run_contradiction_scan(
                 )
                 if verdict != "SUPERSEDES":
                     continue
-                apply = mode == "write" and state == "open"
+                # v2.3.16 (the canon lock): the scan only PROPOSES (see the Postgres twin above).
+                apply = False
                 inserted = True
                 try:
-                    if apply:
-                        write_conn.execute(
-                            "UPDATE memories SET superseded_by = ?, updated_at = datetime('now') WHERE id = ?",
-                            (name, cand_id),
-                        )
-                        write_conn.execute(
-                            "INSERT INTO eviction_queue (memory_name, reason, detail, counterpart) "
-                            "VALUES (?, 'superseded', ?, ?)",
-                            (cand_name, SUPERSEDED_DETAIL.format(name), name),
-                        )
-                    else:
-                        # The partial unique index on open pairs makes a concurrent duplicate a no-op.
-                        cur = write_conn.execute(
-                            "INSERT OR IGNORE INTO eviction_queue "
-                            "(memory_name, reason, detail, counterpart) "
-                            "VALUES (?, 'supersession_proposed', ?, ?)",
-                            (cand_name, PROPOSED_DETAIL.format(name), name),
-                        )
-                        inserted = cur.rowcount == 1
+                    # The partial unique index on open pairs makes a concurrent duplicate a no-op.
+                    cur = write_conn.execute(
+                        "INSERT OR IGNORE INTO eviction_queue "
+                        "(memory_name, reason, detail, counterpart) "
+                        "VALUES (?, 'supersession_proposed', ?, ?)",
+                        (cand_name, PROPOSED_DETAIL.format(name), name),
+                    )
+                    inserted = cur.rowcount == 1
                     write_conn.commit()
                 except Exception as e:
                     # Undo a half-applied pair (UPDATE done, INSERT failed); otherwise the next

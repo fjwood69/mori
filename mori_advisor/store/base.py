@@ -15,7 +15,7 @@ import sqlite3
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from contextlib import contextmanager
-from typing import Any, Awaitable, Generator
+from typing import Any, Awaitable, Generator, List
 
 from mori_advisor.provenance import Provenance
 
@@ -71,6 +71,7 @@ class BaseStore(ABC):
         provenance=None,
         _skip_protection=False,
         _conn=None,
+        _canon_authority=None,
     ) -> str: ...
 
     @abstractmethod
@@ -87,14 +88,38 @@ class BaseStore(ABC):
     @abstractmethod
     def delete(self, name: str) -> str: ...
 
+    # v2.3.16 (the canon lock): `provenance` names the caller's class; `_canon_authority` is the
+    # token held only by approve() and the standards import. A canonical target without authority
+    # is queued (soft_delete) or refused (hard_delete, restore_memory).
     @abstractmethod
-    def soft_delete(self, name: str, *, actor: str = "system") -> str: ...
+    def soft_delete(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Any = None,
+        _canon_authority: Any = None,
+    ) -> str: ...
 
     @abstractmethod
-    def hard_delete(self, name: str, *, actor: str = "system") -> str: ...
+    def hard_delete(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Any = None,
+        _canon_authority: Any = None,
+    ) -> str: ...
 
     @abstractmethod
-    def restore_memory(self, name: str, *, actor: str = "system") -> tuple: ...
+    def restore_memory(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Any = None,
+        _canon_authority: Any = None,
+    ) -> tuple: ...
 
     @abstractmethod
     def insert_audit(
@@ -201,8 +226,36 @@ class BaseStore(ABC):
         confidence: float | None = None,
         focus_mode: str = "",
         tier: str = "",
+        request: Any = None,
         _conn: Any = None,
     ) -> str: ...
+
+    @abstractmethod
+    def propose_pending(
+        self,
+        name: str,
+        title: str = "",
+        description: str = "",
+        type: str = "project",
+        body: str = "",
+        tags: List[str] | None = None,
+        origin_clients: List[str] | None = None,
+        proposed_by: str = "api",
+        source: str = "",
+        provenance: str | None = None,
+        confidence: float | None = None,
+        focus_mode: str = "",
+        tier: str = "",
+        request: Any = None,
+        operation: str = "write",
+        target_version_id: int | None = None,
+        _conn: Any = None,
+    ) -> Any:
+        """The structured proposal sink (v2.3.16): returns a ``ProposalOutcome``."""
+
+    @abstractmethod
+    def pending_name(self, write_id: int) -> Any:
+        """The memory a proposal targets (any status), or None (awaitable on Postgres)."""
 
     @abstractmethod
     def pending_list(self, status: str = "pending") -> str: ...

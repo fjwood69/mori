@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(os.environ.get("MORI_ADVISOR_DATA", "/data/mori-advisor"))
 INGESTION_PORT = int(os.environ.get("MORI_INGESTION_PORT", "8969"))
-API_KEY = os.environ.get("MORI_ADVISOR_API_KEY", "")
 BIFROST_BASE_URL = os.environ.get("MORI_BASE_URL", "http://localhost:8787")
 BIFROST_TIMEOUT = int(os.environ.get("MORI_BIFROST_TIMEOUT", "900"))
 MAX_FILE_MB = int(os.environ.get("MORI_INGESTION_MAX_FILE_MB", "50"))
@@ -81,9 +80,38 @@ job_queue: asyncio.Queue  # initialised in lifespan
 # ── Auth ──────────────────────────────────────────────────────────────────
 
 
-def require_api_key(request: Request) -> None:
-    if API_KEY and request.headers.get("X-Api-Key", "") != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+def require_api_key(request: Request) -> str:
+    """v2.3.16: the main server's key table (MORI_API_KEYS, constant-time via ``auth.check_key``)
+    and the write role or above. Before, only the legacy MORI_ADVISOR_API_KEY was checked, and an
+    empty one — production's case — let every request through. The caller's identity is NOT bound
+    to the request context: uploads keep ingestion's provenance, so a dreamer key at this door is not
+    canon authority (a canonical result is still a proposal)."""
+    from mori_advisor.auth import check_key
+    from mori_advisor.policy import ROLE_LEVELS, role_for
+
+    provided = request.headers.get("X-Api-Key", "")
+    name = check_key(provided) if provided else None
+    if name is None or name == "anonymous":  # no key, a wrong key, or auth's open mode
+        raise HTTPException(status_code=401, detail="Valid X-Api-Key required")
+    if ROLE_LEVELS.get(role_for(name), 0) < ROLE_LEVELS["write"]:
+        raise HTTPException(status_code=403, detail="the write role is required")
+    return name
+
+
+def startup_check() -> None:
+    """Refuse to start with no API keys configured, or with keys in host mode (the R5 rule) —
+    v2.3.16. Loads the key table and roles (``init_auth``), which this process never did before."""
+    from mori_advisor import auth
+    from mori_advisor.policy import assert_mode_fail_closed
+
+    auth.init_auth()
+    if not auth._KEYS:
+        logger.critical(
+            "Refusing to start: no API keys configured (MORI_API_KEYS) — the ingestion server "
+            "accepts uploads only from a key with the write role."
+        )
+        raise SystemExit("MORI_API_KEYS is not set — the ingestion server needs keys to start.")
+    assert_mode_fail_closed(True)
 
 
 # ── Worker ────────────────────────────────────────────────────────────────
@@ -238,4 +266,5 @@ if __name__ == "__main__":
     import uvicorn
 
     logging.basicConfig(level=logging.INFO)
+    startup_check()  # v2.3.16: keys required; host mode with keys refused
     uvicorn.run(app, host="0.0.0.0", port=INGESTION_PORT)

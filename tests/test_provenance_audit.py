@@ -31,7 +31,8 @@ def test_dreamer_write_is_audited_at_chokepoint(tmp_path):
     # The dreamer was the unaudited bulk writer (v2.2.26 gap) — now audited at the door.
     st, db = _store(tmp_path)
     st.write(name="m1", body="b", tier="working", provenance=DREAMER)
-    assert ("dreamer", "write", "m1") in _audit_rows(db)
+    # v2.3.16: the pipeline names itself in the ledger — "dreamer" is also the review ROLE.
+    assert ("dream-pipeline", "write", "m1") in _audit_rows(db)
 
 
 def test_request_write_records_specific_actor_and_op(tmp_path):

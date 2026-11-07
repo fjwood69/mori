@@ -18,6 +18,7 @@ from test_recovery_path import BACKENDS, GOOD_DESC, _a, requires_pg, run
 
 from mori_advisor import metrics as mx
 from mori_advisor import utils as ut
+from tests._canon import CANON_SEED
 
 
 class Classifier:
@@ -92,8 +93,9 @@ async def _superseded_is_null(h, name) -> bool:
         ("1", "report_only"),
         ("true", "report_only"),
         ("writes", "report_only"),
-        ("write", "write"),
-        ("WRITE ", "write"),
+        # v2.3.16 (the canon lock): write mode is retired — even an exact "write" is report_only.
+        ("write", "report_only"),
+        ("WRITE ", "report_only"),
     ],
 )
 def test_supersession_mode_exact_value_rule(monkeypatch, raw, mode):
@@ -125,18 +127,19 @@ def test_report_only_is_the_default_and_writes_only_a_proposal(backend, tmp_path
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-@pytest.mark.parametrize("raw,applies", [("yes", False), ("1", False), ("WRITE ", True)])
-def test_only_exact_write_applies(backend, tmp_path, monkeypatch, raw, applies):
+@pytest.mark.parametrize("raw", ["yes", "1", "write", "WRITE "])
+def test_no_mode_value_applies(backend, tmp_path, monkeypatch, raw):
+    """v2.3.16: the scan never applies superseded_by — a dreamer decides (memory_supersession_decide)."""
     monkeypatch.setenv(ut.SUPERSESSION_MODE_ENV, raw)
 
     async def t(h):
         await _canon(h, "mori-old")
         await h.write("mori-new", "New body.")
         out = await _scan(h, ["mori-new"], Classifier())
-        assert out.applied == (1 if applies else 0)
-        assert (not await _superseded_is_null(h, "mori-old")) is applies
+        assert (out.applied, out.proposed) == (0, 1)
+        assert await _superseded_is_null(h, "mori-old")
         reasons = [r["reason"] for r in await _queue(h, "mori-old")]
-        assert reasons == (["superseded"] if applies else ["supersession_proposed"])
+        assert reasons == ["supersession_proposed"]
 
     run(backend, tmp_path, t)
 
@@ -194,15 +197,12 @@ def test_a_decided_pair_is_never_reclassified(backend, tmp_path, monkeypatch, mo
         again = Classifier()
         out = await _scan(h, ["mori-new"], again)
         assert again.calls == []
-        # report-only: the open proposal makes the pair decided; write: the candidate is now
-        # superseded and leaves the candidate pool before any pair check.
-        assert out.already_decided == (1 if mode == "report_only" else 0)
-        # Negative control: a DIFFERENT new memory against the same candidate is classified
-        # (report-only only: in write mode the candidate is now superseded and leaves the pool).
-        if mode == "report_only":
-            other = Classifier("UNRELATED")
-            await _scan(h, ["mori-other"], other)
-            assert len(other.calls) == 1
+        # The open proposal makes the pair decided — in every mode (v2.3.16: "write" is retired).
+        assert out.already_decided == 1
+        # Negative control: a DIFFERENT new memory against the same candidate is classified.
+        other = Classifier("UNRELATED")
+        await _scan(h, ["mori-other"], other)
+        assert len(other.calls) == 1
 
     run(backend, tmp_path, t)
 
@@ -215,20 +215,30 @@ def test_dismissed_pair_stays_closed_and_undone_pair_is_propose_only(
         await _canon(h, "mori-a")
         await _canon(h, "mori-b")
         await h.write("mori-new", "New body.")
-        monkeypatch.setenv(ut.SUPERSESSION_MODE_ENV, "write")
-        # a: applied in write mode, then undone by a human -> may be re-classified, proposal only
-        # b: proposed in report-only, then dismissed -> closed for good
-        await _scan(h, ["mori-new"], Classifier())  # applies both (both canonical, same prefix)
-        await _a(h.store.unsupersede("mori-a", note="wrong", actor="td"))
-        await _a(h.store.unsupersede("mori-b", note="wrong", actor="td"))
+        # LEGACY history (the retired write mode): each pair was auto-applied, then undone by a
+        # human — a 'superseded' row resolved 'unsuperseded', with no proposal row. Such a pair may
+        # be re-classified but only ever proposed. (Since v2.3.16 a pair a person applied through
+        # review is decided, even once undone: pair_state's 'applied' rule.)
+        # a: re-proposed -> stays an open proposal
+        # b: re-proposed, then dismissed -> closed for good
+        for cand in ("mori-a", "mori-b"):
+            await h.q(
+                "INSERT INTO eviction_queue (memory_name, reason, detail, counterpart, resolved, "
+                "resolution) VALUES ($1, 'superseded', 'legacy', 'mori-new', TRUE, 'unsuperseded')",
+                cand,
+            )
         pid = None
-        monkeypatch.setenv(ut.SUPERSESSION_MODE_ENV, "write")
+        monkeypatch.setenv(ut.SUPERSESSION_MODE_ENV, "write")  # retired: must change nothing
         clf = Classifier()
         out = await _scan(h, ["mori-new"], clf)
         assert len(clf.calls) == 2  # both undone pairs are re-classified...
         assert (out.applied, out.proposed) == (0, 2)  # ...but even in WRITE mode only proposed
         assert await _superseded_is_null(h, "mori-a")
-        pid = [r["id"] for r in await _queue(h, "mori-b") if r["reason"] == "supersession_proposed"]
+        pid = [
+            r["id"]
+            for r in await _queue(h, "mori-b")
+            if r["reason"] == "supersession_proposed" and not r["resolved"]
+        ]
         msg = await _a(h.store.decide_supersession(pid[0], "dismiss", note="no", actor="td"))
         assert msg.startswith("Dismissed")
         clf2 = Classifier()
@@ -245,7 +255,7 @@ def test_dismissed_pair_stays_closed_and_undone_pair_is_propose_only(
 def test_unsupersede_clears_to_null_bumps_updated_at_resolves_and_audits(
     backend, tmp_path, monkeypatch
 ):
-    monkeypatch.setenv(ut.SUPERSESSION_MODE_ENV, "write")
+    monkeypatch.delenv(ut.SUPERSESSION_MODE_ENV, raising=False)
 
     async def t(h):
         await _canon(h, "mori-old")
@@ -256,7 +266,11 @@ def test_unsupersede_clears_to_null_bumps_updated_at_resolves_and_audits(
             "UPDATE memories SET name = 'mori-old', deleted_at = '2026-01-01', "
             "superseded_by = 'someone' WHERE name = 'mori-old-ns'"
         )
-        await _scan(h, ["mori-new"], Classifier())
+        await _scan(h, ["mori-new"], Classifier())  # proposes (v2.3.16: never applies)
+        pq = [
+            r["id"] for r in await _queue(h, "mori-old") if r["reason"] == "supersession_proposed"
+        ]
+        await _a(h.store.decide_supersession(pq[0], "apply", note="test", actor="td"))
         await h.q("UPDATE memories SET updated_at = '2020-01-01' WHERE name = 'mori-old'")
         msg = await _a(h.store.unsupersede("mori-old", note="false positive", actor="td-key"))
         assert msg == "Memory 'mori-old' unsuperseded (was superseded by 'mori-new')."
@@ -269,7 +283,8 @@ def test_unsupersede_clears_to_null_bumps_updated_at_resolves_and_audits(
         assert [d["superseded_by"] for d in dead] == ["someone"]
         q = await _queue(h, "mori-old")
         assert [(r["reason"], bool(r["resolved"]), r["resolution"]) for r in q] == [
-            ("superseded", True, "unsuperseded")
+            ("supersession_proposed", True, "applied"),
+            ("superseded", True, "unsuperseded"),
         ]
         audit = await h.q(
             "SELECT actor_key_name FROM write_audit WHERE op = 'unsupersede' AND memory_name = $1",
@@ -344,7 +359,8 @@ def test_decide_apply_refuses_when_either_side_moved(backend, tmp_path, monkeypa
         if spoil.endswith("superseded"):
             await h.q("UPDATE memories SET superseded_by = 'elsewhere' WHERE name = $1", target)
         else:
-            await _a(h.store.soft_delete(target))
+            # a dreamer's delete (v2.3.16: deleting a canonical row needs canon authority)
+            await _a(h.store.soft_delete(target, _canon_authority=CANON_SEED))
         msg = await _a(h.store.decide_supersession(pid, "apply"))
         assert msg.startswith("Not applied"), msg
         q = [r for r in await _queue(h, "mori-old") if r["id"] == pid]

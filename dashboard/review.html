@@ -258,6 +258,13 @@
         .badge.tier-canonical   { color: #d07fff;     border-color: #d07fff; }
         .badge.tier-standard    { color: var(--accent); border-color: var(--accent); }
         .badge.tier-working     { color: var(--dim);  border-color: var(--line); }
+        /* v2.3.16: the proposal's operation, and the shadowing tripwire */
+        .badge.op-write    { color: var(--accent); border-color: var(--accent); }
+        .badge.op-rollback { color: var(--warn);   border-color: var(--warn); }
+        .badge.op-delete   { color: var(--err);    border-color: var(--err); }
+        .badge.proposer-changed { color: var(--err); border-color: var(--err); font-weight: 600; }
+        .field-change { font-family: monospace; font-size: 12px; margin: 2px 0; }
+        .history-line { font-family: monospace; font-size: 12px; color: var(--dim); }
 
         /* Tags */
         .tag-row {
@@ -650,6 +657,64 @@
         return hunks.reverse();
     }
 
+    // ===== RENDER THE SERVER'S DIFF (v2.3.16) =====
+    function renderServerDiff(container, item) {
+        const d = item.diff;
+        const label = document.createElement('div');
+        label.className = 'section-label';
+        label.textContent = (item.operation || 'write') + ' — ' + (d.summary || '');
+        container.appendChild(label);
+
+        (d.fields || []).forEach(ch => {
+            const row = document.createElement('div');
+            row.className = 'field-change';
+            const fmt = v => Array.isArray(v) ? '[' + v.join(', ') + ']' : String(v == null ? '' : v);
+            row.textContent = ch.field + ': ' + fmt(ch.before) + '  →  ' + fmt(ch.after);
+            container.appendChild(row);
+        });
+
+        const text = d.kind === 'delete' ? (d.current_body || '') : (d.body_diff || '');
+        if (!text) {
+            if (d.kind !== 'delete' && d.summary === 'new memory') {
+                const note = document.createElement('div');
+                note.className = 'new-memory-note';
+                note.textContent = 'new memory — no existing body to diff against';
+                container.appendChild(note);
+            }
+            return;
+        }
+        const block = document.createElement('div');
+        block.className = 'diff-block';
+        text.split('\n').forEach(line => {
+            const span = document.createElement('span');
+            let type = 'context';
+            if (d.kind === 'delete') type = 'removed';
+            else if (line.startsWith('+') && !line.startsWith('+++')) type = 'added';
+            else if (line.startsWith('-') && !line.startsWith('---')) type = 'removed';
+            span.className = 'diff-line ' + type;
+            span.textContent = line;  // textContent: stored text is never HTML
+            block.appendChild(span);
+        });
+        container.appendChild(block);
+    }
+
+    // ===== RENDER THE SUPERSEDE CHAIN (v2.3.16) =====
+    function renderHistory(container, item) {
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        summary.className = 'section-label';
+        summary.textContent = 'history (' + item.chain.length + ')';
+        details.appendChild(summary);
+        item.chain.forEach(c => {
+            const row = document.createElement('div');
+            row.className = 'history-line';
+            row.textContent = '#' + c.id + ' · ' + (c.operation || 'write') + ' · by ' +
+                (c.proposed_by || '?') + ' · ' + relAge(c.proposed_at || '') + ' · ' + (c.status || '');
+            details.appendChild(row);
+        });
+        container.appendChild(details);
+    }
+
     // ===== RENDER DIFF BLOCK =====
     function renderDiff(container, existingBody, proposedBody) {
         const label = document.createElement('div');
@@ -730,9 +795,24 @@
         headerTop.appendChild(ageSpan);
         header.appendChild(headerTop);
 
-        // Compact badge row: source · tier · focus_mode · confidence%
+        // Compact badge row: operation · source · tier · focus_mode · confidence%
         const compactBadges = document.createElement('div');
         compactBadges.className = 'card-compact-badges';
+
+        // v2.3.16: what this proposal does (write / rollback / delete), from the server.
+        const op = (item.operation || 'write').toLowerCase();
+        const opBadge = document.createElement('span');
+        opBadge.className = 'badge op-' + op;
+        opBadge.textContent = op;
+        compactBadges.appendChild(opBadge);
+        if (item.proposer_changed) {
+            // The tripwire: a different proposer appears along this proposal's chain.
+            const pc = document.createElement('span');
+            pc.className = 'badge proposer-changed';
+            pc.textContent = 'proposer changed';
+            pc.title = 'A different key proposed an earlier version of this change — check the history.';
+            compactBadges.appendChild(pc);
+        }
 
         const srcBadge = document.createElement('span');
         srcBadge.className = 'badge source-' + (item.source || 'api').toLowerCase();
@@ -861,8 +941,16 @@
         bodyBlock.textContent = item.body || '';
         inner.appendChild(bodyBlock);
 
-        // Diff
-        renderDiff(inner, item.existing_body, item.body);
+        // Diff — v2.3.16: the SERVER's diff (one computation shared with memory_pending_list and
+        // the JSON API, so the surfaces cannot disagree). A server without it falls back.
+        if (item.diff) {
+            renderServerDiff(inner, item);
+        } else {
+            renderDiff(inner, item.existing_body, item.body);
+        }
+        if (item.chain && item.chain.length) {
+            renderHistory(inner, item);
+        }
 
         // Action buttons — pending items only
         const status = document.getElementById('statusFilter').value;

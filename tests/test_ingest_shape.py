@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from mori_advisor.ingestion import _shape_metrics
+from tests._canon import CANON_SEED
 
 
 def test_empty():
@@ -57,7 +58,9 @@ def test_canon_mortality_rate(tmp_path):
     store = SQLiteStore(tmp_path / "m.db")
     store.bootstrap()
     for n in ("old-unread", "old-read", "recent-unread"):
-        store.write(name=n, title=n, body="x", type="project", tier="canonical")
+        store.write(
+            name=n, title=n, body="x", type="project", tier="canonical", _canon_authority=CANON_SEED
+        )
     conn = store._mem._get_conn()
     conn.execute(
         "UPDATE memories SET created_at = datetime('now','-200 days') "
@@ -75,7 +78,14 @@ def test_canon_mortality_none_when_no_cohort(tmp_path):
 
     store = SQLiteStore(tmp_path / "m.db")
     store.bootstrap()
-    store.write(name="fresh", title="F", body="x", type="project", tier="canonical")
+    store.write(
+        name="fresh",
+        title="F",
+        body="x",
+        type="project",
+        tier="canonical",
+        _canon_authority=CANON_SEED,
+    )
     # created just now → not in the >90d cohort → None
     assert store.canon_mortality_rate(days=90) is None
 
