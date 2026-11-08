@@ -101,8 +101,8 @@ An MCP session is bound to the key that opened it (v2.3.12):
 
 mori's guarantees hold at the mori boundary. They assume that agents have no operating-system access to the host
 running mori, and that review keys are used only from machines where agents don't run. The maintainer's own instance
-is a development workbench where agents have host access by design: it's functionally representative, not a hardened
-production deployment.
+is a UAT-grade reference deployment where agents have host access by design: it runs mori unmodified, but it isn't a
+hardened production deployment.
 
 Each guarantee in this reference is a property of mori under these assumptions — for example, "in api mode, a
 canonical row changes only when a dreamer key writes it or approves a proposal". Anything with operating-system access
