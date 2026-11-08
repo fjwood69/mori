@@ -639,3 +639,23 @@ def test_rest_reject_reports_a_store_error_as_500(backend, tmp_path, monkeypatch
         assert r.status_code == 500, r.body
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
+
+
+def test_review_page_keeps_the_key_in_memory_only():
+    """Board, pre-push ruling (8 Nov): the dreamer key lives in a page variable only — never in
+    localStorage or sessionStorage (both can reach disk) — the page asks for it on each load, and any
+    copy an earlier version stored is removed on load."""
+    import re
+    from pathlib import Path
+
+    import mori_advisor
+
+    html = (Path(mori_advisor.__file__).parent.parent / "dashboard" / "review.html").read_text()
+    assert not re.search(
+        r"(localStorage|sessionStorage)\.(setItem|getItem)\(\s*'mori_review_key'", html
+    )
+    assert not re.search(
+        r"sessionStorage\s*\.", html
+    )  # no use of it at all (a comment may name it)
+    assert "localStorage.removeItem('mori_review_key')" in html
+    assert re.search(r"apiKey:\s*''", html)  # starts empty on every load

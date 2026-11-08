@@ -568,9 +568,14 @@
 
     <script>
     // ===== STATE =====
+    // v2.3.17: the review key is a DREAMER key. It lives in this variable only, for as long as the
+    // page is open, and is asked for on every load — never written to localStorage or
+    // sessionStorage, both of which can reach disk (where any process running as the browser's user
+    // could read it). A copy saved by an earlier version of this page is removed below.
+    localStorage.removeItem('mori_review_key');
     const state = {
         baseUrl:  localStorage.getItem('mori_review_url') || '',
-        apiKey:   localStorage.getItem('mori_review_key') || '',
+        apiKey:   '',
         allItems: []   // full loaded array; category filter applies client-side
     };
 
@@ -1160,8 +1165,7 @@
         }
         state.baseUrl = url;
         state.apiKey  = key;
-        localStorage.setItem('mori_review_url', url);
-        localStorage.setItem('mori_review_key', key);
+        localStorage.setItem('mori_review_url', url);  // the URL is not a secret; the key is not stored
         hideModal();
         loadQueue();
     });

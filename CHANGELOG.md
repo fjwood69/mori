@@ -45,6 +45,7 @@
   (another identity holding the proposal) fails the deploy. Dreamer-only routes must answer exactly 403.
 - **The canaries' names are reserved:** only canon authority can create or restore a `cd-canary-*` row. The review
   page shows a **"CD DEPLOY CANARY — DO NOT APPROVE"** banner on any proposal for one.
+- **The review page keeps the key in memory only** (see Security notes).
 - **A rejection needs a reason**, enforced at the store before any update (REST 422; MCP refuses; no audit row; the
   proposal stays open). The review page has a required reason field and sends it.
 - **Keys are stored as SHA-256 hashes**, compared in constant time against every entry (no early return).
@@ -67,6 +68,13 @@
   the host or administrative access to its cloud project is the "operator tooling" exception, so removing standing
   shells and narrowing cloud credentials are operational steps alongside this release.
 - A read replica of the database gives read access to canon: confidentiality, not integrity.
+- **The review page no longer stores the review key.** Earlier versions saved it in the browser's `localStorage`, which
+  is on disk under the browser's user: a process running as that user could read a dreamer key and approve its own
+  proposals. v2.3.17 keeps the key in page memory only, asks for it on every load, and deletes a stored copy when the
+  page next loads. **Clear the review page's site data** in any browser that used it; where agents run under that
+  browser's user, a key that was stored should be treated as exposed (rotate it, or accept the risk knowingly).
+- The **"CD DEPLOY CANARY — DO NOT APPROVE"** banner is the human half of the canary design: approving a canary's
+  proposal deletes it and fails the next deploy.
 - The contract proves the lock on two rows; the dual-backend tests pin the general rule.
 
 ## v2.3.16 — The canon lock: only a reviewed decision changes canon
