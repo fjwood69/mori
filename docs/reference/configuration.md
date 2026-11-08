@@ -19,8 +19,8 @@
 | `MORI_REQUIRE_POSTGRES` | — | If `true`, abort on startup when Postgres is unreachable. Prevents silent SQLite fallback in team/GCP deployments. |
 | `APP_PORT` | `8968` | Override the server listen port. Useful for side-by-side UAT instances. |
 | `MORI_NATS_URL` | — | NATS JetStream URL for cross-device messaging and `mori-msg` daemon (`nats://user:pass@host:4222`). |
-| `MORI_API_KEYS` | — | Named API keys: `name:secret,name:secret,...` — see [Authentication](#authentication) |
-| `MORI_ADVISOR_API_KEY` | — | Legacy single key (backward compat — prefer `MORI_API_KEYS`) |
+| `MORI_API_KEYS` | — | Named API keys, stored as hashes since v2.3.17: `name:sha256:<64 hex>,...` (plain `name:secret` only in host mode) — see [Authentication](#authentication) |
+| `MORI_ADVISOR_API_KEY` | — | Legacy single key (host mode only; refused in api mode from v2.3.17 — use `MORI_API_KEYS`) |
 | `MORI_API_KEY_ROLES` | — | Capability roles per key: `name:role,name:role,...` — roles: `read`, `write`, `dreamer`. Names absent from this list default to `read` (fail closed). Only consulted when `MORI_TD_MODE=api`. See [Capability roles](#capability-roles). |
 | `MORI_TD_MODE` | `host` | Trusted-dreamer mode switch. `api`: the API key's role is the authority for write/approve operations. `host`: no key-role checks — **one user on one machine** only. Since v2.3.16 a server with API keys configured **refuses to start** unless this is `api`. |
 | `MORI_LOCAL_FULL_ACCESS` | `false` | When `true`, a missing actor (e.g. stdio transport without an ASGI request) is treated as having dreamer access. Only set on fully-trusted single-user deployments. |
@@ -52,26 +52,31 @@ layer before any MCP tool or HTTP endpoint is reached.
 ### Setting keys
 
 ```bash
-# In your server .env
-MORI_API_KEYS=laptop:a1b2...,workstation:c3d4...,ci-runner:e5f6...
+# In your server .env (v2.3.17: the server stores HASHES; clients keep the plain secret)
+MORI_API_KEYS=laptop:sha256:9f86d0…,workstation:sha256:60303a…,ci-runner:sha256:fd61a0…
 ```
 
-Each entry is `name:secret` where:
+Each entry is `name:sha256:<hex>` where:
 - `name` is a human-readable label used in logs and audit trail
-- `secret` is a 32-byte hex string (64 chars)
+- the hex is `sha256(secret)` — 64 lowercase hex characters — of a 32-byte hex secret (64 chars)
 
-Generate a secret:
+The client sends the plain secret as `X-Api-Key`; the server hashes it and compares it in constant time against
+every entry. Reading the env file therefore yields no usable key.
+
+**In api mode the server refuses to start if any entry is plain** (it names the entry, never its value). Host mode
+(one user, one machine) still accepts plain `name:secret` entries.
+
+**Adding a key** — `scripts/mori-key-add.sh`, run by a person in their own terminal (it refuses under Claude Code):
 ```bash
-python3 -c "import secrets; print(secrets.token_hex(32))"
+scripts/mori-key-add.sh --host <user@server> <name> <read|write|dreamer>
 ```
+It generates the secret locally, sends only `name:sha256:<hex>` and the role to the server, and shows the secret once.
+`--to-github` sends the secret straight to a GitHub environment secret instead (for CD), without showing it.
+The `key_generate` MCP tool was removed in v2.3.17: it handed a new secret to whichever agent called it.
 
-Or use the MCP tool (requires a `dreamer` key in api mode):
-```
-mori-key_generate name="newclient"
-```
-
-The output line goes into `MORI_API_KEYS` on the server. The secret goes into
-the client's MCP config as `X-Api-Key`.
+**Converting an existing table** in place: `python3 scripts/mori-hash-keys.py <env file>` (idempotent; keeps every
+other line; mode 600; no backup; refuses if `MORI_ADVISOR_API_KEY` is set). v2.3.16 and earlier can't read hashes,
+so keep one off-host copy of the plain table until the new release is stable.
 
 **Header only.** The key is accepted only in the `X-Api-Key` header. A request carrying
 `?api-key=` or `?api_key=` in its URL is refused with **400** on every path (open ones
@@ -129,8 +134,8 @@ Setting `MORI_API_KEY_ROLES` alone has no effect — the mode switch must be exp
 | Role | Allowed operations |
 |------|-------------------|
 | `read` | All read operations — `memory_read`, `memory_list`, `memory_search`, `memory_export` (returns the content), `brief`, `pensieve`, `GET /api/memories`, `GET /api/events`, etc. |
-| `write` | Read + `memory_write`, `memory_delete`, `memory_rollback`, `mori_ingest`, `dream_run`, `consult_advisor`, `nats_pub`, `msg_send`, `POST /api/memories`, `POST /api/events`, `POST /api/events/raw`, `POST /api/precompact`, `/api/dream/run`, `POST /api/git/ingest`, `GET /api/pending` |
-| `dreamer` | Write + `memory_approve`, `memory_reject`, `memory_protect`, `memory_import`, `memory_export_all`, `key_generate`, `standards_reload`, `POST /api/memories/{name}/approve`, `POST /api/memories/{name}/reject`, `DELETE /api/memories/{name}` |
+| `write` | Read + `memory_write`, `memory_delete`, `memory_rollback`, `mori_ingest`, `dream_run`, `consult_advisor`, `nats_pub`, `msg_send`, `POST /api/memories`, `DELETE /api/memories/{name}` (soft; v2.3.17), `POST /api/memories/{name}/restore` (v2.3.17), `POST /api/events`, `POST /api/events/raw`, `POST /api/precompact`, `/api/dream/run`, `POST /api/git/ingest`, `GET /api/pending`. A canonical row is never changed by a write key: its delete is queued (202), its restore refused (409). |
+| `dreamer` | Write + `memory_approve`, `memory_reject` (a reason is required), `memory_protect`, `memory_import`, `memory_export_all`, `standards_reload`, `POST /api/memories/{name}/approve`, `POST /api/memories/{name}/reject` (a `note` is required), `POST /api/memories/{name}/protect`, `DELETE /api/memories/{name}?hard=true` |
 
 v2.3.12 put a role on every state-changing surface: the event, precompact, dream and git-ingest
 routes and the ingest/dream/consult/bus tools were previously reachable by any valid key.
@@ -287,13 +292,13 @@ A structured audit table is deferred to a follow-up (#16).
 ### Backward compatibility
 
 If `MORI_ADVISOR_API_KEY` is set and `MORI_API_KEYS` is not, the single key is
-loaded as `{"legacy": <key>}`. Existing deployments continue working without
-config changes. Migrate to named keys when adding more than one client.
+loaded as `{"legacy": <key>}` — in host mode only. In api mode (v2.3.17) a plain key refuses
+startup; migrate to named, hashed keys.
 
 ### Migration from single key
 
-1. Generate a named key for each client: `mori-key_generate name="myhost"`
-2. Add all keys to server `.env`: `MORI_API_KEYS=myhost:<key>,...`
+1. Add a named key for each client: `scripts/mori-key-add.sh --host <user@server> myhost write`
+2. The server `.env` then holds `MORI_API_KEYS=myhost:sha256:<hex>,...`
 3. Update each client's MCP config with its key
 4. Restart server
 5. Remove `MORI_ADVISOR_API_KEY` from `.env`

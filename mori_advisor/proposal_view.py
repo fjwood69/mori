@@ -19,6 +19,8 @@ import difflib
 import json
 from typing import Any
 
+from mori_advisor.canon_authority import CD_CANARY_TAG, is_cd_canary_name
+
 FIELDS = ("title", "description", "type", "tier")
 BODY_DIFF_MAX_LINES = 400
 
@@ -105,11 +107,20 @@ def review_fields(
         for c in chain
     ]
     proposers = {c.get("proposed_by") for c in chain} | {item.get("proposed_by")}
+    # v2.3.17 (ruling, item 2): a proposal on a CD deploy canary gets the "DO NOT APPROVE" banner.
+    # The TARGET's tags decide (a delete proposal copies them, but a write proposal may not), with
+    # the proposal's own tags as the fallback when the row no longer exists.
+    is_cd_canary = (
+        is_cd_canary_name(item.get("name"))
+        or CD_CANARY_TAG in _tags(current.get("tags"))
+        or CD_CANARY_TAG in _tags(item.get("tags"))
+    )
     return {
         "operation": operation,
         "diff": diff,
         "chain": chain_view,
         "proposer_changed": len(proposers) > 1,
+        "is_cd_canary": is_cd_canary,
     }
 
 
@@ -117,6 +128,8 @@ def text_lines(item: dict[str, Any], fields: dict[str, Any], max_body_lines: int
     """The diff as indented text, for ``memory_pending_list``."""
     d = fields["diff"]
     out = [f"     operation: {fields['operation']} — {d['summary']}"]
+    if fields.get("is_cd_canary"):
+        out.append("     ⛔ CD DEPLOY CANARY — DO NOT APPROVE (approving fails the next deploy)")
     if fields["proposer_changed"]:
         out.append("     ⚠ proposer changed along this proposal's chain")
     if fields["chain"]:

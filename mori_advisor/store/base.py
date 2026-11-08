@@ -121,6 +121,38 @@ class BaseStore(ABC):
         _canon_authority: Any = None,
     ) -> tuple: ...
 
+    # v2.3.17: the structured forms the REST doors use (DeleteOutcome / RestoreOutcome in
+    # canon_authority); the plain methods above return their messages.
+    @abstractmethod
+    def soft_delete_outcome(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Any = None,
+        _canon_authority: Any = None,
+    ) -> Any: ...
+
+    @abstractmethod
+    def hard_delete_outcome(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Any = None,
+        _canon_authority: Any = None,
+    ) -> Any: ...
+
+    @abstractmethod
+    def restore_outcome(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Any = None,
+        _canon_authority: Any = None,
+    ) -> Any: ...
+
     @abstractmethod
     def insert_audit(
         self, op: str, actor: str, name: str, content_hash: str, detail: str = ""
@@ -273,7 +305,8 @@ class BaseStore(ABC):
     ) -> str: ...
 
     @abstractmethod
-    def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str: ...
+    def reject(self, write_id: int, note: str = "", reviewer: str = "") -> Any:
+        """v2.3.17: returns a RejectOutcome; raises ReasonRequired on an empty reason."""
 
     @abstractmethod
     def set_pending_status(

@@ -487,7 +487,7 @@ def test_reject_discards_pending(backend, tmp_path, monkeypatch):
         write_id = item["id"]
 
         result = await _a(mem_store.reject(write_id, note="not good enough", reviewer="td"))
-        assert "rejected" in result.lower()
+        assert result.kind == "rejected", result  # v2.3.17: a structured RejectOutcome
 
         # Memory must NOT be in the store
         mem_result = await _a(mem_store.read("reject-me"))

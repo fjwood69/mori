@@ -177,3 +177,75 @@ class ProposalOutcome:
 
 def outcome_message(name: str, outcome: ProposalOutcome) -> str:
     return outcome.reason or f"Memory '{name}': {outcome.kind}"
+
+
+# ── v2.3.17: the doors answer from structured outcomes, never from matched strings ──────────
+
+# Names reserved for the CD deploy canaries (board ruling on the v2.3.17 design, P2-2): only canon
+# authority may create or restore a row with one of these names, so a tombstone's name can't be
+# squatted by a working row.
+CD_CANARY_PREFIX = "cd-canary-"
+CD_CANARY_TAG = "cd-canary"
+
+
+def is_cd_canary_name(name: str | None) -> bool:
+    return bool(name) and str(name).startswith(CD_CANARY_PREFIX)
+
+
+def proposal_reason_code(outcome: ProposalOutcome) -> str:
+    """The machine reason for a proposal the sink did not queue (REST 409 bodies)."""
+    if outcome.kind in ("capped", "chain-capped"):
+        return "cap"
+    return "open-proposal"
+
+
+@dataclass(frozen=True)
+class DeleteOutcome:
+    """What a delete did (soft or hard). ``kind``: applied | queued | refused | not_found | error.
+
+    For ``queued`` the ``operation`` and ``proposed_by`` are read from the pending row itself, in
+    the same transaction, never echoed from the request (ruling Q1)."""
+
+    kind: str
+    name: str
+    message: str
+    pending_id: int | None = None
+    operation: str | None = None
+    proposed_by: str | None = None
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class RestoreOutcome:
+    """What a restore did. ``kind``: applied | refused | not_found | conflict | error."""
+
+    kind: str
+    name: str
+    message: str
+    final_name: str | None = None
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class RejectOutcome:
+    """What a reject did. ``kind``: rejected | not_found | not_pending. Audit only on rejected."""
+
+    kind: str
+    write_id: int
+    message: str
+
+
+class ReasonRequired(ValueError):
+    """A rejection with an empty or whitespace-only reason (ruling Q4). Raised by the store before
+    any update, so the row stays pending and no audit row is written."""
+
+    def __init__(self, write_id: int):
+        super().__init__(f"Pending write #{write_id}: a rejection needs a reason. Not changed.")
+        self.write_id = write_id
+
+
+def require_reason(write_id: int, note: str | None) -> str:
+    text = (note or "").strip()
+    if not text:
+        raise ReasonRequired(write_id)
+    return text

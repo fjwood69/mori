@@ -35,8 +35,9 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 from mori_advisor import canon_export
-from mori_advisor.auth import configured_clients, generate_key, init_auth
+from mori_advisor.auth import configured_clients, init_auth
 from mori_advisor.bifrost_client import BifrostClient
+from mori_advisor.canon_authority import ReasonRequired
 from mori_advisor.dream import DreamPipeline
 from mori_advisor.ingestion import IngestionPipeline
 from mori_advisor.metrics import (
@@ -1754,20 +1755,9 @@ async def standards_reload() -> str:
     return await import_standards()
 
 
-@mcp.tool()
-async def key_generate(name: str) -> str:
-    """Generate a new API key secret for a named client.
-
-    The output line should be added to MORI_API_KEYS in the server's .env,
-    and the secret stored on the client side (e.g. in ~/.claude/.secrets).
-    The server must be restarted to pick up new keys.
-    """
-    try:
-        require_role("dreamer")  # v2.3.12: role on every state-changing tool
-    except PermissionDenied as exc:
-        return str(exc)
-    secret = generate_key()
-    return f"Add to server MORI_API_KEYS: {name}:{secret}"
+# v2.3.17 (G8): the key_generate MCP tool is retired — it handed a fresh secret to whichever agent
+# called it. Keys are added with scripts/mori-key-add.sh, run by a person, which writes only the
+# hash to the server.
 
 
 # ── Pensieve tool ─────────────────────────────────────────────────────────
@@ -3224,7 +3214,8 @@ async def memory_reject(write_id: int, note: str = "", reviewer: str = "", reaso
 
     Args:
         write_id: ID of the pending write from memory_pending_list.
-        note: Optional review note.
+        note: The reason for the rejection — REQUIRED (v2.3.17): an empty or blank note is
+              refused, nothing is written and the proposal stays open.
         reviewer: Optional free-text note of who reviewed. The audit records the
                   AUTHENTICATED key, never this string (v2.3.16, R4).
         reason: Optional TD decision code (too-granular|duplicate|stale|low-value|other)
@@ -3235,8 +3226,12 @@ async def memory_reject(write_id: int, note: str = "", reviewer: str = "", reaso
     except PermissionDenied as exc:
         return str(exc)
     who = _reviewing_key()
-    result = await _a(memory_store.reject(write_id, note=note, reviewer=who))
-    if "rejected" in result and "not found" not in result.lower():
+    try:
+        out = await _a(memory_store.reject(write_id, note=note, reviewer=who))
+    except ReasonRequired as exc:
+        # v2.3.17 (ruling Q4): refused at the store; no audit row; the proposal stays open.
+        return str(exc)
+    if out.kind == "rejected":
         await _write_audit(
             "reject",
             who,
@@ -3245,7 +3240,7 @@ async def memory_reject(write_id: int, note: str = "", reviewer: str = "", reaso
             detail=_review_detail(note, reviewer),
             reason_code=_normalise_reason(reason),
         )
-    return result
+    return out.message
 
 
 @mcp.tool()
@@ -4107,7 +4102,9 @@ async def ingest_git(request: Request) -> JSONResponse:
 #   GET  /api/pending        → require_role("write")
 #   POST /api/memories/{name}/approve  → require_role("dreamer")
 #   POST /api/memories/{name}/reject   → require_role("dreamer")
-#   DELETE /api/memories/{name}        → require_role("dreamer")
+#   DELETE /api/memories/{name}        → require_role("write"); ?hard=true → "dreamer" (v2.3.17)
+#   POST /api/memories/{name}/restore  → require_role("write") (v2.3.17)
+#   POST /api/memories/{name}/protect  → require_role("dreamer") (v2.3.17)
 #
 # Deferred to a follow-up (#16): per-key token-bucket rate-limiting + 1 MB body
 # cap in middleware, Idempotency-Key header + TTL replay cache, soft-delete
@@ -4646,7 +4643,8 @@ async def reject_memory(request: Request) -> JSONResponse:
 
     Requires dreamer role.
 
-    Body fields (all optional): write_id (int), note (str), reviewer (str).
+    Body fields: write_id (int, required), note (str, required since v2.3.17: the reason — an empty
+    or whitespace-only note is 422), reviewer (str, a note only), reason (an optional decision code).
     """
     from mori_advisor.policy import PermissionDenied, current_actor, require_role
 
@@ -4687,15 +4685,23 @@ async def reject_memory(request: Request) -> JSONResponse:
                 {"error": f"Pending write #{write_id} does not target '{mem_name}'."},
                 status_code=404,
             )
-        result = await _a(
-            memory_store.reject(
-                write_id=write_id,
-                note=note,
-                reviewer=reviewer,
+        try:
+            out = await _a(
+                memory_store.reject(
+                    write_id=write_id,
+                    note=note,
+                    reviewer=reviewer,
+                )
             )
-        )
-        if "not found" in result.lower() or "already processed" in result.lower():
-            return JSONResponse({"error": result}, status_code=404)
+        except ReasonRequired:
+            # v2.3.17 (ruling Q4): refused at the store, before any update; no audit row.
+            return JSONResponse(
+                {"error": "a rejection needs a reason", "write_id": write_id}, status_code=422
+            )
+        if out.kind == "error":
+            return JSONResponse({"error": out.message}, status_code=500)
+        if out.kind != "rejected":
+            return JSONResponse({"error": out.message}, status_code=404)
         await _write_audit(
             "reject",
             actor_name,
@@ -4704,38 +4710,75 @@ async def reject_memory(request: Request) -> JSONResponse:
             detail=_review_detail(note, stated_reviewer),
             reason_code=_normalise_reason(payload.get("reason")),
         )
-        return JSONResponse({"status": "rejected", "name": mem_name, "detail": result})
+        return JSONResponse({"status": "rejected", "name": mem_name, "detail": out.message})
     except Exception as e:
         logger.error("POST /api/memories/%s/reject failed: %s", mem_name, e)
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+def _delete_response(mem_name: str, out: Any, hard: bool) -> JSONResponse:
+    """Map a DeleteOutcome to HTTP (v2.3.17). Never matches strings: a queued delete is 202
+    pending, a refusal 409 (never 202, never soft_deleted), a database error 500."""
+    if out.kind == "applied":
+        return JSONResponse(
+            {"status": "hard_deleted" if hard else "soft_deleted", "name": mem_name}
+        )
+    if out.kind == "queued":
+        return JSONResponse(
+            {
+                "status": "pending",
+                "name": mem_name,
+                "pending_id": out.pending_id,
+                "operation": out.operation,
+                "proposed_by": out.proposed_by,
+                "detail": out.message,
+            },
+            status_code=202,
+        )
+    if out.kind == "refused":
+        return JSONResponse(
+            {
+                "status": "refused",
+                "name": mem_name,
+                "pending_id": out.pending_id,
+                "reason": out.reason,
+                "detail": out.message,
+            },
+            status_code=409,
+        )
+    if out.kind == "not_found":
+        return JSONResponse({"error": "not found", "name": mem_name}, status_code=404)
+    return JSONResponse({"error": out.message, "name": mem_name}, status_code=500)
+
+
 @mcp.custom_route("/api/memories/{name}", methods=["DELETE"])
 async def delete_memory_rest(request: Request) -> JSONResponse:
-    """Soft-delete a memory entry by name (sets deleted_at).
+    """Soft-delete a memory entry by name (sets deleted_at). Needs the ``write`` role.
 
-    Add ?hard=true to permanently purge the row.  Both require dreamer role.
-    Soft-deleted memories are invisible to all reads but can be restored via
-    POST /api/memories/{name}/restore.
+    v2.3.17: a write key reaches the lock rather than stopping at the route, as over MCP — a
+    non-canonical row is deleted (200), a canonical one is queued (202 ``pending`` with the
+    proposal's own id, operation and proposer) or refused (409). Add ?hard=true to permanently purge
+    the row; that stays ``dreamer``. Soft-deleted memories are invisible to all reads but can be
+    restored via POST /api/memories/{name}/restore.
     """
     from mori_advisor.policy import PermissionDenied, current_actor, require_role
 
+    hard = request.query_params.get("hard", "").lower() in ("true", "1", "yes")
     try:
-        require_role("dreamer")
+        require_role("dreamer" if hard else "write")
     except PermissionDenied as exc:
         return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
 
     actor = current_actor.get()
     actor_name = actor.key_name if actor else "unknown"
     mem_name: str = request.path_params["name"]
-    hard = request.query_params.get("hard", "").lower() in ("true", "1", "yes")
 
     try:
         # v2.3.11: the store writes the audit row in the delete's own transaction.
+        # v2.3.16: the request provenance lets a dreamer key's authority reach the store.
         if hard:
-            # v2.3.16: the request provenance lets a dreamer key's authority reach the store.
-            result = await _a(
-                store.hard_delete(
+            out = await _a(
+                store.hard_delete_outcome(
                     mem_name,
                     actor=actor_name,
                     provenance=request_provenance(
@@ -4744,8 +4787,8 @@ async def delete_memory_rest(request: Request) -> JSONResponse:
                 )
             )
         else:
-            result = await _a(
-                store.soft_delete(
+            out = await _a(
+                store.soft_delete_outcome(
                     mem_name,
                     actor=actor_name,
                     provenance=request_provenance(
@@ -4753,14 +4796,51 @@ async def delete_memory_rest(request: Request) -> JSONResponse:
                     ),
                 )
             )
-
-        if "not found" in result.lower():
-            return JSONResponse({"error": "not found", "name": mem_name}, status_code=404)
-        status_word = "hard_deleted" if hard else "soft_deleted"
-        return JSONResponse({"status": status_word, "name": mem_name, "detail": result})
+        if out.kind == "error":
+            logger.error("DELETE /api/memories/%s failed: %s", mem_name, out.message)
+        return _delete_response(mem_name, out, hard)
     except Exception as e:
         logger.error("DELETE /api/memories/%s failed: %s", mem_name, e)
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/memories/{name}/protect", methods=["POST"])
+async def protect_memory_rest(request: Request) -> JSONResponse:
+    """Set or clear a memory's protection flag. Dreamer only; audited with the authenticated key.
+
+    v2.3.17 (ruling Q3): the REST twin of MCP ``memory_protect``, so the review key — never used from
+    an MCP client (R9) — can protect the CD canaries without an agent. Body: {"protected": bool}.
+    """
+    from mori_advisor.policy import PermissionDenied, current_actor, require_role
+
+    try:
+        require_role("dreamer")
+    except PermissionDenied as exc:
+        return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
+    actor = current_actor.get()
+    actor_name = actor.key_name if actor else "unknown"
+    mem_name: str = request.path_params["name"]
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    flag = payload.get("protected", True) if isinstance(payload, dict) else True
+    if not isinstance(flag, bool):
+        return JSONResponse({"error": "'protected' must be a boolean"}, status_code=400)
+    try:
+        msg = await _a(memory_store.protect(mem_name, protected=flag, actor=actor_name))
+    except Exception as e:
+        logger.error("POST /api/memories/%s/protect failed: %s", mem_name, e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+    text = str(msg)
+    # Success only on the store's positive message (consult C17, P2-2): any other text — a database
+    # error, say — is a 500, never a 200 that claims protection the store didn't set.
+    if f"is now {'protected' if flag else 'unprotected'}" in text:
+        return JSONResponse({"status": "protected" if flag else "unprotected", "name": mem_name})
+    if "not found" in text.lower():
+        return JSONResponse({"error": "not found", "name": mem_name}, status_code=404)
+    logger.error("POST /api/memories/%s/protect failed: %s", mem_name, text)
+    return JSONResponse({"error": text, "name": mem_name}, status_code=500)
 
 
 @mcp.custom_route("/api/memories/{name}/unsupersede", methods=["POST"])
@@ -4825,15 +4905,17 @@ async def decide_supersession_rest(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/api/memories/{name}/restore", methods=["POST"])
 async def restore_memory_rest(request: Request) -> JSONResponse:
-    """Restore a soft-deleted memory.
+    """Restore a soft-deleted memory. Needs the ``write`` role (v2.3.17, as over MCP).
 
-    If an active memory already holds the same name, the restored row is
-    renamed to {name}_restored_{ts}.  Requires dreamer role.
+    A deleted non-canonical row is restored (200); a canonical one is refused by the lock (409
+    ``refused`` / ``canon-authority``), as is a reserved CD canary name (``reserved-name``). If an
+    active memory already holds the name, the restored row is renamed to {name}_restored_{ts}; a
+    collision that can't be resolved is 409 ``conflict`` — a different status word.
     """
     from mori_advisor.policy import PermissionDenied, current_actor, require_role
 
     try:
-        require_role("dreamer")
+        require_role("write")
     except PermissionDenied as exc:
         return JSONResponse({"error": "Forbidden", "detail": str(exc)}, status_code=403)
 
@@ -4843,8 +4925,8 @@ async def restore_memory_rest(request: Request) -> JSONResponse:
 
     try:
         # v2.3.11: the store audits the restore in the same transaction.
-        final_name, msg = await _a(
-            store.restore_memory(
+        out = await _a(
+            store.restore_outcome(
                 mem_name,
                 actor=actor_name,
                 provenance=request_provenance(
@@ -4852,14 +4934,26 @@ async def restore_memory_rest(request: Request) -> JSONResponse:
                 ),
             )
         )
-        if "not found" in msg.lower() or "not deleted" in msg.lower():
-            return JSONResponse({"error": msg, "name": mem_name}, status_code=404)
-        if "failed" in msg.lower():
-            return JSONResponse({"error": msg, "name": mem_name}, status_code=409)
-        return JSONResponse({"status": "restored", "name": final_name, "detail": msg})
     except Exception as e:
         logger.error("POST /api/memories/%s/restore failed: %s", mem_name, e)
         return JSONResponse({"error": str(e)}, status_code=500)
+    if out.kind == "applied":
+        return JSONResponse(
+            {"status": "restored", "name": out.final_name or mem_name, "detail": out.message}
+        )
+    if out.kind == "refused":
+        return JSONResponse(
+            {"status": "refused", "reason": out.reason, "name": mem_name, "detail": out.message},
+            status_code=409,
+        )
+    if out.kind == "conflict":
+        return JSONResponse(
+            {"status": "conflict", "name": mem_name, "detail": out.message}, status_code=409
+        )
+    if out.kind == "not_found":
+        return JSONResponse({"error": out.message, "name": mem_name}, status_code=404)
+    logger.error("POST /api/memories/%s/restore failed: %s", mem_name, out.message)
+    return JSONResponse({"error": out.message, "name": mem_name}, status_code=500)
 
 
 @mcp.custom_route("/api/audit", methods=["GET"])

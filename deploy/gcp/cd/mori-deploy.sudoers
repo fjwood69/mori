@@ -1,0 +1,3 @@
+# /etc/sudoers.d/mori-deploy — root:root 0440 (v2.3.17). One rule: the deploy user runs ONE script,
+# only as mori. Install with: visudo -cf mori-deploy.sudoers && install -m 0440 ...
+mori-deploy ALL=(mori) NOPASSWD: /usr/local/sbin/mori-cd-deploy-as-mori

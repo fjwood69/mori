@@ -768,7 +768,7 @@ def test_a_write_key_still_reaches_the_event_route(api_mode):
 @pytest.mark.parametrize(
     "tool,kwargs,role",
     [
-        ("key_generate", {"name": "x"}, "dreamer"),
+        ("memory_pending_list", {}, "dreamer"),
         ("standards_reload", {}, "dreamer"),
         ("mori_ingest", {"source": ["/nonexistent"]}, "write"),
         ("dream_run", {}, "write"),
@@ -940,11 +940,12 @@ def test_session_requires_its_own_key_and_acts_as_it(api_mode):
         other = _call(c, sid, "dream_status", {}, DREAM_KEY)  # another VALID key
         assert other.status_code == 401 and "different key" in other.text
         assert _rej("wrong_key") == w0 + 1
-        ok = _call(c, sid, "key_generate", {"name": "z"}, READ_KEY)
+        # v2.3.17: key_generate is retired; memory_pending_list is dreamer-only and read-only
+        ok = _call(c, sid, "memory_pending_list", {}, READ_KEY)
         assert ok.status_code == 200 and "'dreamer' is required" in ok.text  # acts as READ
         dsid = _open(c, DREAM_KEY)
-        dok = _call(c, dsid, "key_generate", {"name": "z"}, DREAM_KEY)
-        assert "Add to server MORI_API_KEYS" in dok.text  # acts as DREAMER
+        dok = _call(c, dsid, "memory_pending_list", {}, DREAM_KEY)
+        assert dok.status_code == 200 and "is required" not in dok.text  # acts as DREAMER
 
 
 def test_tools_see_the_actor_of_the_current_request_not_the_opener(api_mode, monkeypatch):
@@ -952,12 +953,10 @@ def test_tools_see_the_actor_of_the_current_request_not_the_opener(api_mode, mon
     initialize), so without the per-message hook a role change would never reach a live session."""
     with TestClient(_real_app()) as c:
         sid = _open(c, DREAM_KEY)
-        assert (
-            "Add to server MORI_API_KEYS"
-            in _call(c, sid, "key_generate", {"name": "z"}, DREAM_KEY).text
-        )
+        first = _call(c, sid, "memory_pending_list", {}, DREAM_KEY)
+        assert first.status_code == 200 and "is required" not in first.text
         monkeypatch.setitem(pol._ROLES, DREAM_KEY, "read")  # the same key, now read-only
-        later = _call(c, sid, "key_generate", {"name": "z"}, DREAM_KEY, rid=10)
+        later = _call(c, sid, "memory_pending_list", {}, DREAM_KEY, rid=10)
         assert "'dreamer' is required" in later.text, later.text[:300]
 
 

@@ -28,12 +28,18 @@ from mori_advisor.canon_authority import (
     REQUEST_ACTORS,
     SUPERSEDED_STATUS,
     CanonAuthority,
+    DeleteOutcome,
     ProposalOutcome,
+    RejectOutcome,
+    RestoreOutcome,
     has_canon_authority,
+    is_cd_canary_name,
     normalise_tier,
     open_cap_for,
     proposal_key,
+    proposal_reason_code,
     proposer_for,
+    require_reason,
     target_state_digest,
 )
 from mori_advisor.metrics import record_classifier_verdict, record_write_rejection
@@ -931,7 +937,13 @@ class MemoryStore:
         }
         open_row = self._open_proposal(conn, name)
         if open_row:
-            if proposal_key(open_row) == proposal_key(fields):
+            # v2.3.17: a content-equal re-proposal is a no-op only for the SAME proposer. Another
+            # key's identical proposal is refused like any other (it used to come back 'queued'
+            # with the other key's id) — the deploy contract's proposer check depends on it.
+            if (
+                proposal_key(open_row) == proposal_key(fields)
+                and (open_row.get("proposed_by") or "") == proposer
+            ):
                 return ProposalOutcome(
                     "noop",
                     open_row["id"],
@@ -1194,6 +1206,22 @@ class MemoryStore:
                     stored_tier="",
                     disposition=Disposition.REJECTED,
                     reason=name_problem,
+                )
+            # v2.3.17 (ruling P2-2): the CD canary names are reserved — without canon authority only a
+            # canonical-tier request (which the lock below queues) may touch one; any other tier is
+            # refused, so a working row can't squat a canary's name.
+            if (
+                is_cd_canary_name(effective_name)
+                and effective_tier != "canonical"
+                and not has_canon_authority(provenance, _canon_authority)
+            ):
+                record_write_rejection("reserved_name", provenance.actor)
+                return WriteResult(
+                    memory_name=effective_name,
+                    intended_tier=effective_tier,
+                    stored_tier="",
+                    disposition=Disposition.REJECTED,
+                    reason="reserved-name: cd-canary-* names are reserved for canon authority",
                 )
             tags_list = _coerce_tags(tags)
             tags_json = self._format_tags(tags_list)
@@ -1573,7 +1601,7 @@ class MemoryStore:
         Does NOT bump retrieval_count (browse/API access, not agent recall).
         Returns exactly the DETAIL_KEYS shape:
           name, title, type, tier, tags, description, body,
-          created_at, updated_at, origin_clients, retrieval_count, freshness_status.
+          created_at, updated_at, origin_clients, retrieval_count, freshness_status, protected.
         """
         import sqlite3
 
@@ -1603,6 +1631,8 @@ class MemoryStore:
             "origin_clients": m["origin_clients"],
             "retrieval_count": m["retrieval_count"],
             "freshness_status": m["freshness_status"],
+            # v2.3.17 (ruling P2-1): the deploy contract reads the canary's protection back.
+            "protected": bool(m.get("protected")),
         }
 
     def list(
@@ -1842,6 +1872,19 @@ class MemoryStore:
         provenance: Provenance | None = None,
         _canon_authority: CanonAuthority | None = None,
     ) -> str:
+        """Soft-delete: the human message of :meth:`soft_delete_outcome` (MCP, scripts)."""
+        return self.soft_delete_outcome(
+            name, actor=actor, provenance=provenance, _canon_authority=_canon_authority
+        ).message
+
+    def soft_delete_outcome(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
+    ) -> DeleteOutcome:
         """Soft-delete: set deleted_at = now on the active row with this name.
 
         The row remains in the database; restore_memory() reverses it.
@@ -1851,6 +1894,10 @@ class MemoryStore:
         v2.3.16 (the canon lock): deleting a CANONICAL row without canon authority stores a
         ``delete`` proposal instead, and the row is unchanged. The tier is read inside the same
         locked transaction as the delete.
+
+        v2.3.17: returns a structured :class:`DeleteOutcome`, so the REST door never matches strings
+        (the v2.3.16 erratum). A queued outcome carries the pending row's OWN operation and proposer,
+        read in this transaction.
         """
         import sqlite3
 
@@ -1879,14 +1926,33 @@ class MemoryStore:
                         proposer, provenance is not None and provenance.actor in REQUEST_ACTORS
                     ),
                 )
+                row = None
+                if outcome.pending_id is not None:
+                    row = conn.execute(
+                        "SELECT operation, proposed_by FROM pending_writes WHERE id = ?",
+                        (outcome.pending_id,),
+                    ).fetchone()
                 conn.commit()
                 if outcome.queued:
-                    return (
-                        f"Memory '{name}' is canonical — the delete was queued as a proposal "
-                        f"(pending id {outcome.pending_id}); the memory is unchanged until a "
-                        "dreamer approves it."
+                    return DeleteOutcome(
+                        kind="queued",
+                        name=name,
+                        pending_id=outcome.pending_id,
+                        operation=row[0] if row else None,
+                        proposed_by=row[1] if row else None,
+                        message=(
+                            f"Memory '{name}' is canonical — the delete was queued as a proposal "
+                            f"(pending id {outcome.pending_id}); the memory is unchanged until a "
+                            "dreamer approves it."
+                        ),
                     )
-                return f"Memory '{name}' NOT deleted — {outcome.reason}"
+                return DeleteOutcome(
+                    kind="refused",
+                    name=name,
+                    pending_id=outcome.pending_id,
+                    reason=proposal_reason_code(outcome),
+                    message=f"Memory '{name}' NOT deleted — {outcome.reason}",
+                )
             cur = conn.execute(
                 f"UPDATE memories SET deleted_at = datetime('now'), updated_at = datetime('now') "
                 f"WHERE name = ? AND {_ACTIVE}",
@@ -1894,13 +1960,17 @@ class MemoryStore:
             )
             if cur.rowcount == 0:
                 conn.rollback()
-                return self._memory_not_found(name)
+                return DeleteOutcome(
+                    kind="not_found", name=name, message=self._memory_not_found(name)
+                )
             _audit_sqlite(conn, "soft_delete", actor, name)
             conn.commit()
-            return f"Memory '{name}' soft-deleted."
+            return DeleteOutcome(
+                kind="applied", name=name, message=f"Memory '{name}' soft-deleted."
+            )
         except sqlite3.Error as e:
             conn.rollback()
-            return f"Database error: {e}"
+            return DeleteOutcome(kind="error", name=name, message=f"Database error: {e}")
         finally:
             conn.close()
 
@@ -1912,13 +1982,26 @@ class MemoryStore:
         provenance: Provenance | None = None,
         _canon_authority: CanonAuthority | None = None,
     ) -> str:
+        """Hard delete: the human message of :meth:`hard_delete_outcome`."""
+        return self.hard_delete_outcome(
+            name, actor=actor, provenance=provenance, _canon_authority=_canon_authority
+        ).message
+
+    def hard_delete_outcome(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
+    ) -> DeleteOutcome:
         """Permanently remove a memory row (active or tombstoned) and its versions.
 
         memory_versions FK was dropped by migration 9 (partial indexes cannot be FK
         targets). Versions are cleaned up here to prevent orphans. Audited in-transaction.
 
         v2.3.16: REFUSED for any canonical row of this name (active or tombstoned) without canon
-        authority — there is no proposal for a permanent delete.
+        authority — there is no proposal for a permanent delete. v2.3.17: structured outcome.
         """
         import sqlite3
 
@@ -1930,21 +2013,30 @@ class MemoryStore:
             ).fetchone()
             if canon and not has_canon_authority(provenance, _canon_authority):
                 conn.rollback()
-                return (
-                    f"Memory '{name}' is canonical — a permanent delete needs canon authority "
-                    "(a dreamer key). Not deleted."
+                return DeleteOutcome(
+                    kind="refused",
+                    name=name,
+                    reason="canon-authority",
+                    message=(
+                        f"Memory '{name}' is canonical — a permanent delete needs canon authority "
+                        "(a dreamer key). Not deleted."
+                    ),
                 )
             conn.execute("DELETE FROM memory_versions WHERE memory_name = ?", (name,))
             cur = conn.execute("DELETE FROM memories WHERE name = ?", (name,))
             if cur.rowcount == 0:
                 conn.rollback()
-                return self._memory_not_found(name)
+                return DeleteOutcome(
+                    kind="not_found", name=name, message=self._memory_not_found(name)
+                )
             _audit_sqlite(conn, "hard_delete", actor, name)
             conn.commit()
-            return f"Memory '{name}' permanently deleted."
+            return DeleteOutcome(
+                kind="applied", name=name, message=f"Memory '{name}' permanently deleted."
+            )
         except sqlite3.Error as e:
             conn.rollback()
-            return f"Database error: {e}"
+            return DeleteOutcome(kind="error", name=name, message=f"Database error: {e}")
         finally:
             conn.close()
 
@@ -1956,6 +2048,20 @@ class MemoryStore:
         provenance: Provenance | None = None,
         _canon_authority: CanonAuthority | None = None,
     ) -> tuple[str, str]:
+        """Restore: ``(final_name, message)`` from :meth:`restore_outcome` (MCP, scripts)."""
+        out = self.restore_outcome(
+            name, actor=actor, provenance=provenance, _canon_authority=_canon_authority
+        )
+        return (out.final_name or name), out.message
+
+    def restore_outcome(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
+    ) -> RestoreOutcome:
         """Restore a soft-deleted memory.
 
         If an active memory already holds ``name``, the restored row is renamed
@@ -1965,7 +2071,9 @@ class MemoryStore:
         write the audit row. ``superseded_by`` is NOT cleared (that would be an unaudited
         unsupersede); the message says so.
 
-        Returns (final_name, message) so callers can audit with the real name.
+        v2.3.17: a structured :class:`RestoreOutcome`. Order: the deleted-row lookup, then the canon
+        lock (a canonical row needs authority), then the reserved canary names (only authority
+        restores a ``cd-canary-*`` row), then the name collision.
         """
         import sqlite3
         from datetime import datetime, timezone
@@ -1981,14 +2089,35 @@ class MemoryStore:
             ).fetchone()
             if not row:
                 conn.rollback()
-                return name, f"Memory '{name}' not found or not deleted."
+                return RestoreOutcome(
+                    kind="not_found",
+                    name=name,
+                    message=f"Memory '{name}' not found or not deleted.",
+                )
             row_id, created_at, deleted_at, superseded_by, row_tier = row
             # v2.3.16: restoring a canonical row brings canon back — it needs canon authority.
-            if row_tier == "canonical" and not has_canon_authority(provenance, _canon_authority):
+            authority = has_canon_authority(provenance, _canon_authority)
+            if row_tier == "canonical" and not authority:
                 conn.rollback()
-                return name, (
-                    f"Memory '{name}' is canonical — restoring it needs canon authority "
-                    "(a dreamer key). Not restored."
+                return RestoreOutcome(
+                    kind="refused",
+                    name=name,
+                    reason="canon-authority",
+                    message=(
+                        f"Memory '{name}' is canonical — restoring it needs canon authority "
+                        "(a dreamer key). Not restored."
+                    ),
+                )
+            if is_cd_canary_name(name) and not authority:
+                conn.rollback()
+                return RestoreOutcome(
+                    kind="refused",
+                    name=name,
+                    reason="reserved-name",
+                    message=(
+                        f"Memory '{name}' has a reserved CD canary name — only canon authority "
+                        "restores it. Not restored."
+                    ),
                 )
             collision = conn.execute(
                 f"SELECT 1 FROM memories WHERE name = ? AND {_ACTIVE}", (name,)
@@ -2005,7 +2134,11 @@ class MemoryStore:
                 )
             except sqlite3.IntegrityError:
                 conn.rollback()
-                return name, "Restore failed: name collision could not be resolved."
+                return RestoreOutcome(
+                    kind="conflict",
+                    name=name,
+                    message="Restore failed: name collision could not be resolved.",
+                )
             if final_name != name:
                 conn.execute(
                     "UPDATE memory_versions SET memory_name = ? WHERE memory_id = ?",
@@ -2022,11 +2155,13 @@ class MemoryStore:
             note = _superseded_note_sqlite(conn, superseded_by)
             conn.commit()
             if final_name != name:
-                return final_name, f"Restored '{name}' as '{final_name}' (name taken).{note}"
-            return name, f"Memory '{name}' restored.{note}"
+                msg = f"Restored '{name}' as '{final_name}' (name taken).{note}"
+            else:
+                msg = f"Memory '{name}' restored.{note}"
+            return RestoreOutcome(kind="applied", name=name, final_name=final_name, message=msg)
         except sqlite3.Error as e:
             conn.rollback()
-            return name, f"Database error: {e}"
+            return RestoreOutcome(kind="error", name=name, message=f"Database error: {e}")
         finally:
             conn.close()
 
@@ -3277,28 +3412,43 @@ class MemoryStore:
         finally:
             conn.close()
 
-    def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str:
-        """Reject a pending write without applying."""
+    def reject(self, write_id: int, note: str = "", reviewer: str = "") -> RejectOutcome:
+        """Reject a pending write without applying.
+
+        v2.3.17 (ruling Q4): a rejection needs a reason. An empty or whitespace-only ``note`` raises
+        :class:`ReasonRequired` BEFORE any update, so the row stays pending. Returns a structured
+        :class:`RejectOutcome`; the doors audit only when its kind is ``rejected``.
+        """
         import sqlite3
 
+        reason = require_reason(write_id, note)
         conn = self._get_conn()
         try:
-            conn.execute(
+            cur = conn.execute(
                 """
                 UPDATE pending_writes
                 SET status = 'rejected', reviewed_at = datetime('now'),
                     reviewed_by = ?, review_note = ?
                 WHERE id = ? AND status = 'pending'
                 """,
-                (reviewer or "trusted-dreamer", note, write_id),
+                (reviewer or "trusted-dreamer", reason, write_id),
             )
-            if conn.total_changes == 0:
+            if cur.rowcount == 0:
+                exists = conn.execute(
+                    "SELECT 1 FROM pending_writes WHERE id = ?", (write_id,)
+                ).fetchone()
                 conn.commit()
-                return f"Pending write #{write_id} not found or already processed."
+                return RejectOutcome(
+                    kind="not_pending" if exists else "not_found",
+                    write_id=write_id,
+                    message=f"Pending write #{write_id} not found or already processed.",
+                )
             conn.commit()
-            return f"Pending write #{write_id} rejected."
+            return RejectOutcome(
+                kind="rejected", write_id=write_id, message=f"Pending write #{write_id} rejected."
+            )
         except sqlite3.Error as e:
-            return f"Database error: {e}"
+            return RejectOutcome(kind="error", write_id=write_id, message=f"Database error: {e}")
         finally:
             conn.close()
 

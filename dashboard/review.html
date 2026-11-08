@@ -94,6 +94,15 @@
             color: var(--ink);
         }
 
+        .cd-canary-banner {
+            background: #7a0000; color: #fff; font-weight: 700; text-align: center;
+            padding: 0.5rem; border-radius: 4px; margin-bottom: 0.5rem; letter-spacing: 0.04em;
+        }
+        textarea.reject-reason {
+            width: 100%; min-height: 3rem; margin-top: 0.5rem; box-sizing: border-box;
+            background: var(--bg, #111); color: inherit; border: 1px solid var(--line, #444);
+            border-radius: 4px; padding: 0.4rem; font: inherit;
+        }
         button.danger {
             background-color: rgba(255, 107, 107, 0.15);
             color: var(--err);
@@ -771,6 +780,16 @@
         card.dataset.id = String(item.id);
 
         // ── Compact header (always visible, click to expand) ──────
+        // v2.3.17: a proposal on a CD deploy canary. Approving its delete deletes the canary and
+        // fails the next deploy's contract check. The server sets the flag from the row's tags.
+        if (item.is_cd_canary) {
+            const banner = document.createElement('div');
+            banner.className = 'cd-canary-banner';
+            banner.textContent = 'CD DEPLOY CANARY — DO NOT APPROVE';
+            banner.title = 'This is the deploy check\'s probe. Approving it deletes the canary and fails the next deploy.';
+            card.appendChild(banner);
+        }
+
         const header = document.createElement('div');
         header.className = 'card-header';
 
@@ -963,14 +982,29 @@
             approveBtn.textContent = 'Approve';
             approveBtn.addEventListener('click', () => handleAction(card, item, 'approve'));
 
+            // v2.3.17: a rejection needs a reason (the server refuses a blank one with 422).
+            const rejectReason = document.createElement('textarea');
+            rejectReason.className = 'reject-reason';
+            rejectReason.id = 'rejectReason-' + String(item.id);
+            rejectReason.placeholder = 'Reason for rejecting (required)';
+
             const rejectBtn = document.createElement('button');
             rejectBtn.className = 'danger';
             rejectBtn.textContent = 'Reject';
-            rejectBtn.addEventListener('click', () => handleAction(card, item, 'reject'));
+            rejectBtn.disabled = true;
+            rejectReason.addEventListener('input', () => {
+                rejectBtn.disabled = rejectReason.value.trim() === '';
+            });
+            rejectBtn.addEventListener('click', () => {
+                const note = rejectReason.value.trim();
+                if (!note) { rejectReason.focus(); return; }
+                handleAction(card, item, 'reject', note);
+            });
 
             actionRow.appendChild(approveBtn);
             actionRow.appendChild(rejectBtn);
             inner.appendChild(actionRow);
+            inner.appendChild(rejectReason);
         }
 
         detail.appendChild(inner);
@@ -979,7 +1013,7 @@
     }
 
     // ===== HANDLE APPROVE / REJECT =====
-    async function handleAction(card, item, action) {
+    async function handleAction(card, item, action, note) {
         // Remove any previous feedback inside this card
         const prev = card.querySelector('.card-error, .card-success');
         if (prev) prev.remove();
@@ -989,7 +1023,9 @@
 
         try {
             const endpoint = '/api/memories/' + encodeURIComponent(item.name) + '/' + action;
-            const payload = { write_id: item.id };
+            const payload = action === 'reject'
+                ? { write_id: item.id, note: note }
+                : { write_id: item.id };
             await apiCall(endpoint, 'POST', payload);
 
             // Success: fade and remove the card
