@@ -64,15 +64,12 @@
 
 **Security notes**
 
-- The lock is a property of mori's own doors: **agents can't change canon through mori.** It rests on two
-  **deployment requirements**, now stated rather than assumed (see the configuration reference, "Deployment
-  requirements"):
-  1. **Agents get no OS-level access to the production host** (no shell, no sudo, no cloud-admin credential for its
-     project). Anything with that access is operator tooling, outside the lock.
-  2. **The review page is used from a machine, or an OS user, that agents don't run as.** The review key is a dreamer
-     key; whatever can read the browser it is typed into can approve.
+- **In api mode, a canonical row changes only when a dreamer key writes it or approves a proposal**, and every deploy
+  now checks it. This and mori's other guarantees hold at the mori boundary, under the deployment assumptions stated
+  once in the configuration reference ("Deployment assumptions"): agents have no operating-system access to the host
+  running mori, and review keys are used only from machines where agents don't run.
 - A read replica of the database gives read access to canon: confidentiality, not integrity.
-- **The review page keeps the review key in page memory only**, so following requirement 2 doesn't depend on browser
+- **The review page keeps the review key in page memory only**, so the second assumption doesn't depend on browser
   storage behaving itself. Earlier versions saved it in `localStorage` (on disk); the page now asks for the key on
   every load and deletes a stored copy when it next loads. Clearing the page's site data removes any copy at once.
 - The **"CD DEPLOY CANARY — DO NOT APPROVE"** banner is the human half of the canary design: approving a canary's
