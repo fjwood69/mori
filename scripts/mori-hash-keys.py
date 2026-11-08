@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
-"""Convert an env file's MORI_API_KEYS to hashed entries, in place (v2.3.17, H2).
+"""Convert an env file's MORI_API_KEYS to hashed entries, in place — optional (v2.3.17).
 
-    python3 scripts/mori-hash-keys.py /data/mori-advisor/.env
+    python3 scripts/mori-hash-keys.py [--include-first] /data/mori-advisor/.env
 
-Each ``name:secret`` becomes ``name:sha256:<64 lowercase hex>`` (sha256 of the secret). Entries that
-are already hashed are kept as they are, so a second run changes nothing. Every other line is kept
-byte for byte. The file is replaced atomically with mode 600, and NO plain backup is written: the
-point is that no copy of the plain table stays on the host. Fred keeps the one off-host copy that a
-rollback to v2.3.16 needs.
+Hashing is supported and recommended for production deployments; it is an operator's choice, and nothing in the
+deploy runs this script.
 
-Refuses (exit 2, file unchanged) if the legacy single mori key MORI_ADVISOR_API_KEY is set in the
-file: v2.3.17 in api mode would refuse to start on it, and it would stay a plain key. (MORI_API_KEY is
-NOT a mori client key — it is the LLM provider's key in direct mode, bifrost_client.py — and is left
-alone.)
+**The first entry stays plain by default.** It is the deploy contract's identity: the GCE CD template reads the
+first entry's secret from the env file (``grep | cut``), so a hashed first entry makes every contract probe fail
+(the cut yields the literal ``sha256``). The output names the entry it left plain. ``--include-first`` converts it
+too, with a warning: any deploy that reads the first entry from the env file will then fail.
+
+Every other ``name:secret`` becomes ``name:sha256:<64 lowercase hex>`` (sha256 of the secret). Entries already
+hashed are kept, so a second run changes nothing. Every other line is kept byte for byte. The file is replaced
+atomically, keeping its owner and group, with mode 600; no plain backup is written. v2.3.16 and earlier can't read
+hashes, so keep an off-host copy of the plain table if you may roll back.
+
+Refuses (exit 2, file unchanged) if the legacy single mori key MORI_ADVISOR_API_KEY is set, or another line still
+holds a plain key table (commented out, renamed or copied). MORI_API_KEY is NOT a mori client key — it is the LLM
+provider's key in direct mode (bifrost_client.py) — and is left alone.
 
 Prints names and counts only, never a secret. Standard library only.
 """
@@ -37,10 +43,13 @@ STRAY = re.compile(
 PLAIN_HEX = re.compile(r"(?<!sha256:)\b[0-9a-f]{64}\b")
 
 
-def convert_line(value: str) -> tuple[str, list[str], list[str]]:
-    """Return (new value, names converted, names already hashed)."""
+def convert_line(
+    value: str, include_first: bool = False
+) -> tuple[str, list[str], list[str], str | None]:
+    """Return (new value, names converted, names already hashed, the first entry left plain or None)."""
     out, converted, kept = [], [], []
-    for entry in (e.strip() for e in value.split(",")):
+    left_plain: str | None = None
+    for idx, entry in enumerate(e.strip() for e in value.split(",") if e.strip()):
         if not entry:
             continue
         if ":" not in entry:
@@ -50,17 +59,23 @@ def convert_line(value: str) -> tuple[str, list[str], list[str]]:
         if HASHED.fullmatch(secret):
             out.append(f"{name}:{secret}")
             kept.append(name)
+        elif idx == 0 and not include_first:
+            out.append(f"{name}:{secret}")  # the deploy contract's identity stays plain
+            left_plain = name
         else:
             out.append(f"{name}:sha256:{hashlib.sha256(secret.encode('utf-8')).hexdigest()}")
             converted.append(name)
-    return ",".join(out), converted, kept
+    return ",".join(out), converted, kept, left_plain
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print("usage: mori-hash-keys.py <env file>", file=sys.stderr)
+    args = argv[1:]
+    include_first = "--include-first" in args
+    args = [a for a in args if a != "--include-first"]
+    if len(args) != 1 or args[0].startswith("-"):
+        print("usage: mori-hash-keys.py [--include-first] <env file>", file=sys.stderr)
         return 2
-    path = argv[1]
+    path = args[0]
     with open(path, encoding="utf-8") as f:
         text = f.read()
     lines = text.split("\n")
@@ -69,7 +84,7 @@ def main(argv: list[str]) -> int:
     if legacy:
         print(
             f"refused: legacy mori key variable set: {', '.join(legacy)}. Remove it first "
-            "(v2.3.17 in api mode refuses a plain key). Nothing changed.",
+            "(it would stay a plain key). Nothing changed.",
             file=sys.stderr,
         )
         return 2
@@ -95,20 +110,31 @@ def main(argv: list[str]) -> int:
         return 2
     head, value = KEYS_LINE.match(lines[i]).groups()  # type: ignore[union-attr]
     try:
-        new_value, converted, kept = convert_line(value)
+        new_value, converted, kept, left_plain = convert_line(value, include_first)
     except ValueError as e:
         print(f"refused: {e}. Nothing changed.", file=sys.stderr)
         return 2
+    if left_plain:
+        print(f"kept plain (the deploy contract's identity, the first entry): {left_plain}")
+    if include_first and converted:
+        print(
+            "warning: --include-first hashed the first entry too — any deploy that reads the first "
+            "MORI_API_KEYS entry from the env file (the GCE CD template does) will now fail.",
+            file=sys.stderr,
+        )
     if not converted:
         os.chmod(path, 0o600)
-        print(f"already hashed: {len(kept)} entr{'y' if len(kept) == 1 else 'ies'}; no change.")
+        print(f"nothing to convert ({len(kept)} already hashed); no change.")
         return 0
     lines[i] = head + new_value
 
     directory = os.path.dirname(os.path.abspath(path))
+    st = os.stat(path)
     fd, tmp = tempfile.mkstemp(prefix=".mori-hash-keys.", dir=directory)
     try:
         os.fchmod(fd, 0o600)
+        # Keep the owner and group: run under sudo, a root-owned file would stop rootless units reading it.
+        os.fchown(fd, st.st_uid, st.st_gid)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
         os.replace(tmp, path)

@@ -29,10 +29,9 @@ variable "disk_size_gb" {
 }
 
 variable "ssh_public_key" {
-  description = "Public SSH key put in instance metadata (v2.3.17: leave empty — break-glass access is a root-owned static file, CD a forced-command user; a metadata key gets passwordless sudo from the guest agent)"
+  description = "Public SSH key for VM access"
   type        = string
   sensitive   = true
-  default     = ""
 }
 
 variable "tailscale_auth_key" {

@@ -719,16 +719,14 @@ def test_orphan_scan_queues_never_deletes_with_the_sqlite_predicate(backend, tmp
     assert f"{prefix}-working-never" not in out
 
 
-# ── The deployment store check's probe-row canary ─────────────────────────────
-# v2.3.17: moved from verify-deployment.py (which now runs from the CD runner with CD's own key)
-# to verify-store.py, run on the host inside the container. Same properties, and it fails closed.
+# ── The deployment contract's probe-row canary ────────────────────────────────
 
 
 def _contract_module():
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        "verify_store", REPO / "scripts" / "verify-store.py"
+        "verify_deployment", REPO / "scripts" / "verify-deployment.py"
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -793,28 +791,32 @@ def test_contract_canary_requires_this_runs_write_and_an_empty_array(monkeypatch
         asyncio.run(repair())
 
 
-def test_contract_fails_outright_when_the_probe_write_fails(monkeypatch, tmp_path, capsys):
-    """Condition 2: a failed probe WRITE fails the store check; it must never go on to the canary
-    (which would pass on the row's untouched state)."""
+def test_contract_fails_outright_when_the_probe_write_fails(monkeypatch):
+    """Condition 2: a non-2xx probe WRITE fails the contract; it must never skip to the canary."""
     mod = _contract_module()
+    monkeypatch.delenv("MORI_DATABASE_URL", raising=False)
+    calls = []
+
+    def fake_request(method, url, key=None, body=None):
+        calls.append((method, url))
+        if method == "POST" and url.endswith("/api/memories"):
+            return status["post"]
+        if key is None:
+            return 401
+        return 200
+
     canary_called = []
+    monkeypatch.setattr(mod, "_request", fake_request)
     monkeypatch.setattr(mod, "_probe_row_canary", lambda n, t: canary_called.append(n) or True)
 
-    async def bad_write(store):
-        raise RuntimeError("probe write not accepted: simulated")
+    for bad in (500, 404, 202, 0):
+        status = {"post": bad}
+        calls.clear()
+        canary_called.clear()
+        assert mod._softdel_probe_and_canary("http://x", "k") == 1, bad
+        assert calls == [("POST", "http://x/api/memories")]  # nothing after the failed write
+        assert canary_called == []
 
-    monkeypatch.setattr(mod, "_probe_write", bad_write)
-    assert asyncio.run(mod._check_sqlite(object())) == 1
-    assert "probe write failed" in capsys.readouterr().out
-    assert canary_called == []
-
-    # positive control: a real store, the write lands and the check goes on
-    from mori_advisor.store import get_store
-
-    store = get_store(tmp_path / "m.db")
-    store.bootstrap()
-    monkeypatch.undo()
-    mod = _contract_module()
-    asyncio.run(mod._check_sqlite(store))  # canaries absent here, so the overall result is 1
-    out = capsys.readouterr().out
-    assert "probe write failed" not in out and "probe row written" in out
+    status = {"post": 200}  # positive control: the full round-trip and the canary run
+    assert mod._softdel_probe_and_canary("http://x", "k") == 0
+    assert canary_called == [mod.SOFTDEL_PROBE]

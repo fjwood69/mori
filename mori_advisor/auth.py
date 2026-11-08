@@ -3,11 +3,12 @@
 Keys are configured via MORI_API_KEYS=name:secret,name:secret,...
 where secret is a 32-byte hex string (64 chars).
 
-v2.3.17 (H2): the server stores HASHES — ``name:sha256:<64 lowercase hex>``, the hex being
-sha256(secret). Clients keep their plain secrets; the server hashes what is presented and compares
-in constant time against every entry. In api mode the server refuses to start if any entry is plain
-(naming the entry, never its value), so reading the env file yields no usable key.
-``scripts/mori-hash-keys.py`` converts a table in place. Host mode (intake) still accepts plain.
+v2.3.17: an entry MAY be stored as a hash — ``name:sha256:<64 lowercase hex>``, the hex being
+sha256(secret). Clients keep their plain secrets; the server hashes what is presented and compares in
+constant time against every entry. Plain entries are accepted (with a warning in api mode); hashing is
+recommended for production deployments. ``scripts/mori-hash-keys.py`` converts a table in place — an
+operator's choice, never run by the deploy, and it leaves the FIRST entry plain by default: the GCE CD
+template's contract check reads that entry's secret from the env file.
 
 Backward compat: if MORI_ADVISOR_API_KEY is set and MORI_API_KEYS is not,
 the single key is loaded as {"legacy": <key>}.
@@ -59,9 +60,25 @@ def _load_keys() -> dict[str, str]:
 def init_auth() -> None:
     """Load keys from environment. Call once at startup.
 
-    v2.3.17: in api mode, any plain (unhashed) entry refuses startup, naming the entry only."""
+    v2.3.17: hashed entries are supported; a plain entry in api mode logs a warning (never refuses startup)."""
     global _KEYS
     _KEYS = _load_keys()
+    # An entry that LOOKS hashed but isn't 64 lowercase hex (a typo, upper case) would be compared as a literal
+    # plain secret that no client presents — a silently dead key. Say so (names only).
+    lookalike = sorted(
+        name
+        for name, stored in _KEYS.items()
+        if stored.lower().startswith(HASH_PREFIX) and not is_hashed(stored)
+    )
+    if lookalike:
+        logger.warning(
+            "API key entr%s %s start%s with 'sha256:' but %s not 64 lowercase hex characters: treated as a "
+            "plain secret, which no client presents. Fix the entry.",
+            "y" if len(lookalike) == 1 else "ies",
+            ", ".join(lookalike),
+            "s" if len(lookalike) == 1 else "",
+            "is" if len(lookalike) == 1 else "are",
+        )
     if not _KEYS:
         logger.warning(
             "MORI_API_KEYS not set — server is open to anyone on the network. "
@@ -78,16 +95,14 @@ def init_auth() -> None:
     if policy._TD_MODE == "api":
         plain = sorted(name for name, stored in _KEYS.items() if not is_hashed(stored))
         if plain:
-            logger.critical(
-                "Refusing to start: %d plain API key entr%s in api mode (%s). v2.3.17 stores only "
-                "hashes — run scripts/mori-hash-keys.py on the env file.",
+            # Hashing is optional (v2.3.17): plain entries work; hashes are recommended for production
+            # deployments (scripts/mori-hash-keys.py, which keeps the first entry plain for the deploy).
+            logger.warning(
+                "%d plain API key entr%s (%s): accepted. Storing hashes (name:sha256:<hex>, "
+                "scripts/mori-hash-keys.py) is recommended for production deployments.",
                 len(plain),
                 "y" if len(plain) == 1 else "ies",
                 ", ".join(plain),
-            )
-            raise SystemExit(
-                f"plain API key in MORI_API_KEYS (name={', '.join(plain)}); v2.3.17 needs hashed "
-                "entries (name:sha256:<hex>) in api mode."
             )
 
 
@@ -107,7 +122,7 @@ def check_key(provided: Optional[str]) -> Optional[str]:
     for name, stored in _KEYS.items():
         if is_hashed(stored):
             ok = hmac.compare_digest(presented_hash, stored)
-        else:  # plain: host mode only (api mode refuses plain entries at startup)
+        else:  # plain (supported; hashing is recommended for production deployments)
             ok = hmac.compare_digest(provided, stored)
         if ok and match is None:
             match = name

@@ -261,15 +261,10 @@ def test_the_deploy_step_runs_with_host_key_checking_and_a_digest(tmp_path):
     args = (rec / "args").read_text().splitlines()
     assert "StrictHostKeyChecking=yes" in args
     assert (rec / "known").read_text() == f"198.51.100.7 {HOST_KEY}\n"
-    # v2.3.17 (G3/G6): the remote command is exactly the forced command's verb — no shell, no
-    # here-document; the pull-by-digest lives in deploy/gcp/cd/mori-cd-deploy-as-mori.
-    assert args[-1] == f"deploy v2.3.14 {DIGEST}"
-    assert "-T" in args
-    remote = (rec / "stdin").read_text() if (rec / "stdin").exists() else ""
-    assert remote.strip() == ""
-    inner = (ROOT / "deploy" / "gcp" / "cd" / "mori-cd-deploy-as-mori").read_text()
-    assert 'IMAGE_PINNED="ghcr.io/fjwood69/mori@${DIGEST}"' in inner
-    assert 'podman pull "$IMAGE_PINNED"' in inner and 'podman pull "$IMAGE_VERSION"' not in inner
+    assert args[-1] == f"MORI_VERSION='2.3.14' MORI_DIGEST='{DIGEST}' bash -s"
+    remote = (rec / "stdin").read_text()
+    assert "podman pull '$IMAGE_PINNED'" in remote and "podman pull '$IMAGE_VERSION'" not in remote
+    assert 'IMAGE_PINNED="ghcr.io/fjwood69/mori@${MORI_DIGEST}"' in remote
 
 
 @pytest.mark.parametrize("key", [HOST_KEY + "\n", HOST_KEY + "\r\n", "  " + HOST_KEY + "  "])
@@ -343,24 +338,3 @@ def test_dry_run_workflow_has_no_route_to_production():
                 assert "ref" not in (s.get("with") or {}), (
                     "runs the gate from the dispatcher's ref, not the tag"
                 )
-
-
-# ── v2.3.17: the deploy never reads the env file; the contract runs from the runner ──────────
-
-
-def test_the_deploy_never_reads_the_key_table_or_uses_sudo():
-    deploy = _step(_load("cd.yml")["jobs"]["deploy"], "Deploy to GCE via SSH")["run"]
-    assert "MORI_API_KEYS" not in deploy and "sudo" not in deploy and ".env" not in deploy
-
-
-def test_the_contract_runs_from_the_runner_with_cds_own_key():
-    step = _step(
-        _load("cd.yml")["jobs"]["deploy"],
-        "Deployment contract (from the runner, CD's own write key)",
-    )
-    env = step["env"]
-    assert env["MORI_CD_KEY"] == "${{ secrets.MORI_CD_KEY }}"
-    assert env["MORI_CD_KEY_NAME"] == "${{ vars.MORI_CD_KEY_NAME }}"
-    assert env["GATED_SHA"] == "${{ needs.gate.outputs.sha }}"
-    run = step["run"]
-    assert "verify-deployment.py" in run and "${GATED_SHA}" in run and "MORI_API_KEYS" not in run

@@ -1,11 +1,9 @@
-"""v2.3.17 — API keys are stored as SHA-256 hashes; key_generate is retired (design §4.1, §4.2).
+"""v2.3.17 — API keys MAY be stored as SHA-256 hashes; key_generate is retired.
 
-The server keeps `name:sha256:<64 lowercase hex>`; clients keep their plain secrets. In api mode the
-server refuses to start if any entry is plain, naming the entry but never its value. Host mode (intake)
-still accepts plain. Every entry is compared, with no early return. The conversion script is
-idempotent, keeps every other line byte for byte, writes mode 600 and leaves no backup, and fails
-loudly if a legacy single-key variable is set. key_generate (which handed a fresh secret to whichever
-agent called it) is gone; scripts/mori-key-add.sh replaces it.
+Hashing is optional: hashed entries work, plain entries are accepted with a warning, startup is never refused over
+the key format, and nothing in the deploy converts the table. The unchanged deploy borrows the FIRST entry's plain
+secret, so the conversion script leaves that entry plain by default. The conversion script and mori-key-add.sh are
+opt-in operator tools.
 """
 
 from __future__ import annotations
@@ -68,14 +66,21 @@ def test_a_hashed_entry_authenticates_and_wrong_or_empty_is_refused(monkeypatch,
     assert auth.check_key(_h(SECRET_A)) is None
 
 
-def test_api_mode_refuses_a_plain_entry_naming_it_not_its_value(monkeypatch, fresh_auth):
-    with pytest.raises(SystemExit) as exc:
-        _init(monkeypatch, f"alpha:{_h(SECRET_A)},beta:{SECRET_B}", "alpha:write,beta:write", "api")
-    msg = str(exc.value)
-    assert "beta" in msg and SECRET_B not in msg
+def test_api_mode_accepts_a_plain_entry_with_a_warning(monkeypatch, fresh_auth, caplog):
+    """Hashing is optional (Fred, 8 Nov): a plain entry starts, with a warning that names the entry, never its
+    value. Startup is never refused over the key format."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        auth = _init(
+            monkeypatch, f"alpha:{_h(SECRET_A)},beta:{SECRET_B}", "alpha:write,beta:write", "api"
+        )
+    assert auth.check_key(SECRET_B) == "beta" and auth.check_key(SECRET_A) == "alpha"
+    warned = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+    assert "beta" in warned and "plain" in warned and SECRET_B not in warned
 
 
-def test_api_mode_refuses_the_legacy_single_key(monkeypatch, fresh_auth):
+def test_api_mode_accepts_the_legacy_single_key(monkeypatch, fresh_auth, caplog):
     monkeypatch.delenv("MORI_API_KEYS", raising=False)
     monkeypatch.setenv("MORI_ADVISOR_API_KEY", SECRET_A)
     monkeypatch.setenv("MORI_TD_MODE", "api")
@@ -83,10 +88,45 @@ def test_api_mode_refuses_the_legacy_single_key(monkeypatch, fresh_auth):
     import mori_advisor.policy as pol
 
     monkeypatch.setattr(pol, "_TD_MODE", "api")
+    import logging
 
-    with pytest.raises(SystemExit) as exc:
-        auth.init_auth()
-    assert SECRET_A not in str(exc.value)
+    with caplog.at_level(logging.WARNING):
+        auth.init_auth()  # no SystemExit
+    assert auth.check_key(SECRET_A) == "legacy"
+    warned = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+    assert "legacy" in warned and SECRET_A not in warned
+
+
+def _cd_borrowed_key(tmp_path, table: str) -> str:
+    """Run cd.yml's own VERIFY_KEY= pipeline (grep | cut) on an env file holding *table*."""
+    import re
+
+    cd = (ROOT / ".github" / "workflows" / "cd.yml").read_text()
+    line = re.search(r"VERIFY_KEY=\$\((.*)\)\n", cd).group(1)  # the exact pipeline CD runs
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"MORI_TD_MODE=api\nMORI_API_KEYS={table}\n")
+    pipeline = line.replace("sudo ", "").replace('"$ENVFILE"', str(env_file))
+    return subprocess.run(
+        ["bash", "-c", pipeline], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def test_the_deploy_contract_finds_a_plain_first_key(monkeypatch, fresh_auth, tmp_path):
+    """The deploy path is unchanged: cd.yml borrows the FIRST entry of MORI_API_KEYS. A plain first
+    entry authenticates; hashed LATER entries don't disturb it."""
+    table = f"nuc:{SECRET_A},cd-x:{_h(SECRET_B)}"
+    key = _cd_borrowed_key(tmp_path, table)
+    auth = _init(monkeypatch, table, "nuc:write,cd-x:write", "api")
+    assert key == SECRET_A and auth.check_key(key) == "nuc"
+
+
+def test_a_hashed_first_key_breaks_the_deploy_contract(monkeypatch, fresh_auth, tmp_path):
+    """The other direction (consult F17, P1): a hashed first entry makes the cut yield the literal
+    'sha256', which authenticates as nothing — every contract probe would 401."""
+    table = f"nuc:{_h(SECRET_A)},other:{SECRET_B}"
+    key = _cd_borrowed_key(tmp_path, table)
+    auth = _init(monkeypatch, table, "nuc:write,other:write", "api")
+    assert key == "sha256" and auth.check_key(key) is None
 
 
 def test_host_mode_still_accepts_plain_entries(monkeypatch, fresh_auth):
@@ -114,17 +154,15 @@ def test_every_entry_is_compared_no_early_return(monkeypatch, fresh_auth):
     assert len(calls) == 3  # …and every entry is still compared
 
 
-def test_the_ingestion_server_refuses_a_plain_entry_in_api_mode(monkeypatch, fresh_auth):
+def test_the_ingestion_server_starts_with_a_plain_entry_in_api_mode(monkeypatch, fresh_auth):
     import mori_advisor.ingestion_server as ing
 
     monkeypatch.setenv("MORI_API_KEYS", f"upload-key:{SECRET_A}")
     monkeypatch.setenv("MORI_API_KEY_ROLES", "upload-key:write")
     monkeypatch.setenv("MORI_TD_MODE", "api")
     monkeypatch.setattr(fresh_auth[1], "_TD_MODE", "api")
-    with pytest.raises(SystemExit) as exc:
-        ing.startup_check()
-    msg = str(exc.value)
-    assert "plain" in msg and "upload-key" in msg and SECRET_A not in msg, msg
+    ing.startup_check()  # no SystemExit
+    assert fresh_auth[0].check_key(SECRET_A) == "upload-key"
 
 
 # ── the conversion script ─────────────────────────────────────────────────────────────
@@ -149,8 +187,8 @@ def test_conversion_hashes_plain_entries_and_keeps_everything_else(tmp_path):
     original = (
         "# header comment\n"
         "MORI_TD_MODE=api\n"
-        f"MORI_API_KEYS=alpha:{SECRET_A},beta:{_h(SECRET_B)}\n"
-        "MORI_API_KEY_ROLES=alpha:write,beta:dreamer\n"
+        f"MORI_API_KEYS=first:{SECRET_B},alpha:{SECRET_A},beta:{_h(SECRET_B)}\n"
+        "MORI_API_KEY_ROLES=first:write,alpha:write,beta:dreamer\n"
         "OTHER=value with = signs\n"
     )
     p = _env(tmp_path, original)
@@ -158,7 +196,9 @@ def test_conversion_hashes_plain_entries_and_keeps_everything_else(tmp_path):
     assert r.returncode == 0, r.stderr
     out = p.read_text()
     lines, before = out.split("\n"), original.split("\n")
-    assert lines[2] == f"MORI_API_KEYS=alpha:{_h(SECRET_A)},beta:{_h(SECRET_B)}"  # names kept
+    # names kept; the FIRST entry (the deploy contract's identity) stays plain by default
+    assert lines[2] == f"MORI_API_KEYS=first:{SECRET_B},alpha:{_h(SECRET_A)},beta:{_h(SECRET_B)}"
+    assert "kept plain" in r.stdout and "first" in r.stdout
     assert [ln for i, ln in enumerate(lines) if i != 2] == [
         ln for i, ln in enumerate(before) if i != 2
     ]
@@ -169,12 +209,62 @@ def test_conversion_hashes_plain_entries_and_keeps_everything_else(tmp_path):
 
 
 def test_conversion_is_idempotent_and_never_double_hashes(tmp_path):
-    p = _env(tmp_path, f"MORI_API_KEYS=alpha:{SECRET_A}\n")
+    p = _env(tmp_path, f"MORI_API_KEYS=first:{SECRET_B},alpha:{SECRET_A}\n")
     assert _convert(p).returncode == 0
     once = p.read_text()
     assert _convert(p).returncode == 0
     assert p.read_text() == once
-    assert once.strip() == f"MORI_API_KEYS=alpha:{_h(SECRET_A)}"
+    assert once.strip() == f"MORI_API_KEYS=first:{SECRET_B},alpha:{_h(SECRET_A)}"
+
+
+def test_include_first_converts_the_first_entry_and_warns(tmp_path):
+    p = _env(tmp_path, f"MORI_API_KEYS=first:{SECRET_B},alpha:{SECRET_A}\n")
+    r = subprocess.run(
+        [sys.executable, str(CONVERT), "--include-first", str(p)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    assert p.read_text().strip() == f"MORI_API_KEYS=first:{_h(SECRET_B)},alpha:{_h(SECRET_A)}"
+    assert "will now fail" in r.stderr and SECRET_B not in r.stderr
+
+
+def test_conversion_keeps_the_files_owner_and_group(tmp_path, monkeypatch):
+    """Consult F17, P3: run under sudo, a root-owned file would stop rootless units reading it."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("mori_hash_keys", CONVERT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    p = _env(tmp_path, f"MORI_API_KEYS=first:{SECRET_B},alpha:{SECRET_A}\n")
+    st = os.stat(p)
+    calls = []
+    real = os.fchown
+    monkeypatch.setattr(
+        mod.os, "fchown", lambda fd, uid, gid: (calls.append((uid, gid)), real(fd, uid, gid))
+    )
+    assert mod.main(["mori-hash-keys.py", str(p)]) == 0
+    assert calls == [(st.st_uid, st.st_gid)]
+    new = os.stat(p)
+    assert (new.st_uid, new.st_gid) == (st.st_uid, st.st_gid)
+    assert stat.S_IMODE(new.st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    "stored", ["sha256:" + "A" * 64, "SHA256:" + "a" * 64, "sha256:" + "a" * 63]
+)
+def test_a_lookalike_hash_entry_is_warned_about(monkeypatch, fresh_auth, caplog, stored):
+    """Consult F17, P3: an entry that starts with sha256: but isn't 64 lowercase hex is a dead key."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        auth = _init(
+            monkeypatch, f"good:{_h(SECRET_A)},typo:{stored}", "good:write,typo:write", "api"
+        )
+    warned = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+    assert "typo" in warned and "64 lowercase hex" in warned
+    assert auth.check_key(SECRET_A) == "good"
 
 
 def test_conversion_leaves_the_llm_provider_key_alone(tmp_path):
