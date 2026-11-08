@@ -97,6 +97,20 @@ An MCP session is bound to the key that opened it (v2.3.12):
 - Session ids are logged only as a short hash. `mori_mcp_sessions` and
   `mori_session_rejections_total{reason}` (`no_key`, `wrong_key`, `expired`) are on `/metrics`.
 
+### Deployment requirements
+
+The canon lock is a property of mori's own doors: an agent can't change canon *through mori*. Two requirements of the
+deployment keep it that way. Sensible deployments meet them already; they are written here so they are requirements,
+not assumptions.
+
+1. **Agents get no OS-level access to the production host** — no shell, no sudo, no administrative credential for the
+   host's cloud project. Anything with that access can edit the key table or the database directly; it is operator
+   tooling, outside the lock.
+2. **The review page is used from a machine, or an OS user, that agents don't run as.** The review key is a `dreamer`
+   key: anything that can read the browser it is typed into can approve. The page keeps the key in memory only (it is
+   asked for on every load and never written to browser storage), so this doesn't depend on browser storage behaving
+   itself.
+
 ### Web dashboard
 
 Mori serves the web dashboard at its **root URL** (`http://<host>:<port>/`) — open it in

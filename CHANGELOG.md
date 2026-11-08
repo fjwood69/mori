@@ -64,15 +64,17 @@
 
 **Security notes**
 
-- The lock is a property of mori's own doors: **agents can't change canon through mori.** Anything with a shell on
-  the host or administrative access to its cloud project is the "operator tooling" exception, so removing standing
-  shells and narrowing cloud credentials are operational steps alongside this release.
+- The lock is a property of mori's own doors: **agents can't change canon through mori.** It rests on two
+  **deployment requirements**, now stated rather than assumed (see the configuration reference, "Deployment
+  requirements"):
+  1. **Agents get no OS-level access to the production host** (no shell, no sudo, no cloud-admin credential for its
+     project). Anything with that access is operator tooling, outside the lock.
+  2. **The review page is used from a machine, or an OS user, that agents don't run as.** The review key is a dreamer
+     key; whatever can read the browser it is typed into can approve.
 - A read replica of the database gives read access to canon: confidentiality, not integrity.
-- **The review page no longer stores the review key.** Earlier versions saved it in the browser's `localStorage`, which
-  is on disk under the browser's user: a process running as that user could read a dreamer key and approve its own
-  proposals. v2.3.17 keeps the key in page memory only, asks for it on every load, and deletes a stored copy when the
-  page next loads. **Clear the review page's site data** in any browser that used it; where agents run under that
-  browser's user, a key that was stored should be treated as exposed (rotate it, or accept the risk knowingly).
+- **The review page keeps the review key in page memory only**, so following requirement 2 doesn't depend on browser
+  storage behaving itself. Earlier versions saved it in `localStorage` (on disk); the page now asks for the key on
+  every load and deletes a stored copy when it next loads. Clearing the page's site data removes any copy at once.
 - The **"CD DEPLOY CANARY — DO NOT APPROVE"** banner is the human half of the canary design: approving a canary's
   proposal deletes it and fails the next deploy.
 - The contract proves the lock on two rows; the dual-backend tests pin the general rule.
