@@ -154,6 +154,7 @@ jobs:
           # #73: the tag name reaches the remote shell below, so it is validated again here (the gate already did)
           # and only the validated version, which can contain nothing but digits and dots, crosses as data.
           [[ "$REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "bad tag name"; exit 1; }
+          VERSION="${REF_NAME#v}"
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "FATAL: no image digest from the build"; exit 1; }
           # The secret is "<type> <base64>" (the known_hosts entry without the host). Checked before anything runs
           # on the host, so a malformed secret fails here, not halfway through a deploy.
@@ -169,41 +170,80 @@ jobs:
           trap "rm -f '$KEYFILE' '$KNOWN'" EXIT
           ssh-keygen -F "$GCE_HOST" -f "$KNOWN" >/dev/null || { echo "FATAL: known_hosts entry for the host is unusable"; exit 1; }
 
-          # v2.3.17 (ruling G3/G6): the deploy user can run ONE forced command, which accepts only
-          # "deploy <tag> <digest>" (deploy/gcp/cd/mori-cd-deploy). No shell, no here-document,
-          # no env file read: the key table never leaves the host. The forced command converts the
-          # key table to hashes (v2.3.17+), restarts the units, gates on health and runs the
-          # store check (deploy/gcp/cd/mori-cd-deploy-as-mori, scripts/verify-store.py).
-          ssh -i "$KEYFILE" -T \
+          ssh -i "$KEYFILE" \
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$KNOWN" \
             -o ConnectTimeout=30 \
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=3 \
             "${GCE_USER}@${GCE_HOST}" \
-            "deploy ${REF_NAME} ${DIGEST}"
+            "MORI_VERSION='${VERSION}' MORI_DIGEST='${DIGEST}' bash -s" << 'REMOTESCRIPT'
+          set -e
+          VERSION="${MORI_VERSION}"
+          # #73: the exact image this run built, by digest; the version tag is applied locally from it.
+          IMAGE_PINNED="ghcr.io/fjwood69/mori@${MORI_DIGEST}"
+          IMAGE_VERSION="ghcr.io/fjwood69/mori:${VERSION}"
+          IMAGE_LATEST="ghcr.io/fjwood69/mori:latest"
+          IMAGE_ROLLBACK="ghcr.io/fjwood69/mori:previous-rollback"
+          ENVFILE="/data/mori-advisor/.env"
+          MORI_UID=$(id -u mori)
+          RT="XDG_RUNTIME_DIR=/run/user/${MORI_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${MORI_UID}/bus"
+          # All three mori app containers share the :latest image and are managed
+          # as rootless Quadlet units — restart them together so none drifts onto
+          # stale code (the drift class this migration exists to kill).
+          UNITS="mori-advisor mori-ingestion mori-msg"
 
-      - name: Deployment contract (from the runner, CD's own write key)
-        env:
-          GCE_HOST: ${{ secrets.GCE_HOST }}
-          # v2.3.17 (ruling H1): CD's own key, role `write` and nothing more. The plain secret exists
-          # only here (environment `production`); the host holds its hash. The contract proves the
-          # lock on every deploy with the two canaries (scripts/verify-deployment.py).
-          MORI_CD_KEY: ${{ secrets.MORI_CD_KEY }}
-          MORI_CD_KEY_NAME: ${{ vars.MORI_CD_KEY_NAME }}
-          # The contract script is the GATED commit's, fetched from the public repository: no checkout,
-          # so the job keeps `permissions: {}`.
-          GATED_SHA: ${{ needs.gate.outputs.sha }}
-        run: |
-          set -euo pipefail
-          [[ -n "$MORI_CD_KEY" && -n "$MORI_CD_KEY_NAME" ]] || { echo "FATAL: MORI_CD_KEY / MORI_CD_KEY_NAME not set"; exit 1; }
-          [[ "$GATED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "FATAL: no gated commit"; exit 1; }
-          CONTRACT="$RUNNER_TEMP/verify-deployment.py"
-          curl -fsSL --retry 3 "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GATED_SHA}/scripts/verify-deployment.py" -o "$CONTRACT"
-          python3 "$CONTRACT" "http://${GCE_HOST}:8968" "$MORI_CD_KEY" "$MORI_CD_KEY_NAME" || {
-            echo "DEPLOYMENT CONTRACT FAILED — the route surface or the canon lock is not as required"
+          # Containers are managed by rootless systemd **Quadlet** units owned by
+          # the mori user (installed by the GCE startup script to
+          # ~mori/.config/containers/systemd/; source of truth: deploy/gcp/quadlet/).
+          # CD only refreshes the image and restarts the units — the run-spec lives
+          # in the units, not here, so the startup/CD definitions can no longer drift.
+          # The CD user reaches the mori user systemd/podman via `sudo su - mori`.
+          # All runtime config (incl. secrets) lives in $ENVFILE — CD never sees it.
+
+          if [ ! -f "$ENVFILE" ]; then
+            echo "FATAL: $ENVFILE missing — startup script must write it first"; exit 1
+          fi
+
+          # Rollback tag: pin the currently-running :latest before we move it, so a
+          # bad deploy reverts with
+          #   podman tag …:previous-rollback …:latest && systemctl --user restart $UNITS
+          sudo su - mori -c "$RT podman image exists '$IMAGE_LATEST'" \
+            && sudo su - mori -c "$RT podman tag '$IMAGE_LATEST' '$IMAGE_ROLLBACK'" || true
+
+          # Pull the new build BY DIGEST and move :latest onto it. The Quadlet units reference
+          # :latest and do NOT re-pull on restart, so retagging locally is what makes
+          # the restart pick up exactly this build (deterministic — not registry latest).
+          sudo su - mori -c "$RT podman pull '$IMAGE_PINNED'"
+          sudo su - mori -c "$RT podman tag '$IMAGE_PINNED' '$IMAGE_VERSION'"
+          sudo su - mori -c "$RT podman tag '$IMAGE_PINNED' '$IMAGE_LATEST'"
+
+          # Restart the units — Quadlet recreates each container from the refreshed
+          # :latest. Atomic stop-old/start-new per unit (no port clash under --network=host).
+          sudo su - mori -c "$RT systemctl --user restart $UNITS"
+
+          # Health gate
+          for i in 1 2 3 4 5; do
+            sleep $((i * 2))
+            curl -sf http://localhost:8968/health && curl -sf http://localhost:8969/health && break
+            [ $i -eq 5 ] && { echo "health check failed"; exit 1; }
+          done
+
+          # Deployment contract gate — the SAME scripts/verify-deployment.py that
+          # UAT runs, executed INSIDE the freshly-deployed container against its own
+          # endpoint. Asserts the full route surface (not just /health). A deploy
+          # that serves /health but 404s on feature routes fails here instead of
+          # reporting a false green. Uses the first configured API key from the
+          # env-file (mode 600, so read via sudo).
+          VERIFY_KEY=$(sudo grep -m1 '^MORI_API_KEYS=' "$ENVFILE" | cut -d= -f2- | cut -d, -f1 | cut -d: -f2)
+          if [ -z "$VERIFY_KEY" ]; then echo "FATAL: no MORI_API_KEYS in $ENVFILE — refusing to ship auth-off"; exit 1; fi
+          echo "Running deployment contract against live container..."
+          sudo su - mori -c "$RT podman exec mori-advisor python /app/scripts/verify-deployment.py http://localhost:8968 '$VERIFY_KEY'" || {
+            echo "DEPLOYMENT CONTRACT FAILED — the deployed container is not serving the expected route surface"
             exit 1
           }
+          echo "Deploy OK: $IMAGE_VERSION = $IMAGE_PINNED (rootless, --env-file, contract verified)"
+          REMOTESCRIPT
 
   create-release:
     name: Create GitHub Release

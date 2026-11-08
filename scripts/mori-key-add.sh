@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
 # Add an API key to a mori server — v2.3.17, replacing the retired key_generate MCP tool.
 #
-#   scripts/mori-key-add.sh --host <user@server> [--env-file PATH] [--to-github] <name> <read|write|dreamer>
+#   scripts/mori-key-add.sh --host <user@server> [--env-file PATH] <name> <read|write|dreamer>
 #   scripts/mori-key-add.sh --dry-run <name> <role>     # print the remote payload; nothing is sent
 #
 # Run it yourself, in your own terminal. An agent must never see a key it could use (R9), so:
 #   - it refuses to run under Claude Code (CLAUDECODE set) or without a terminal (except --dry-run);
 #   - the secret is generated here; the SERVER receives only name:sha256:<hex> and name:<role>, on
 #     ssh's stdin (never on a command line);
-#   - without --to-github the secret is shown once on this terminal, then the screen and scrollback
-#     are cleared; with --to-github it goes straight into the GitHub `production` environment secret
-#     MORI_CD_KEY (`gh secret set`) and is never shown at all.
+#   - the secret is shown once on this terminal, then the screen and scrollback are cleared.
 # The server's env file is replaced atomically (mode 600); no backup is written (it would hold the
 # rest of the table). The key is live after the next restart of mori-advisor, mori-ingestion and
 # mori-msg (or the next deploy).
@@ -18,15 +16,13 @@ set -euo pipefail
 
 HOST="${MORI_KEY_ADD_HOST:-}"
 ENVFILE=/data/mori-advisor/.env
-TO_GITHUB=0
 DRY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host) HOST="$2"; shift 2 ;;
     --env-file) ENVFILE="$2"; shift 2 ;;
-    --to-github) TO_GITHUB=1; shift ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
     --*) echo "unknown option $1" >&2; exit 2 ;;
     *) break ;;
   esac
@@ -89,13 +85,6 @@ print("added:", name, "| keys:", ", ".join(names(lines[ki])))
 PY
 B64=$(printf '%s' "$PROG" | base64 -w0)
 printf '%s\n' "$PAYLOAD" | ssh "$HOST" "sudo -n python3 -c \"\$(echo $B64 | base64 -d)\" '$ENVFILE'"
-
-if [[ $TO_GITHUB -eq 1 ]]; then
-  printf '%s' "$SECRET" | gh secret set MORI_CD_KEY --env production --repo fjwood69/mori
-  unset SECRET
-  echo "The secret is in GitHub (production / MORI_CD_KEY). It was not shown."
-  exit 0
-fi
 
 echo
 echo "The secret for '$NAME' (shown once; save it now):"

@@ -329,12 +329,7 @@ resource "google_compute_instance" "mori" {
   }
 
   metadata = {
-    # v2.3.17 (ruling G2/G3): no standing ssh keys in metadata — a key here is installed by the
-    # guest agent with passwordless sudo. Break-glass access is a root-owned static file
-    # (/etc/ssh/authorized_keys.d/, sshd_config.d/breakglass.conf); CD uses the forced-command
-    # deploy user (deploy/gcp/cd/). Leave ssh_public_key empty to add no metadata key.
-    ssh-keys                  = var.ssh_public_key != "" ? "${var.ssh_user}:${var.ssh_public_key}" : null
-    block-project-ssh-keys    = "true"
+    ssh-keys                  = "${var.ssh_user}:${var.ssh_public_key}"
     google-logging-enabled    = "true"
     google-monitoring-enabled = "true"
   }

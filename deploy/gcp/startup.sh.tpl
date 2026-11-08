@@ -100,12 +100,10 @@ else
   echo "→ No persisted env — first boot; fetching secrets from Secret Manager."
   FIRST_BOOT=1
   MORI_API_KEY=$(gcloud secrets versions access latest --secret=MORI_API_KEY --project=${project_id} 2>/dev/null || echo "")
-  # Named per-client API keys, HASHED (v2.3.17: name:sha256:<hex>,... — scripts/mori-hash-keys.py)
-  # and their roles (name:role,...). No plain key is ever fetched: the server stores only hashes,
-  # so a first boot can't bring back a plain key table. Without keys the server runs open
-  # (anyone on the tailnet) — strongly discouraged.
-  MORI_API_KEYS=$(gcloud secrets versions access latest --secret=MORI_API_KEYS_HASHED --project=${project_id} 2>/dev/null || echo "")
-  MORI_API_KEY_ROLES=$(gcloud secrets versions access latest --secret=MORI_API_KEY_ROLES --project=${project_id} 2>/dev/null || echo "")
+  # Named per-client API keys (name:secret,...). Without this the server runs in
+  # open-auth mode (anyone on the tailnet). Strongly recommended.
+  MORI_API_KEYS=$(gcloud secrets versions access latest --secret=MORI_API_KEYS --project=${project_id} 2>/dev/null || echo "")
+  MORI_ADVISOR_API_KEY=$(gcloud secrets versions access latest --secret=MORI_ADVISOR_API_KEY --project=${project_id} 2>/dev/null || echo "")
   MORI_BASE_URL=$(gcloud secrets versions access latest --secret=MORI_BASE_URL --project=${project_id} 2>/dev/null || echo "")
   MORI_MODEL=$(gcloud secrets versions access latest --secret=MORI_MODEL --project=${project_id} 2>/dev/null || echo "")
   MORI_DREAM_MODEL=$(gcloud secrets versions access latest --secret=MORI_DREAM_MODEL --project=${project_id} 2>/dev/null || echo "")
@@ -178,9 +176,8 @@ MORI_API_KEY=$MORI_API_KEY
 MORI_BASE_URL=$MORI_BASE_URL
 MORI_MODEL=$MORI_MODEL
 MORI_DREAM_MODEL=$MORI_DREAM_MODEL
+MORI_ADVISOR_API_KEY=$MORI_ADVISOR_API_KEY
 MORI_API_KEYS=$MORI_API_KEYS
-MORI_API_KEY_ROLES=$MORI_API_KEY_ROLES
-MORI_TD_MODE=$${MORI_API_KEYS:+api}
 MORI_TRUSTED_DREAMERS=$MORI_TRUSTED_DREAMERS
 MORI_NATS_URL=$MORI_NATS_URL
 ENVEOF
