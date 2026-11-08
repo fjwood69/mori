@@ -97,19 +97,18 @@ An MCP session is bound to the key that opened it (v2.3.12):
 - Session ids are logged only as a short hash. `mori_mcp_sessions` and
   `mori_session_rejections_total{reason}` (`no_key`, `wrong_key`, `expired`) are on `/metrics`.
 
-### Deployment requirements
+### Deployment assumptions
 
-The canon lock is a property of mori's own doors: an agent can't change canon *through mori*. Two requirements of the
-deployment keep it that way. Sensible deployments meet them already; they are written here so they are requirements,
-not assumptions.
+mori's guarantees hold at the mori boundary. They assume that agents have no operating-system access to the host
+running mori, and that review keys are used only from machines where agents don't run. The maintainer's own instance
+is a development workbench where agents have host access by design: it's functionally representative, not a hardened
+production deployment.
 
-1. **Agents get no OS-level access to the production host** — no shell, no sudo, no administrative credential for the
-   host's cloud project. Anything with that access can edit the key table or the database directly; it is operator
-   tooling, outside the lock.
-2. **The review page is used from a machine, or an OS user, that agents don't run as.** The review key is a `dreamer`
-   key: anything that can read the browser it is typed into can approve. The page keeps the key in memory only (it is
-   asked for on every load and never written to browser storage), so this doesn't depend on browser storage behaving
-   itself.
+Each guarantee in this reference is a property of mori under these assumptions — for example, "in api mode, a
+canonical row changes only when a dreamer key writes it or approves a proposal". Anything with operating-system access
+to the host can edit the key table or the database directly: that is operator tooling, outside mori. The review page
+keeps the review key in memory only (asked for on every load, never written to browser storage), so the second
+assumption doesn't depend on browser storage behaving itself.
 
 ### Web dashboard
 
