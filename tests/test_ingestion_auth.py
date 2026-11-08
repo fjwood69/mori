@@ -136,8 +136,10 @@ def test_startup_refused_in_host_mode_with_keys(monkeypatch, mode):
 def test_startup_allowed_with_keys_in_api_mode(monkeypatch):
     import mori_advisor.ingestion_server as ing
     import mori_advisor.policy as pol
+    from mori_advisor.auth import hash_secret
 
-    monkeypatch.setenv("MORI_API_KEYS", f"{WRITE_KEY}:{WRITE_SECRET}")
+    # v2.3.17: api mode needs hashed entries (a plain one refuses startup — test_v2317_keys.py)
+    monkeypatch.setenv("MORI_API_KEYS", f"{WRITE_KEY}:{hash_secret(WRITE_SECRET)}")
     monkeypatch.setenv("MORI_API_KEY_ROLES", f"{WRITE_KEY}:write")
     monkeypatch.setattr(pol, "_TD_MODE", "api")
     ing.startup_check()  # no SystemExit

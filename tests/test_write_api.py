@@ -254,7 +254,8 @@ def test_approve_write_actor_denied(backend, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_delete_write_actor_denied(backend, tmp_path, monkeypatch):
-    """DELETE /api/memories/{name} requires dreamer — write actor must get 403."""
+    """DELETE /api/memories/{name}: v2.3.17 opens SOFT delete to `write` (the lock then decides), so
+    a write actor reaches the store (404 for a missing name) and a read actor still gets 403."""
     from starlette.datastructures import State
     from starlette.requests import Request
 
@@ -279,6 +280,11 @@ def test_delete_write_actor_denied(backend, tmp_path, monkeypatch):
         req = Request(scope, receive=_Recv())
         req._state = State()
         with _actor_context(Actor("nuc", "write")):
+            resp = await delete_memory_rest(req)
+        assert resp.status_code == 404
+        req = Request(scope, receive=_Recv())
+        req._state = State()
+        with _actor_context(Actor("viewer", "read")):
             resp = await delete_memory_rest(req)
         assert resp.status_code == 403
 

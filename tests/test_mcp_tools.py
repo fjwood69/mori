@@ -581,24 +581,6 @@ def test_standards_reload(backend, tmp_path, monkeypatch, tmp_path_factory):
     _run_with_backend(backend, tmp_path, monkeypatch, run)
 
 
-# ── key_generate ──────────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_key_generate(backend, tmp_path, monkeypatch):
-    """key_generate must return a str containing the name (no store interaction
-    beyond import, but we still apply the store to catch any future regressions)."""
-    from mori_advisor.main import key_generate
-
-    async def run(store):
-        result = await key_generate("test-client")
-        assert_no_coroutines(result)
-        assert isinstance(result, str)
-        assert "test-client" in result
-
-    _run_with_backend(backend, tmp_path, monkeypatch, run)
-
-
 # ── brief ─────────────────────────────────────────────────────────────────────
 
 

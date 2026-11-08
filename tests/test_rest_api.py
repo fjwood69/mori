@@ -34,6 +34,7 @@ DETAIL_KEYS = {
     "origin_clients",
     "retrieval_count",
     "freshness_status",
+    "protected",  # v2.3.17: the deploy contract reads a canary's protection back
 }
 
 

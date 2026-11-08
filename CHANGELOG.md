@@ -1,5 +1,84 @@
 # Changelog
 
+## v2.3.17 — The deploy proves the lock; keys stored as hashes; a rejection needs a reason
+
+> **Erratum (v2.3.16).** In v2.3.16, the canon lock held on every path. In host mode,
+> `DELETE /api/memories/{name}` reported a queued canonical delete as `200 soft_deleted`, and
+> `POST /api/memories/{name}/restore` reported a refused canonical restore as `200 restored`; in both cases the
+> database was unchanged. In api mode (production) both routes were limited to dreamer, so the misreport couldn't be
+> reached. v2.3.17 corrects both responses (202 queued, 409 refused) and exercises them in the deploy contract.
+>
+> Also in v2.3.16: when another key submitted a proposal identical to one already open, it came back **queued, under
+> the other key's pending id**, instead of being refused. v2.3.17 refuses it (409); a content-equal re-proposal is a
+> no-op only for the key that made the original.
+
+> **Before upgrading:**
+> - **API keys are stored as hashes.** In api mode the server refuses to start if any `MORI_API_KEYS` entry is plain
+>   (it names the entry, never its value). Convert the table in place with `python3 scripts/mori-hash-keys.py <env
+>   file>`: each `name:secret` becomes `name:sha256:<64 hex>`; clients keep their plain secrets. The script refuses if
+>   the legacy single key `MORI_ADVISOR_API_KEY` is set. **v2.3.16 can't read hashes** — keep one off-host copy of the
+>   plain table until v2.3.17 is stable, for a rollback. Host mode still accepts plain entries.
+> - **`key_generate` is removed** (it handed a new secret to whichever agent called it). Add keys with
+>   `scripts/mori-key-add.sh`, run by a person in their own terminal: it sends only the hash to the server.
+> - **Soft delete and restore need only `write`** over REST, as over MCP. Hard delete stays `dreamer`.
+> - **A rejection needs a reason**: an empty or blank reason is refused (REST 422).
+> - **The deploy contract** (`scripts/verify-deployment.py <url> <write key> <key name>`) needs the two CD canaries
+>   (`deploy/gcp/cd/mori-cd-canaries.sh`) and runs with a `write` key and nothing more.
+
+**Changes**
+
+- **The doors answer from structured outcomes** (both backends): `DeleteOutcome`, `RestoreOutcome` and
+  `RejectOutcome` replace string matching at the REST routes.
+  - `DELETE /api/memories/{name}`: a non-canonical row is deleted (200); a canonical one is queued — **202**
+    `{"status": "pending", "name", "pending_id", "operation", "proposed_by", "detail"}`, the operation and proposer
+    read from the pending row itself — or refused (**409** `{"status": "refused", …}`, never 202, never
+    `soft_deleted`). A database error is 500, not 200. Hard delete keeps an explicit 409 refusal.
+  - `POST /api/memories/{name}/restore`: a deleted non-canonical row is restored (200); a canonical one is **409**
+    `{"status": "refused", "reason": "canon-authority"}`; an unresolvable name collision is 409 `conflict`.
+- **A content-equal re-proposal is a no-op only for the same proposer.** Another key's identical proposal is now
+  refused (409) like any other — in v2.3.16 it came back as queued, with the other key's pending id.
+- **`POST /api/memories/{name}/protect`** (dreamer, audited): the REST twin of `memory_protect`.
+- **The deploy contract proves the lock on every deploy.** With its own `write` key, CD checks that deleting the live
+  canary is queued (202, its own proposal), that approving or rejecting it is refused (exactly 403), that the canary
+  is still canonical, protected and tagged, and that restoring the tombstoned canary is refused (409
+  `canon-authority`). A 403 from the route, a 404 (a canary gone), a 200 (the lock off) or a 409 on the delete
+  (another identity holding the proposal) fails the deploy. Dreamer-only routes must answer exactly 403.
+- **The canaries' names are reserved:** only canon authority can create or restore a `cd-canary-*` row. The review
+  page shows a **"CD DEPLOY CANARY — DO NOT APPROVE"** banner on any proposal for one.
+- **The review page keeps the key in memory only** (see Security notes).
+- **A rejection needs a reason**, enforced at the store before any update (REST 422; MCP refuses; no audit row; the
+  proposal stays open). The review page has a required reason field and sends it.
+- **Keys are stored as SHA-256 hashes**, compared in constant time against every entry (no early return).
+- **The deploy has no shell.** CD's ssh user can run one forced command, which accepts only `deploy <vX.Y.Z>
+  <sha256:digest>`; it converts the key table (from v2.3.17), restarts, gates on health and runs a host-side store
+  check (`scripts/verify-store.py`: the probe row and both canaries, failing closed). It refuses to deploy an older
+  release over a hashed table. The contract runs from the CD runner. Files: `deploy/gcp/cd/`.
+- **First boot fetches no plain mori key**: the GCE startup template reads the hashed table and roles, and sets
+  `MORI_TD_MODE=api` when keys exist. The Terraform no longer puts an ssh key in metadata by default, and blocks
+  project-wide keys.
+- `GET /api/memories/{name}` includes `protected`. As a result, **a REST write to a protected working row now
+  becomes a proposal** (202), as the route always intended: its protected-row branch read a field `get_memory` never
+  returned, so until now such a write went through the ordinary working-row path.
+- `GET /api/audit` answers a write key with **403**. It was already dreamer-only; the deploy contract now requires
+  exactly 403, so a route opened to `write` by mistake fails the deploy.
+
+**Security notes**
+
+- The lock is a property of mori's own doors: **agents can't change canon through mori.** It rests on two
+  **deployment requirements**, now stated rather than assumed (see the configuration reference, "Deployment
+  requirements"):
+  1. **Agents get no OS-level access to the production host** (no shell, no sudo, no cloud-admin credential for its
+     project). Anything with that access is operator tooling, outside the lock.
+  2. **The review page is used from a machine, or an OS user, that agents don't run as.** The review key is a dreamer
+     key; whatever can read the browser it is typed into can approve.
+- A read replica of the database gives read access to canon: confidentiality, not integrity.
+- **The review page keeps the review key in page memory only**, so following requirement 2 doesn't depend on browser
+  storage behaving itself. Earlier versions saved it in `localStorage` (on disk); the page now asks for the key on
+  every load and deletes a stored copy when it next loads. Clearing the page's site data removes any copy at once.
+- The **"CD DEPLOY CANARY — DO NOT APPROVE"** banner is the human half of the canary design: approving a canary's
+  proposal deletes it and fails the next deploy.
+- The contract proves the lock on two rows; the dual-backend tests pin the general rule.
+
 ## v2.3.16 — The canon lock: only a reviewed decision changes canon
 
 > **Errata.** Canonical memory was meant to change only through review. It didn't:

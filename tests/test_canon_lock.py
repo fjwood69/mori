@@ -799,11 +799,12 @@ def test_reject_only_touches_pending_rows(backend, tmp_path, monkeypatch, api_mo
         await _seed_canon(store, "canon-p", body="original")
         r = await _propose_rewrite(store, WRITE_KEY, "proposed")
         await _a(_ms(store).approve(r.pending_id, reviewer=DREAM_KEY))
-        out = await _a(_ms(store).reject(r.pending_id, reviewer=DREAM_KEY))
-        assert "not found" in out.lower() or "already processed" in out.lower(), out
+        # v2.3.17: reject needs a reason and returns a structured outcome
+        out = await _a(_ms(store).reject(r.pending_id, note="too late", reviewer=DREAM_KEY))
+        assert out.kind == "not_pending", out
         assert [p["status"] for p in await _pending(store, "canon-p")] == ["approved"]
-        out = await _a(_ms(store).reject(999999, reviewer=DREAM_KEY))
-        assert "not found" in out.lower() or "already processed" in out.lower(), out
+        out = await _a(_ms(store).reject(999999, note="no such id", reviewer=DREAM_KEY))
+        assert out.kind == "not_found", out
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
 

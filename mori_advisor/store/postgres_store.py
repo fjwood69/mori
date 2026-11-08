@@ -28,12 +28,18 @@ from mori_advisor.canon_authority import (
     REQUEST_ACTORS,
     SUPERSEDED_STATUS,
     CanonAuthority,
+    DeleteOutcome,
     ProposalOutcome,
+    RejectOutcome,
+    RestoreOutcome,
     has_canon_authority,
+    is_cd_canary_name,
     normalise_tier,
     open_cap_for,
     proposal_key,
+    proposal_reason_code,
     proposer_for,
+    require_reason,
     target_state_digest,
 )
 from mori_advisor.memory_store import (
@@ -562,6 +568,16 @@ class PostgresStore(BaseStore):
 
         validate_provenance(provenance, name, logger)
         authorised = has_canon_authority(provenance, _canon_authority)
+        # v2.3.17 (ruling P2-2): the CD canary names are reserved (see the SQLite twin).
+        if is_cd_canary_name(name) and tier != "canonical" and not authorised:
+            record_write_rejection("reserved_name", provenance.actor)
+            return WriteResult(
+                memory_name=name,
+                intended_tier=tier,
+                stored_tier="",
+                disposition=Disposition.REJECTED,
+                reason="reserved-name: cd-canary-* names are reserved for canon authority",
+            )
 
         async def _propose_canon(conn: Any) -> ProposalOutcome:
             proposer = proposer_for(provenance)
@@ -1009,7 +1025,7 @@ class PostgresStore(BaseStore):
         Does NOT bump retrieval_count (browse/API access, not agent recall).
         Returns exactly the DETAIL_KEYS shape:
           name, title, type, tier, tags, description, body,
-          created_at, updated_at, origin_clients, retrieval_count, freshness_status.
+          created_at, updated_at, origin_clients, retrieval_count, freshness_status, protected.
         """
         self._ensure_pool()
         async with self.pool.acquire() as conn:
@@ -1047,6 +1063,8 @@ class PostgresStore(BaseStore):
             "origin_clients": _to_list(r.get("origin_clients")),
             "retrieval_count": r.get("retrieval_count") or 0,
             "freshness_status": r.get("freshness_status") or "unknown",
+            # v2.3.17 (ruling P2-1): the deploy contract reads the canary's protection back.
+            "protected": bool(r.get("protected")),
         }
 
     async def list(self, type_filter=None, tag=None, session=None, client=None, limit=50) -> str:
@@ -1200,6 +1218,20 @@ class PostgresStore(BaseStore):
         provenance: Provenance | None = None,
         _canon_authority: CanonAuthority | None = None,
     ) -> str:
+        """Soft-delete: the human message of :meth:`soft_delete_outcome` (MCP, scripts)."""
+        out = await self.soft_delete_outcome(
+            name, actor=actor, provenance=provenance, _canon_authority=_canon_authority
+        )
+        return out.message
+
+    async def soft_delete_outcome(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
+    ) -> DeleteOutcome:
         """Set deleted_at = now on the active row.  Idempotent if already deleted.
 
         v2.3.11: the audit row is written in the same transaction (a stated exception to the
@@ -1207,49 +1239,78 @@ class PostgresStore(BaseStore):
 
         v2.3.16 (the canon lock): deleting a CANONICAL row without canon authority stores a
         ``delete`` proposal instead; the row is unchanged. The tier is read FOR UPDATE in the same
-        transaction."""
+        transaction.
+
+        v2.3.17: a structured :class:`DeleteOutcome`; a queued one carries the pending row's OWN
+        operation and proposer, read in this transaction."""
+        import asyncpg
+
         self._ensure_pool()
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                target = await _pg_active_target(conn, name, lock=True)
-                if (
-                    target is not None
-                    and target.get("tier") == "canonical"
-                    and not has_canon_authority(provenance, _canon_authority)
-                ):
-                    proposer = proposer_for(provenance) if provenance is not None else actor
-                    outcome = await _pg_propose(
-                        conn,
-                        name=name,
-                        proposer=proposer,
-                        operation="delete",
-                        title=target.get("title") or "",
-                        description=target.get("description") or "",
-                        type=target.get("type") or "project",
-                        body=target.get("body") or "",
-                        tags=as_tag_list(target.get("tags")),
-                        tier="canonical",
-                        cap=open_cap_for(
-                            proposer,
-                            provenance is not None and provenance.actor in REQUEST_ACTORS,
-                        ),
-                    )
-                    if outcome.queued:
-                        return (
-                            f"Memory '{name}' is canonical — the delete was queued as a proposal "
-                            f"(pending id {outcome.pending_id}); the memory is unchanged until a "
-                            "dreamer approves it."
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    target = await _pg_active_target(conn, name, lock=True)
+                    if (
+                        target is not None
+                        and target.get("tier") == "canonical"
+                        and not has_canon_authority(provenance, _canon_authority)
+                    ):
+                        proposer = proposer_for(provenance) if provenance is not None else actor
+                        outcome = await _pg_propose(
+                            conn,
+                            name=name,
+                            proposer=proposer,
+                            operation="delete",
+                            title=target.get("title") or "",
+                            description=target.get("description") or "",
+                            type=target.get("type") or "project",
+                            body=target.get("body") or "",
+                            tags=as_tag_list(target.get("tags")),
+                            tier="canonical",
+                            cap=open_cap_for(
+                                proposer,
+                                provenance is not None and provenance.actor in REQUEST_ACTORS,
+                            ),
                         )
-                    return f"Memory '{name}' NOT deleted — {outcome.reason}"
-                result = await conn.execute(
-                    "UPDATE memories SET deleted_at = NOW(), updated_at = NOW() "
-                    "WHERE name = $1 AND deleted_at IS NULL",
-                    name,
-                )
-                updated = int(result.split()[-1])
-                if updated:
-                    await _audit_in_txn(conn, "soft_delete", actor, name)
-        return f"Memory '{name}' soft-deleted." if updated else f"Memory '{name}' not found."
+                        if outcome.queued:
+                            row = await conn.fetchrow(
+                                "SELECT operation, proposed_by FROM pending_writes WHERE id = $1",
+                                outcome.pending_id,
+                            )
+                            return DeleteOutcome(
+                                kind="queued",
+                                name=name,
+                                pending_id=outcome.pending_id,
+                                operation=row["operation"] if row else None,
+                                proposed_by=row["proposed_by"] if row else None,
+                                message=(
+                                    f"Memory '{name}' is canonical — the delete was queued as a "
+                                    f"proposal (pending id {outcome.pending_id}); the memory is "
+                                    "unchanged until a dreamer approves it."
+                                ),
+                            )
+                        return DeleteOutcome(
+                            kind="refused",
+                            name=name,
+                            pending_id=outcome.pending_id,
+                            reason=proposal_reason_code(outcome),
+                            message=f"Memory '{name}' NOT deleted — {outcome.reason}",
+                        )
+                    result = await conn.execute(
+                        "UPDATE memories SET deleted_at = NOW(), updated_at = NOW() "
+                        "WHERE name = $1 AND deleted_at IS NULL",
+                        name,
+                    )
+                    updated = int(result.split()[-1])
+                    if updated:
+                        await _audit_in_txn(conn, "soft_delete", actor, name)
+        except asyncpg.PostgresError as e:
+            return DeleteOutcome(kind="error", name=name, message=f"Database error: {e}")
+        if updated:
+            return DeleteOutcome(
+                kind="applied", name=name, message=f"Memory '{name}' soft-deleted."
+            )
+        return DeleteOutcome(kind="not_found", name=name, message=f"Memory '{name}' not found.")
 
     async def hard_delete(
         self,
@@ -1259,33 +1320,61 @@ class PostgresStore(BaseStore):
         provenance: Provenance | None = None,
         _canon_authority: CanonAuthority | None = None,
     ) -> str:
+        """Hard delete: the human message of :meth:`hard_delete_outcome`."""
+        out = await self.hard_delete_outcome(
+            name, actor=actor, provenance=provenance, _canon_authority=_canon_authority
+        )
+        return out.message
+
+    async def hard_delete_outcome(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
+    ) -> DeleteOutcome:
         """Permanently remove a memory row (active or tombstoned) and its versions.
 
         memory_versions FK was dropped by migration 9 (partial indexes cannot be FK
         targets). Versions are cleaned up here to prevent orphans. Audited in-transaction.
 
         v2.3.16: REFUSED for any canonical row of this name (active or tombstoned) without canon
-        authority — there is no proposal for a permanent delete.
+        authority — there is no proposal for a permanent delete. v2.3.17: structured outcome.
         """
+        import asyncpg
+
         self._ensure_pool()
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                canon = await conn.fetchval(
-                    "SELECT 1 FROM memories WHERE name = $1 AND tier = 'canonical' LIMIT 1 "
-                    "FOR UPDATE",
-                    name,
-                )
-                if canon and not has_canon_authority(provenance, _canon_authority):
-                    return (
-                        f"Memory '{name}' is canonical — a permanent delete needs canon authority "
-                        "(a dreamer key). Not deleted."
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    canon = await conn.fetchval(
+                        "SELECT 1 FROM memories WHERE name = $1 AND tier = 'canonical' LIMIT 1 "
+                        "FOR UPDATE",
+                        name,
                     )
-                await conn.execute("DELETE FROM memory_versions WHERE memory_name = $1", name)
-                result = await conn.execute("DELETE FROM memories WHERE name = $1", name)
-                deleted = int(result.split()[-1])
-                if deleted:
-                    await _audit_in_txn(conn, "hard_delete", actor, name)
-        return f"Memory '{name}' permanently deleted." if deleted else f"Memory '{name}' not found."
+                    if canon and not has_canon_authority(provenance, _canon_authority):
+                        return DeleteOutcome(
+                            kind="refused",
+                            name=name,
+                            reason="canon-authority",
+                            message=(
+                                f"Memory '{name}' is canonical — a permanent delete needs canon "
+                                "authority (a dreamer key). Not deleted."
+                            ),
+                        )
+                    await conn.execute("DELETE FROM memory_versions WHERE memory_name = $1", name)
+                    result = await conn.execute("DELETE FROM memories WHERE name = $1", name)
+                    deleted = int(result.split()[-1])
+                    if deleted:
+                        await _audit_in_txn(conn, "hard_delete", actor, name)
+        except asyncpg.PostgresError as e:
+            return DeleteOutcome(kind="error", name=name, message=f"Database error: {e}")
+        if deleted:
+            return DeleteOutcome(
+                kind="applied", name=name, message=f"Memory '{name}' permanently deleted."
+            )
+        return DeleteOutcome(kind="not_found", name=name, message=f"Memory '{name}' not found.")
 
     async def restore_memory(
         self,
@@ -1295,11 +1384,28 @@ class PostgresStore(BaseStore):
         provenance: Provenance | None = None,
         _canon_authority: CanonAuthority | None = None,
     ) -> tuple[str, str]:
+        """Restore: ``(final_name, message)`` from :meth:`restore_outcome` (MCP, scripts)."""
+        out = await self.restore_outcome(
+            name, actor=actor, provenance=provenance, _canon_authority=_canon_authority
+        )
+        return (out.final_name or name), out.message
+
+    async def restore_outcome(
+        self,
+        name: str,
+        *,
+        actor: str = "system",
+        provenance: Provenance | None = None,
+        _canon_authority: CanonAuthority | None = None,
+    ) -> RestoreOutcome:
         """Restore a soft-deleted memory; rename to {name}_restored_{ts} on collision.
 
         v2.3.11, one transaction: undelete (or rename), re-point the incarnation's version history
         to the restored row, write the audit row. ``superseded_by`` is NOT cleared — that would be
         an unaudited unsupersede — but the message says so (use memory_unsupersede).
+
+        v2.3.17: a structured :class:`RestoreOutcome`; order: the deleted-row lookup, the canon
+        lock, the reserved canary names, the name collision.
         """
         self._ensure_pool()
         from datetime import datetime, timezone
@@ -1312,7 +1418,13 @@ class PostgresStore(BaseStore):
             )
         except asyncpg.exceptions.UniqueViolationError:
             # Raised out of the transaction (it rolled back) — never swallowed inside it.
-            return name, "Restore failed: name collision could not be resolved."
+            return RestoreOutcome(
+                kind="conflict",
+                name=name,
+                message="Restore failed: name collision could not be resolved.",
+            )
+        except asyncpg.PostgresError as e:
+            return RestoreOutcome(kind="error", name=name, message=f"Database error: {e}")
 
     async def _restore_memory_txn(
         self,
@@ -1322,7 +1434,7 @@ class PostgresStore(BaseStore):
         timezone: Any,
         provenance: Provenance | None = None,
         _canon_authority: CanonAuthority | None = None,
-    ) -> tuple[str, str]:
+    ) -> RestoreOutcome:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
@@ -1332,14 +1444,32 @@ class PostgresStore(BaseStore):
                     name,
                 )
                 if not row:
-                    return name, f"Memory '{name}' not found or not deleted."
+                    return RestoreOutcome(
+                        kind="not_found",
+                        name=name,
+                        message=f"Memory '{name}' not found or not deleted.",
+                    )
                 # v2.3.16: restoring a canonical row brings canon back — it needs canon authority.
-                if row["tier"] == "canonical" and not has_canon_authority(
-                    provenance, _canon_authority
-                ):
-                    return name, (
-                        f"Memory '{name}' is canonical — restoring it needs canon authority "
-                        "(a dreamer key). Not restored."
+                authority = has_canon_authority(provenance, _canon_authority)
+                if row["tier"] == "canonical" and not authority:
+                    return RestoreOutcome(
+                        kind="refused",
+                        name=name,
+                        reason="canon-authority",
+                        message=(
+                            f"Memory '{name}' is canonical — restoring it needs canon authority "
+                            "(a dreamer key). Not restored."
+                        ),
+                    )
+                if is_cd_canary_name(name) and not authority:
+                    return RestoreOutcome(
+                        kind="refused",
+                        name=name,
+                        reason="reserved-name",
+                        message=(
+                            f"Memory '{name}' has a reserved CD canary name — only canon authority "
+                            "restores it. Not restored."
+                        ),
                     )
                 collision = await conn.fetchval(
                     "SELECT 1 FROM memories WHERE name = $1 AND deleted_at IS NULL", name
@@ -1376,8 +1506,10 @@ class PostgresStore(BaseStore):
                 await _audit_in_txn(conn, op, actor, final_name, detail=f"original={name}")
                 note = await _superseded_note(conn, row["superseded_by"])
         if final_name != name:
-            return final_name, f"Restored '{name}' as '{final_name}' (name taken).{note}"
-        return name, f"Memory '{name}' restored.{note}"
+            msg = f"Restored '{name}' as '{final_name}' (name taken).{note}"
+        else:
+            msg = f"Memory '{name}' restored.{note}"
+        return RestoreOutcome(kind="applied", name=name, final_name=final_name, message=msg)
 
     async def insert_audit(
         self,
@@ -2348,22 +2480,33 @@ class PostgresStore(BaseStore):
             _canon_authority=token,
         )
 
-    async def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str:
+    async def reject(self, write_id: int, note: str = "", reviewer: str = "") -> RejectOutcome:
         """Reject an OPEN proposal (v2.3.16: guarded on status='pending' with a rowcount check —
-        it used to flip any row, approved ones included, and report success for any id)."""
+        it used to flip any row, approved ones included, and report success for any id).
+
+        v2.3.17 (ruling Q4): an empty or whitespace-only reason raises :class:`ReasonRequired`
+        before any update; returns a structured :class:`RejectOutcome`."""
+        reason = require_reason(write_id, note)
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             result = await conn.execute(
                 "UPDATE pending_writes SET status='rejected', review_note=$2, reviewed_by=$3, "
                 "reviewed_at=$4 WHERE id=$1 AND status='pending'",
                 write_id,
-                note,
+                reason,
                 reviewer or "local",
                 _now_utc(),
             )
-        if int(result.split()[-1]) == 0:
-            return f"Pending write {write_id} not found or already processed."
-        return f"Pending write {write_id} rejected."
+            if int(result.split()[-1]) == 0:
+                exists = await conn.fetchval("SELECT 1 FROM pending_writes WHERE id = $1", write_id)
+                return RejectOutcome(
+                    kind="not_pending" if exists else "not_found",
+                    write_id=write_id,
+                    message=f"Pending write {write_id} not found or already processed.",
+                )
+        return RejectOutcome(
+            kind="rejected", write_id=write_id, message=f"Pending write {write_id} rejected."
+        )
 
     async def set_pending_status(
         self, write_id: int, status: str, note: str = "", reviewer: str = ""
@@ -3610,7 +3753,13 @@ async def _pg_propose(
     )
     open_row = dict(open_rec) if open_rec else None
     if open_row:
-        if proposal_key(open_row) == proposal_key(fields):
+        # v2.3.17: a content-equal re-proposal is a no-op only for the SAME proposer. Another
+        # key's identical proposal is refused like any other (it used to come back 'queued'
+        # with the other key's id) — the deploy contract's proposer check depends on it.
+        if (
+            proposal_key(open_row) == proposal_key(fields)
+            and (open_row.get("proposed_by") or "") == proposer
+        ):
             return ProposalOutcome(
                 "noop",
                 open_row["id"],

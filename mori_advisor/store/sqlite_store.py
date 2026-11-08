@@ -169,6 +169,15 @@ class SQLiteStore(BaseStore):
     def restore_memory(self, name: str, *, actor: str = "system", **kwargs: Any) -> tuple:
         return self._mem.restore_memory(name, actor=actor, **kwargs)
 
+    def soft_delete_outcome(self, name: str, *, actor: str = "system", **kwargs: Any) -> Any:
+        return self._mem.soft_delete_outcome(name, actor=actor, **kwargs)
+
+    def hard_delete_outcome(self, name: str, *, actor: str = "system", **kwargs: Any) -> Any:
+        return self._mem.hard_delete_outcome(name, actor=actor, **kwargs)
+
+    def restore_outcome(self, name: str, *, actor: str = "system", **kwargs: Any) -> Any:
+        return self._mem.restore_outcome(name, actor=actor, **kwargs)
+
     def insert_audit(
         self,
         op: str,
@@ -347,7 +356,7 @@ class SQLiteStore(BaseStore):
     ) -> str:
         return self._mem.approve(write_id, note=note, reviewer=reviewer, tags=tags)
 
-    def reject(self, write_id: int, note: str = "", reviewer: str = "") -> str:
+    def reject(self, write_id: int, note: str = "", reviewer: str = "") -> Any:
         return self._mem.reject(write_id, note=note, reviewer=reviewer)
 
     def set_pending_status(

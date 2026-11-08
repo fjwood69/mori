@@ -109,7 +109,7 @@ powershell -File scripts/legacy/install-mori-claude.ps1
 ### What You'll Be Asked
 
 1. **Mori Server URL** — The address of your Mori server including port (default: `http://localhost:8968`)
-2. **API Key** — Your named key from `MORI_API_KEYS` on the server. Skip only if the server is running in open mode (no keys configured). Generate a key: `python3 -c "import secrets; print(secrets.token_hex(32))"` or use `mori-key_generate name="myhostname"` via MCP once connected.
+2. **API Key** — Your named key from `MORI_API_KEYS` on the server. Skip only if the server is running in open mode (no keys configured). The server's operator adds it with `scripts/mori-key-add.sh` (the server stores only its hash) and gives you the secret.
 3. **Client Name** — A name to identify this device in logs (default: hostname)
 4. **Install Target** — Whether to install for CLI, VS Code, or both
 
