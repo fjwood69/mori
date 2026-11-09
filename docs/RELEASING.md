@@ -61,6 +61,14 @@ release job; read-only token).
   environment. If the host is recreated, deploys fail until that secret is updated with the new key, verified out
   of band.
 
+## Evidence runs are never deleted
+
+A workflow run cited as evidence (a gate verdict, a dry run, the CI run a release relied on) is part of the audit
+trail: **never delete it.** If a cited run turns out to be wrong, supersede it with a new run, and record which run it
+replaces and why. GitHub lets anyone with write access delete runs, so this is a rule, not a control. It exists because
+the first two #73 negative-proof runs (41354577460 and 41354583075, 2026-11-01) were deleted after being cited, leaving
+only a 404 behind. The proof of record is their re-runs, 41358366883 and 41358374029.
+
 ## Known gaps (disclosed)
 
 - The gate runs from the tagged commit's own `cd.yml`. A tag on a commit older than the gate runs no gate. The
