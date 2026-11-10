@@ -451,7 +451,7 @@ Key environment variables:
 | `MORI_DREAM_MODEL` | falls back to `MORI_MODEL` | Dream + ingest distillation model |
 | `MORI_FAST_MODEL` | `deepseek/deepseek-v4-flash` | Contradiction scan + freshness checks |
 | `MORI_API_KEYS` | — | Named client API keys: `name:secret,...`, or hashed `name:sha256:<hex>` (v2.3.17, recommended for production; the first entry stays plain) — see [Authentication](docs/reference/configuration.md#authentication) |
-| `MORI_BRIEF_SCOPE` | `safe` | `safe` = provenance-routed brief (cross-project origin-bound canon withheld; explicit `scope:global` only); `all` = legacy, no scoping |
+| `MORI_BRIEF_SCOPE` | `safe` | `safe` = provenance-routed brief (cross-project origin-bound canon withheld; explicit `scope:global` only); `all` = legacy, no scoping. In both, the global lane admits canonical rows only (v2.3.18) |
 | `MORI_TRUSTED_DREAMERS` | — | Comma-separated trusted hostnames |
 | `MORI_DREAM_INTERVAL` | `60` | Dream cron interval (minutes) |
 | `MORI_STANDARDS_DIR` | — | Path to team standards `.md` files |

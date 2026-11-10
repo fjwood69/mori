@@ -264,7 +264,7 @@ jobs:
       - name: Run dual-backend tests against Postgres
         env:
           MORI_TEST_DATABASE_URL: postgresql://mori:testpw@localhost:5432/mori
-        run: pytest -q -W error::RuntimeWarning tests/test_migrations.py tests/test_search.py tests/test_rest_api.py tests/test_mcp_tools.py tests/test_classifier_fail_closed.py tests/test_perf003_check_freshness.py tests/test_jsonb_write_path.py tests/test_recovery_path.py tests/test_supersession_review.py tests/test_audit_softdelete.py tests/test_v2312_hardening.py tests/test_b1_fix.py tests/test_b1_decision_brief_reach.py tests/test_req_list.py tests/test_canon_lock.py tests/test_canon_lock_more.py tests/test_tier_enforce.py tests/test_tier_authorize.py tests/test_td_review.py tests/test_write_api.py tests/test_v2317_doors.py
+        run: pytest -q -W error::RuntimeWarning tests/test_migrations.py tests/test_search.py tests/test_rest_api.py tests/test_mcp_tools.py tests/test_classifier_fail_closed.py tests/test_perf003_check_freshness.py tests/test_jsonb_write_path.py tests/test_recovery_path.py tests/test_supersession_review.py tests/test_audit_softdelete.py tests/test_v2312_hardening.py tests/test_b1_fix.py tests/test_b1_decision_brief_reach.py tests/test_req_list.py tests/test_canon_lock.py tests/test_canon_lock_more.py tests/test_tier_enforce.py tests/test_tier_authorize.py tests/test_td_review.py tests/test_write_api.py tests/test_v2317_doors.py tests/test_v2318_global_tier.py
 
   docker:
     name: Docker build check

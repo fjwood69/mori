@@ -10,6 +10,13 @@ Comparison is on name+order per lane (not full row bodies) because both methods
 bump retrieval_count as a side effect — the volatile counters would diverge between
 the two calls. Lane assignment + ordering + index is the parity that drives the
 brief text.
+
+v2.3.18: on tier the global lane departs from the oracle on purpose — it admits canonical
+rows only. The oracle is frozen; the expected global lane is the oracle's, filtered to
+canonical, and the rows that drop out must be exactly its non-canonical rows. Some global
+fixtures are canonical so the scope comparison stays non-vacuous; the ones that now differ
+on purpose are ``profile-leak`` (auto-global, working) and, outside project foo,
+``global-and-foo`` (explicit global, working).
 """
 
 import pytest
@@ -58,6 +65,13 @@ def _seed(ms):
     _write(ms, "bar-mem", tags=["project:bar"])
     _write(ms, "bare-unrouted", tags=[])  # type=project, no tags → surfaced nowhere
     _write(ms, "multi", tags=["project:foo", "project:bar"])
+    # canonical global fixtures (forced: a plain write of canonical is a proposal under the canon lock)
+    for name in ("pattern-leak", "explicit-global", "xproj-bar"):
+        _set_columns(ms, name, tier="canonical")
+
+
+def _canonical_only(lane):
+    return [m for m in lane if m["tier"] == "canonical"]
 
 
 def _names(lane):
@@ -80,9 +94,11 @@ def test_filter_by_scope_matches_oracle(tmp_path, project, strict_global, includ
     assert _names(scoped["project_memories"]) == _names(legacy["project_memories"]), (
         f"project lane mismatch [{ctx}]"
     )
-    assert _names(scoped["global_memories"]) == _names(legacy["global_memories"]), (
-        f"global lane mismatch [{ctx}]"
-    )
+    assert _names(scoped["global_memories"]) == _names(
+        _canonical_only(legacy["global_memories"])
+    ), f"global lane mismatch [{ctx}]"
+    dropped = [m for m in legacy["global_memories"] if m["tier"] != "canonical"]
+    assert scoped["global_withheld"] == len(dropped), f"withheld count [{ctx}]"
     assert scoped["other_projects"] == legacy["other_projects"], f"index mismatch [{ctx}]"
 
 

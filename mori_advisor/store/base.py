@@ -183,9 +183,11 @@ class BaseStore(ABC):
     ) -> dict:
         """H2 generic scope-filter drop-in for get_memories_by_project (Phase 4b).
 
-        Same signature + return shape; membership decided by the flat scope filter
-        so a per-memory scope map can govern routing. Byte-identical to the oracle
-        for legacy (NULL-scope) rows — the Phase 5 parity commitment.
+        Same signature; returns the oracle's three keys plus ``global_withheld``. Every
+        row is decided through ``resolver.brief_membership``: the project lane admits
+        canonical + working, the global lane canonical only (v2.3.18), so on tier the
+        global lane departs from the oracle on purpose. ``global_withheld`` counts the
+        global-partition rows in scope but not canonical.
         """
         ...
 

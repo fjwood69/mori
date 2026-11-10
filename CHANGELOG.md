@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.3.18 — The global lane of `/brief` admits canonical rows only
+
+**Environment and threat model.** api mode with the canon lock; the mori boundary — an agent holding a `write` key,
+acting through mori's MCP and REST surface.
+
+**What was wrong.** A row reaches *every* session through the brief's global lane (a `scope:global` /
+`scope:cross-project` tag, or a stored global `scope` map). That lane had no tier rule: a `write` key could write a
+**working** row tagged `scope:global`, and it reached every session on the next brief without review. Ephemeral rows
+could reach it too.
+
+**What changes.**
+- **Working and ephemeral global rows no longer reach every session.** The global lane admits canonical rows only —
+  under the canon lock, the one tier a `write` key cannot produce on its own. One rule decides it
+  (`resolver.brief_membership`), and both backends' `filter_by_scope` now decide every row through it, so the scoped
+  brief, the unscoped safe brief and the post-compact delta agree.
+- **The project lane is unchanged**: it still admits canonical and working rows, so a working row tagged both
+  `project:P` and `scope:global` still reaches P's own brief.
+- **The brief says what it is not showing**, by count only: "N global memories are not shown until reviewed (not canonical)".
+- **`/req` is unchanged**: its listing bypasses tier on both lanes, so a demoted requirement does not vanish from it.
+
+**What this does not claim.** Not everything in a brief has been reviewed: the project lane still admits working rows
+(any `write` key can tag a row for a project), and the goals and standards headers print cross-project *counts*.
+`scope="all"` (opt-in, legacy) stays outside the guarantee: its unscoped listing and the post-compact delta's unscoped
+path return every row, any tier.
+
+> **Before upgrading:** list the live rows tagged `scope:global` or `scope:cross-project` that are not canonical
+> (`tier <> 'canonical' AND deleted_at IS NULL AND superseded_by IS NULL`). After the upgrade they stop appearing in
+> briefs; promote the ones every session should see with a review (dreamer) key. Unpromoted rows stay readable through
+> search, list and read. The brief no longer counts as a retrieval of an unpromoted row, so unless search, list or read
+> touches it, it ages into the orphan scan (unprotected non-canonical rows not retrieved in 30 days; flagged for review,
+> never deleted). With `MORI_BRIEF_SCOPE=all`, untagged working `profile`/`pattern` rows (auto-global in that mode)
+> leave the global lane too — in briefs that go through the filter (a project brief); the unscoped `all` listing still
+> returns every row.
+
+**Tests.** The parity manifest's frozen oracle still admits any tier on the global lane; the manifest now expects the
+oracle's global lane filtered to canonical, and counts the rows that drop out from the seed's own dimensions.
+
 ## v2.3.17 — Honest door responses; a rejection needs a reason; optional hashed keys
 
 > **Erratum (v2.3.16).** In v2.3.16, the canon lock held on every path. In host mode,

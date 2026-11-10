@@ -1754,17 +1754,16 @@ class PostgresStore(BaseStore):
     ) -> dict:
         """Postgres twin of MemoryStore.filter_by_scope — the H2 subsumption shim.
 
-        Membership is decided generically (resolver.compile_memory_scope +
-        scope.in_scope); the legacy partition, tier asymmetry, ORDER BY and
-        other-project index are preserved verbatim so the brief output is
-        byte-identical to ``get_memories_by_project`` for legacy (NULL-scope) rows.
-        See the SQLite docstring for the full rationale.
+        Every row is decided through ``resolver.brief_membership``, the brief's one rule:
+        the project lane admits canonical + working, the global lane canonical only
+        (v2.3.18), and ``global_withheld`` counts the global-partition rows in scope but
+        not canonical. The legacy partition, project-lane ORDER BY and other-project index
+        are preserved; on tier the global lane departs from ``get_memories_by_project`` on
+        purpose. See the SQLite docstring for the full rationale.
         """
-        from mori_advisor.resolver import compile_context_tags, compile_memory_scope
-        from mori_advisor.scope import in_scope
+        from mori_advisor.resolver import brief_membership, split_global_lane
 
         self._ensure_pool()
-        context = compile_context_tags(project, strict_global)
         tag_value = f"project:{project}"
 
         def _row_to_dict(row) -> dict:
@@ -1792,14 +1791,14 @@ class PostgresStore(BaseStore):
             )
             global_rows: list = []
             if include_global:
-                # Global-lane candidates — legacy global query MINUS the tag clauses,
-                # no tier filter (legacy global lane surfaces any tier).
+                # Global-lane candidates — every live row, with no tier clause: brief_membership
+                # admits canonical only, and the rows it does not admit are counted below.
                 global_rows = await conn.fetch(
                     """
                     SELECT * FROM memories
                     WHERE (superseded_by IS NULL OR superseded_by = '')
                       AND deleted_at IS NULL
-                    ORDER BY tier DESC, updated_at DESC, id DESC
+                    ORDER BY updated_at DESC, id DESC
                     """
                 )
             # Other-project index — identical query to the oracle.
@@ -1817,19 +1816,14 @@ class PostgresStore(BaseStore):
                 json.dumps([tag_value]),
             )
 
-        def _kept(d: dict) -> bool:
-            return in_scope(compile_memory_scope(d), context)
-
         project_memories = [
             d
             for d in (_row_to_dict(r) for r in project_rows)
-            if tag_value in d["tags"] and _kept(d)
+            if tag_value in d["tags"] and brief_membership(d, project, strict_global)
         ]
-        global_memories = [
-            d
-            for d in (_row_to_dict(r) for r in global_rows)
-            if tag_value not in d["tags"] and _kept(d)
-        ]
+        global_memories, global_withheld = split_global_lane(
+            [_row_to_dict(r) for r in global_rows], project, strict_global
+        )
         self._bump_retrieval_bg(
             [m["name"] for m in project_memories] + [m["name"] for m in global_memories]
         )
@@ -1848,6 +1842,7 @@ class PostgresStore(BaseStore):
             "project_memories": project_memories,
             "global_memories": global_memories,
             "other_projects": other_projects,
+            "global_withheld": global_withheld,
         }
 
     async def get_memories_changed_window(

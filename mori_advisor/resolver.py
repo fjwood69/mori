@@ -37,8 +37,10 @@ Truth table (one project ``P``, context = safe ``{project:P}`` / all
   * profile/pattern + project:P  → scope {project:P, legacy:…} → in (safe & all)
   * other-project ``project:Q``  → scope {project:Q}           → out (safe & all)
 
-Pure + dependency-light (only ``scope.ScopeMap``); the lane partition and tier
-asymmetry live in the store method that consumes these, not here.
+Scope is only half of brief membership. ``brief_membership`` (below) adds the tier rule, and both backends'
+``filter_by_scope`` decide every row through it: the project lane admits canonical + working, the global lane
+canonical only (v2.3.18). The parity commitment above therefore holds for scope; on tier, the global lane departs
+from the frozen oracle on purpose — the oracle surfaces any tier there.
 """
 
 from __future__ import annotations
@@ -133,27 +135,32 @@ def compile_context_tags(project: str | None, strict_global: bool) -> frozenset[
 
 
 BRIEF_PROJECT_LANE_TIERS = frozenset({"canonical", "working"})
+# v2.3.18 (board, 10 Nov 2026): a row that reaches EVERY session must be one a reviewer accepted. Under the canon lock
+# canonical is the only tier a write key cannot produce on its own, so it is the only tier admitted here. Before this,
+# a write key's working row tagged scope:global reached every brief.
+BRIEF_GLOBAL_LANE_TIERS = frozenset({"canonical"})
 
 
 def brief_membership(
     row: dict[str, Any], project: str | None, strict_global: bool, tier_gate: bool = True
 ) -> bool:
-    """The normal brief's membership rule for ONE row, as ``filter_by_scope`` applies it (B1, 2026-11-01).
+    """The brief's membership rule for ONE row — the only one (B1, 2026-11-01; v2.3.18).
 
-    Shared by every path that surfaces memories into a brief (the post-compact delta included), so the paths
-    cannot drift apart again:
+    Every path that surfaces memories into a brief decides through this function: both backends' ``filter_by_scope``
+    (the scoped brief and the unscoped safe brief) and the post-compact delta.
 
       * the row must be ``in_scope`` of the context compiled from ``(project, strict_global)``;
-      * project lane = the row carries the raw ``project:<P>`` tag -> tier-gated to canonical/working
-        (``filter_by_scope``'s project-lane query);
-      * global lane = in scope without that tag -> any tier (the legacy global lane has no tier filter).
+      * project lane = the row carries the raw ``project:<P>`` tag -> tier in ``BRIEF_PROJECT_LANE_TIERS``
+        (canonical, working);
+      * global lane = in scope without that tag -> tier in ``BRIEF_GLOBAL_LANE_TIERS`` (canonical only). The tier is
+        read from the row, so a row whose stored ``scope`` map makes it global is bound exactly like a tagged one.
 
     With ``project`` empty and ``strict_global`` True (the unscoped safe brief) only genuinely global rows match.
     An untagged row compiles to the UNROUTED sentinel and never matches.
 
-    ``tier_gate=False`` drops the project-lane tier gate and keeps the scope rule (v2.3.15, the requirements listing):
-    a demoted requirement is still the project's requirement, and must not vanish from ``/req list`` silently.
-    Briefs keep the default.
+    ``tier_gate=False`` drops the tier rule on BOTH lanes and keeps the scope rule. Its one caller is the requirements
+    listing (``/req``, v2.3.15): a demoted requirement is still the project's requirement and must not vanish from the
+    list silently. Briefs never pass it.
     """
     from mori_advisor.scope import in_scope
 
@@ -170,6 +177,32 @@ def brief_membership(
             tags = parsed if isinstance(parsed, list) else []
         except ValueError:
             tags = []
-    if tier_gate and project and f"project:{project}" in {str(t) for t in tags}:
-        return str(row.get("tier", "")) in BRIEF_PROJECT_LANE_TIERS
-    return True
+    if not tier_gate:
+        return True
+    tier = str(row.get("tier", ""))
+    if project and f"project:{project}" in {str(t) for t in tags}:
+        return tier in BRIEF_PROJECT_LANE_TIERS
+    return tier in BRIEF_GLOBAL_LANE_TIERS
+
+
+def split_global_lane(
+    rows: list[dict[str, Any]], project: str | None, strict_global: bool
+) -> tuple[list[dict[str, Any]], int]:
+    """The global lane of one brief call, from its candidate rows: ``(admitted, withheld)`` (v2.3.18).
+
+    The global partition is every row NOT tagged ``project:<P>`` (the legacy ``NOT LIKE`` exclusion; a row so tagged
+    belongs to the project lane). Of those, ``brief_membership`` admits the canonical ones in scope; ``withheld``
+    counts the ones in scope but not canonical — scope first, so out-of-scope rows are never counted. Both backends'
+    ``filter_by_scope`` call this, so the split exists once. Input order is kept.
+    """
+    tag_value = f"project:{project}"
+    admitted: list[dict[str, Any]] = []
+    withheld = 0
+    for d in rows:
+        if tag_value in d["tags"]:
+            continue
+        if brief_membership(d, project, strict_global):
+            admitted.append(d)
+        elif brief_membership(d, project, strict_global, tier_gate=False):
+            withheld += 1
+    return admitted, withheld

@@ -1071,6 +1071,14 @@ async def _post_compact_brief(
     return "\n".join(parts)
 
 
+def _global_withheld_line(n: int) -> str:
+    """The global lane's withheld count, by count only (zero-knowledge, like the delta's withheld line)."""
+    if not n:
+        return ""
+    noun = "memory is" if n == 1 else "memories are"
+    return f"\n*{n} global {noun} not shown until reviewed (not canonical).*"
+
+
 @mcp.tool()
 async def brief(
     project: str | None = None,
@@ -1096,7 +1104,13 @@ async def brief(
                  hallucinate the missing payload (use /pensieve to search other projects
                  explicitly). Unscoped brief surfaces the global lane only.
       - "all":   legacy behaviour — auto-global by type, other-project index shown, and an
-                 unscoped brief lists everything (limit=50). Opt-in for solo/single-repo use.
+                 unscoped brief lists everything (limit=50). Opt-in for solo/single-repo use,
+                 and outside the guarantee below: the unscoped list and the delta's unscoped
+                 path return every row, any tier.
+
+    Tiers (v2.3.18): the global lane — what reaches every session — admits canonical rows only,
+    the rows a reviewer accepted; the project lane admits canonical + working. The brief says how
+    many global rows it is not showing, by count only.
 
     Also runs a freshness check on canonical memories and reports dream state.
 
@@ -1195,6 +1209,9 @@ async def brief(
                 for m in glob_mems:
                     lines.append(f"- **{m['name']}**: {m['title']} ({m['type']})")
                 parts.append("\n".join(lines))
+            withheld_line = _global_withheld_line(scoped.get("global_withheld", 0))
+            if withheld_line:
+                parts.append(withheld_line)
 
             # Other-project memories. In SAFE scope these are ZERO-KNOWLEDGE — not even an
             # index — because teasing the agent with an out-of-scope rule title induces it to
@@ -1237,6 +1254,9 @@ async def brief(
                     parts.append("\n".join(lines))
                 else:
                     parts.append("**Shared memories:** 0 global (no project scope set)")
+                withheld_line = _global_withheld_line(gl.get("global_withheld", 0))
+                if withheld_line:
+                    parts.append(withheld_line)
                 parts.append(
                     '*Project-scoped memories withheld — pass a project or scope="all" to include them.*'
                 )

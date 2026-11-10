@@ -18,7 +18,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_mcp_tools import BACKENDS, _run_with_backend, _seed_memory, _stub_brief_env
+from tests.test_mcp_tools import (
+    BACKENDS,
+    _run_with_backend,
+    _seed_canonical_memory,
+    _seed_memory,
+    _stub_brief_env,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -43,8 +49,10 @@ async def _seed_mix(store):
     await _seed_memory(store, name="this-proj", tags=["project:mori"])
     await _seed_memory(store, name="other-proj", tags=["project:other"])
     await _seed_memory(store, name="untagged-row", tags=[])
-    await _seed_memory(store, name="untagged-pattern", type="pattern", tags=[])
-    await _seed_memory(store, name="explicit-global", tags=["scope:global"])
+    # The two global-lane fixtures are canonical: these tests are about SCOPE, and v2.3.18's global lane admits
+    # canonical rows only (its tier rule is pinned in test_v2318_global_tier).
+    await _seed_canonical_memory(store, name="untagged-pattern", type="pattern", tags=[])
+    await _seed_canonical_memory(store, name="explicit-global", tags=["scope:global"])
 
 
 def _names_listed(out: str, names) -> set:
