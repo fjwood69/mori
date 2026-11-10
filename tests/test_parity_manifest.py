@@ -15,6 +15,14 @@ Both methods run on SEPARATE identically-seeded stores so the retrieval bump eac
 performs doesn't cross-contaminate; the two volatile fields are still stripped
 before comparison because their wall-clock timestamps can differ by a tick.
 
+v2.3.18 — the one intentional divergence: the global lane admits canonical rows only. The
+oracle (``get_memories_by_project``) is frozen and still admits any tier there, so the
+expected global lane is the oracle's filtered to canonical — byte-identical for every row
+that survives, in the oracle's order. The rows that drop out are counted from the seed's
+own dimensions (``_expected_dropped``), not from the code under test: per setting, every
+non-canonical global-lane fixture (working and candidate; explicit-global rows, plus the
+profile/pattern auto-global rows in "all" mode) not tagged for the active project.
+
 Ordering note: a `, id DESC` tiebreaker was added to BOTH the oracle and
 filter_by_scope ORDER BYs (Fred-approved), making the sort total — so order is now
 deterministic even on tied (tier, updated_at) keys. This manifest still seeds
@@ -91,6 +99,23 @@ def _seed(ms):
     return i
 
 
+def _canonical_only(lane):
+    return [m for m in lane if m["tier"] == "canonical"]
+
+
+def _expected_dropped(project_tags, project, strict, incl):
+    """How many global-lane fixtures v2.3.18 drops for one setting, from the seed dimensions alone."""
+    if not incl:
+        return 0
+    not_tagged = sum(1 for p in project_tags if f"project:{project}" not in p)
+    explicit = (len(_GLOBAL_TAGS) - 1) * len(_TYPES)  # scope:global / scope:cross-project, any type
+    auto = (
+        0 if strict else len({"profile", "pattern"} & set(_TYPES))
+    )  # untagged auto-global, "all" only
+    non_canonical = len([t for t in _TIERS if t != "canonical"])
+    return not_tagged * (explicit + auto) * non_canonical
+
+
 def _strip(lane):
     return [{k: v for k, v in m.items() if k not in _VOLATILE} for m in lane]
 
@@ -110,6 +135,14 @@ def test_parity_manifest_byte_identical(tmp_path):
             project, include_global=incl, strict_global=strict
         )
         scoped = scope_store.filter_by_scope(project, include_global=incl, strict_global=strict)
+        dropped = [m["name"] for m in legacy["global_memories"] if m["tier"] != "canonical"]
+        want = _expected_dropped(_PROJECT_TAGS, project, strict, incl)
+        if len(dropped) != want or scoped["global_withheld"] != want:
+            mismatches.append(
+                f"project={project} strict={strict} incl={incl} DROPPED: expected {want}, "
+                f"oracle non-canonical {len(dropped)}, withheld {scoped['global_withheld']}"
+            )
+        legacy = {**legacy, "global_memories": _canonical_only(legacy["global_memories"])}
         for lane in ("project_memories", "global_memories"):
             # Unconditional membership parity (order-insensitive multiset).
             if sorted(m["name"] for m in scoped[lane]) != sorted(m["name"] for m in legacy[lane]):
@@ -150,10 +183,10 @@ def test_tiebreaker_makes_tied_order_deterministic(tmp_path):
                 name=nm, title=nm, body="body", type="project", tier="working", tags=["project:foo"]
             )
             _force(ms, nm, updated_at="2026-06-19 00:00:00")
-        for k in range(1, 5):  # global lane (auto-global pattern), all tied
+        for k in range(1, 5):  # global lane (auto-global pattern), all tied; canonical (v2.3.18)
             nm = f"g{k:02d}"
             ms.write(name=nm, title=nm, body="body", type="pattern", tier="working", tags=[])
-            _force(ms, nm, updated_at="2026-06-19 00:00:00")
+            _force(ms, nm, tier="canonical", updated_at="2026-06-19 00:00:00")
 
     legacy = legacy_store.get_memories_by_project("foo", include_global=True, strict_global=False)
     scoped = scope_store.filter_by_scope("foo", include_global=True, strict_global=False)
@@ -238,11 +271,22 @@ def test_parity_manifest_pg():
             m["name"] for m in legacy["project_memories"]
         ]:
             mismatches.append(f"{ctx} project lane order")
-        # Global lane — may interleave foreign rows / tie: multiset membership.
+        # Global lane — may interleave foreign rows / tie: multiset membership. v2.3.18: the expected lane is the
+        # oracle's filtered to canonical; this test's own dropped rows are counted from the seed dimensions.
         if sorted(m["name"] for m in scoped["global_memories"]) != sorted(
-            m["name"] for m in legacy["global_memories"]
+            m["name"] for m in _canonical_only(legacy["global_memories"])
         ):
             mismatches.append(f"{ctx} global lane membership")
+        # global_withheld is not asserted exactly here: the test database is shared, so it also counts other tests'
+        # live rows. The exact count is pinned per backend by test_v2318_global_tier and the SQLite manifest.
+        own_dropped = [
+            m["name"]
+            for m in legacy["global_memories"]
+            if m["tier"] != "canonical" and m["name"].startswith(pfx)
+        ]
+        want = _expected_dropped(proj_variants, project, strict, incl)
+        if len(own_dropped) != want:
+            mismatches.append(f"{ctx} dropped: expected {want}, got {len(own_dropped)}")
         if dict(scoped["other_projects"]) != dict(legacy["other_projects"]):
             mismatches.append(f"{ctx} other_projects")
     assert not mismatches, "PG parity broken:\n" + "\n".join(mismatches)

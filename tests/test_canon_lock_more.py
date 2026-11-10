@@ -353,28 +353,39 @@ def test_v1_brief_project_lane_lists_working_rows_as_index_lines(backend, tmp_pa
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-def test_v1_global_lane_has_no_tier_filter(backend, tmp_path, monkeypatch):
-    """MEASURED 7 Nov (pinned): the global lane selects any tier — an ephemeral row tagged
-    scope:global reaches the global-lane candidates. The next release's first item."""
+def test_v1_global_lane_admits_canonical_only(backend, tmp_path, monkeypatch):
+    """Was ``test_v1_global_lane_has_no_tier_filter`` (MEASURED 7 Nov): an ephemeral row tagged scope:global reached
+    the global lane. v2.3.18: no working or ephemeral scope:global row reaches ``global_memories``; canonical does."""
     from mori_advisor.provenance import SYSTEM
 
     async def run(store):
-        await _a(
-            _ms(store)._write(
-                name="eph-global",
-                title="E",
-                tier="ephemeral",
-                body="b",
-                description="d",
-                tags=["scope:global"],
-                provenance=SYSTEM,
+        for name, tier in (("eph-global", "ephemeral"), ("work-global", "working")):
+            await _a(
+                _ms(store)._write(
+                    name=name,
+                    title="E",
+                    tier=tier,
+                    body="b",
+                    description="d",
+                    tags=["scope:global"],
+                    provenance=SYSTEM,
+                )
             )
+        await _seed_canon(store, "canon-global")
+        await _exec(
+            store,
+            "UPDATE memories SET tags = '[\"scope:global\"]' WHERE name = ?",
+            "UPDATE memories SET tags = '[\"scope:global\"]'::jsonb WHERE name = $1",
+            "canon-global",
         )
-        lanes = await _a(
-            _ms(store).filter_by_scope("demo", include_global=True, strict_global=True)
-        )
-        names = {r["name"] for r in lanes["global_memories"]}
-        assert "eph-global" in names, lanes
+        for project in ("demo", ""):
+            lanes = await _a(
+                _ms(store).filter_by_scope(project, include_global=True, strict_global=True)
+            )
+            names = {r["name"] for r in lanes["global_memories"]}
+            assert "eph-global" not in names and "work-global" not in names, (project, names)
+            assert "canon-global" in names, (project, names)
+            assert lanes["global_withheld"] == 2, (project, lanes["global_withheld"])
 
     _run_with_backend(backend, tmp_path, monkeypatch, run)
 

@@ -155,6 +155,29 @@ async def _seed_memory(store, name="test-mem", **kwargs):
     return result
 
 
+async def _seed_canonical_memory(store, name="test-canon", **kwargs):
+    """Write a CANONICAL memory with the seed token (v2.3.18: the global lane admits canonical rows only, and a
+    plain write of a canonical row becomes a proposal under the canon lock)."""
+    from mori_advisor.canon_authority import CanonAuthority
+    from mori_advisor.provenance import SYSTEM
+
+    defaults = dict(title="Test memory", body="Test body content", type="project", tags=["test"])
+    defaults.update(kwargs)
+    ms = store._mem if hasattr(store, "_mem") else store
+    result = ms._write(
+        name=name,
+        description="seeded canonical row for a test",
+        tier="canonical",
+        provenance=SYSTEM,
+        _canon_authority=CanonAuthority("test-seed"),
+        **defaults,
+    )
+    if inspect.isawaitable(result):
+        result = await result
+    assert result.accepted, result
+    return result
+
+
 async def _seed_requirement(store, name="req-test"):
     """Write a requirement memory (needed by memory_req)."""
     result = store.write(
@@ -696,8 +719,9 @@ def test_brief_scoped_safe_blocks_type_global_leak(backend, tmp_path, monkeypatc
 
     async def run(store):
         await _seed_memory(store, name="this-proj", tags=["project:mori"])
-        # origin-bound knowledge mistyped as a transferable 'pattern' — the cross-project leak
-        await _seed_memory(store, name="leaky-pattern", type="pattern", tags=[])
+        # origin-bound knowledge mistyped as a transferable 'pattern' — the cross-project leak. Canonical, so the
+        # global lane's tier rule (v2.3.18) admits it and only SCOPE decides here.
+        await _seed_canonical_memory(store, name="leaky-pattern", type="pattern", tags=[])
         _stub_brief_env(m, monkeypatch, store, tmp_path)
 
         legacy = await brief(project="mori", scope="all")
@@ -720,7 +744,7 @@ def test_brief_unscoped_safe_global_only(backend, tmp_path, monkeypatch):
 
     async def run(store):
         await _seed_memory(store, name="proj-only", tags=["project:mori"])
-        await _seed_memory(store, name="glob-mem", tags=["scope:global"])
+        await _seed_canonical_memory(store, name="glob-mem", tags=["scope:global"])
         _stub_brief_env(m, monkeypatch, store, tmp_path)
 
         safe = await brief(project=None, scope="safe")

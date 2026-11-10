@@ -214,4 +214,4 @@ Decided on paper now. Open core stays thin.
 
 ---
 
-*Last updated: v2.3.17 — 2026-11-08*
+*Last updated: v2.3.18 — 2026-11-10*

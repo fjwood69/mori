@@ -72,7 +72,21 @@ def _seed(s):
         tier="working",
         tags=["project:demo"],
     )
-    s.write(name="glob", title="Global", body="z", type="pattern", tags=["scope:global"])
+    from mori_advisor.canon_authority import CanonAuthority
+    from mori_advisor.provenance import SYSTEM
+
+    # Canonical: v2.3.18's global lane admits canonical rows only; these tests are about scope.
+    s._write(
+        name="glob",
+        title="Global",
+        description="d",
+        body="z",
+        type="pattern",
+        tier="canonical",
+        tags=["scope:global"],
+        provenance=SYSTEM,
+        _canon_authority=CanonAuthority("test-seed"),
+    )
     s.write(
         name="other", title="Other", body="w", type="project", tier="working", tags=["project:zzz"]
     )

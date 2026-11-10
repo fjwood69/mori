@@ -2564,22 +2564,26 @@ class MemoryStore:
         (`resolver.compile_memory_scope` + `scope.in_scope`) instead of the
         special-cased ``tags LIKE`` clauses.
 
-        Same signature, same return shape, byte-identical output for legacy rows
-        (NULL ``scope`` column) — that is the Phase 5 parity commitment. What it
-        adds: a per-memory ``scope`` map (migration 15) now governs routing, so a
-        memory can declare a richer home than a single ``project:`` tag.
+        Same signature and return shape, plus ``global_withheld``. For legacy rows
+        (NULL ``scope`` column) the project lane and the *scope* of the global lane are
+        byte-identical to the oracle — the Phase 5 parity commitment. On tier the global
+        lane departs from it on purpose (v2.3.18): it admits canonical rows only, where
+        the oracle admits any tier. A per-memory ``scope`` map (migration 15) governs
+        routing, so a memory can declare a richer home than a single ``project:`` tag.
 
         How parity is held without copying the special-cased SQL:
           * load the project-lane and global-lane *candidates* with the EXACT same
             ``WHERE``/tier/``ORDER BY`` as the legacy queries — minus the
             ``tags LIKE project:P`` membership clause;
-          * decide membership generically via ``in_scope`` against the context
-            compiled from ``(project, strict_global)``;
+          * decide each row through ``resolver.brief_membership`` — the brief's one rule
+            (scope via ``in_scope``, then the lane's tier);
           * preserve the legacy *partition* with a raw-tag check — project lane =
-            tagged ``project:P`` (tier-gated by the candidate query); global lane =
-            kept-and-NOT-tagged-``project:P`` (mirrors the legacy ``NOT LIKE``
-            exclusion). Dropping rows from an already-ordered candidate list keeps
-            the surviving order identical, so no Python re-sort is needed.
+            tagged ``project:P``; global lane = kept-and-NOT-tagged-``project:P``
+            (mirrors the legacy ``NOT LIKE`` exclusion). ``global_withheld`` counts the
+            global-partition rows that are in scope but not canonical, from the same
+            candidates, so the brief can say how many it is not showing
+            (``resolver.split_global_lane``). Dropping rows from an already-ordered
+            candidate list keeps the surviving order identical, so no re-sort is needed.
 
         A project-tagged row whose *explicit* scope excludes the active project is
         correctly surfaced nowhere — explicit scope wins (legacy rows can't hit
@@ -2587,10 +2591,8 @@ class MemoryStore:
         """
         import sqlite3
 
-        from mori_advisor.resolver import compile_context_tags, compile_memory_scope
-        from mori_advisor.scope import in_scope
+        from mori_advisor.resolver import brief_membership, split_global_lane
 
-        context = compile_context_tags(project, strict_global)
         tag_value = f"project:{project}"
         conn = self._get_conn()
         try:
@@ -2611,14 +2613,14 @@ class MemoryStore:
 
             global_candidates: list = []
             if include_global:
-                # Global-lane candidates — legacy global query MINUS the tag clauses.
-                # No tier filter (legacy global lane surfaces any tier).
+                # Global-lane candidates — every live row, with no tier clause: brief_membership
+                # admits canonical only, and the rows it does not admit are counted below.
                 cur = conn.execute(
                     """
                     SELECT * FROM memories
                     WHERE (superseded_by IS NULL OR superseded_by = '')
                       AND deleted_at IS NULL
-                    ORDER BY tier DESC, updated_at DESC, id DESC
+                    ORDER BY updated_at DESC, id DESC
                     """
                 )
                 global_candidates = cur.fetchall()
@@ -2637,25 +2639,23 @@ class MemoryStore:
             other_rows = cur.fetchall()
         except sqlite3.Error as e:
             logger.warning("filter_by_scope failed: %s", e)
-            return {"project_memories": [], "global_memories": [], "other_projects": []}
+            return {
+                "project_memories": [],
+                "global_memories": [],
+                "other_projects": [],
+                "global_withheld": 0,
+            }
         finally:
             conn.close()
 
-        def _kept(d: dict) -> bool:
-            return in_scope(compile_memory_scope(d), context)
-
-        # Project lane: membership AND raw project:P tag (tier already gated by query).
         project_memories = [
             d
             for d in (self._row_to_dict(r) for r in project_candidates)
-            if tag_value in d["tags"] and _kept(d)
+            if tag_value in d["tags"] and brief_membership(d, project, strict_global)
         ]
-        # Global lane: membership AND NOT raw project:P tag (mirrors legacy NOT LIKE).
-        global_memories = [
-            d
-            for d in (self._row_to_dict(r) for r in global_candidates)
-            if tag_value not in d["tags"] and _kept(d)
-        ]
+        global_memories, global_withheld = split_global_lane(
+            [self._row_to_dict(r) for r in global_candidates], project, strict_global
+        )
 
         # Other-project tag counts — identical to the oracle.
         other_counts: dict[str, int] = {}
@@ -2673,6 +2673,7 @@ class MemoryStore:
             "project_memories": project_memories,
             "global_memories": global_memories,
             "other_projects": other_projects,
+            "global_withheld": global_withheld,
         }
 
     def get_memories_changed_window(
